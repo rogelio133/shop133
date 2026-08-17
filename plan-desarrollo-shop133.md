@@ -55,7 +55,7 @@ shop133/
 
 - [x] **0.1** Crear solución y estructura de carpetas
 - [x] **0.2** Configurar `docker-compose.yml` con: SQL Server, RabbitMQ, Jaeger — [doc](docs/fase_0_2.md)
-- [ ] **0.3** Crear proyecto `Shop133.Contracts` con eventos base
+- [x] **0.3** Crear proyecto `Shop133.Contracts` con eventos base — [doc](docs/fase_0_3.md)
 - [ ] **0.4** Configurar SQL Server con una base de datos por servicio (`CatalogDb`, `OrdersDb`, `InventoryDb`, `PaymentsDb`)
 - [ ] **0.5** Repositorio Git con convención de branches (`main`, `develop`, `feature/*`)
 

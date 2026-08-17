@@ -6,13 +6,13 @@ Guidance for Claude Code when working in this repository.
 
 **shop133** is a learning-oriented e-commerce backend built as .NET microservices. The pedagogical core is the **order saga with compensations**: an order flows through stock reservation and payment, and a failed payment must automatically release previously reserved stock — no manual intervention.
 
-The roadmap lives in [plan-desarrollo-ishop.md](plan-desarrollo-ishop.md) (Spanish). It is the source of truth for *what* gets built and in what order. This file is the source of truth for *how*.
+The roadmap lives in [plan-desarrollo-shop133.md](plan-desarrollo-shop133.md) (Spanish). It is the source of truth for *what* gets built and in what order. This file is the source of truth for *how*.
 
 This is a side project optimized for understanding distributed-systems tradeoffs, not for shipping to production. When a choice is between "clever" and "explains itself", pick the one that explains itself.
 
 ## Current status
 
-**Phase 0 in progress.** The solution (`shop133.slnx`) and the full project layout exist and build clean on .NET 10; every project is empty scaffolding beyond that. The local infrastructure is up: `docker-compose.yml` + `docker-compose.override.yml` bring up SQL Server, RabbitMQ and Jaeger. The Contracts events and the per-service databases are still pending.
+**Phase 0 in progress.** The solution (`shop133.slnx`) and the full project layout exist and build clean on .NET 10; every service project is still empty scaffolding. The local infrastructure is up: `docker-compose.yml` + `docker-compose.override.yml` bring up SQL Server, RabbitMQ and Jaeger. `Shop133.Contracts` now holds the 9 message types (7 events + 2 commands) and the `OrderLine` DTO — see [docs/fase_0_3.md](docs/fase_0_3.md); note the decision that `OrderId`/`ProductId` are `Guid`, which binds `Product.Id` in Phase 1.1. The per-service databases are still pending.
 
 **Compose layout:** `docker-compose.yml` defines the services and publishes **no** host ports — that file is the container-to-container view (`Server=sqlserver`). `docker-compose.override.yml` holds every host port mapping (`Server=localhost,1433`) and is merged automatically. Credentials come from a gitignored `.env`; `.env.example` is the versioned template.
 
@@ -99,7 +99,7 @@ These are the rules the project exists to teach. Breaking one silently defeats t
 
 ## Sub-phase documentation
 
-Every checklist item in [plan-desarrollo-ishop.md](plan-desarrollo-ishop.md) carries a stable number (`0.1`, `0.2`, … `8.5`). **Completing one produces a document in `docs/`.** This is not a wrap-up step to do if there is time left — it is part of the definition of done.
+Every checklist item in [plan-desarrollo-shop133.md](plan-desarrollo-shop133.md) carries a stable number (`0.1`, `0.2`, … `8.5`). **Completing one produces a document in `docs/`.** This is not a wrap-up step to do if there is time left — it is part of the definition of done.
 
 **A sub-phase is not closed until all three of these are true:**
 

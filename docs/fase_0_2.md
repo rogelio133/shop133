@@ -1,6 +1,6 @@
 # Fase 0.2 — Configurar `docker-compose.yml` con SQL Server, RabbitMQ y Jaeger
 
-**Fecha:** 2026-08-17 · **Estado:** completado · **Roadmap:** [plan-desarrollo-ishop.md](../plan-desarrollo-ishop.md)
+**Fecha:** 2026-08-17 · **Estado:** completado · **Roadmap:** [plan-desarrollo-shop133.md](../plan-desarrollo-shop133.md)
 
 ---
 
