@@ -1,0 +1,31 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/Frontend/">
+    <Project Path="src/Frontend/Shop133.Web/Shop133.Web.csproj" />
+  </Folder>
+  <Folder Name="/src/Gateway/">
+    <Project Path="src/Gateway/Shop133.Gateway/Shop133.Gateway.csproj" />
+  </Folder>
+  <Folder Name="/src/Services/" />
+  <Folder Name="/src/Services/Catalog/">
+    <Project Path="src/Services/Catalog/Catalog.API/Catalog.API.csproj" />
+    <Project Path="src/Services/Catalog/Catalog.Infrastructure/Catalog.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/src/Services/Inventory/">
+    <Project Path="src/Services/Inventory/Inventory.API/Inventory.API.csproj" />
+  </Folder>
+  <Folder Name="/src/Services/Notifications/">
+    <Project Path="src/Services/Notifications/Notifications.API/Notifications.API.csproj" />
+  </Folder>
+  <Folder Name="/src/Services/Orders/">
+    <Project Path="src/Services/Orders/Orders.API/Orders.API.csproj" />
+    <Project Path="src/Services/Orders/Orders.Domain/Orders.Domain.csproj" />
+    <Project Path="src/Services/Orders/Orders.Infrastructure/Orders.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/src/Services/Payments/">
+    <Project Path="src/Services/Payments/Payments.API/Payments.API.csproj" />
+  </Folder>
+  <Folder Name="/src/Shared/">
+    <Project Path="src/Shared/Shop133.Contracts/Shop133.Contracts.csproj" />
+  </Folder>
+</Solution>

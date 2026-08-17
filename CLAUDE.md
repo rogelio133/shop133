@@ -1,0 +1,137 @@
+# CLAUDE.md — shop133
+
+Guidance for Claude Code when working in this repository.
+
+## Project overview
+
+**shop133** is a learning-oriented e-commerce backend built as .NET microservices. The pedagogical core is the **order saga with compensations**: an order flows through stock reservation and payment, and a failed payment must automatically release previously reserved stock — no manual intervention.
+
+The roadmap lives in [plan-desarrollo-ishop.md](plan-desarrollo-ishop.md) (Spanish). It is the source of truth for *what* gets built and in what order. This file is the source of truth for *how*.
+
+This is a side project optimized for understanding distributed-systems tradeoffs, not for shipping to production. When a choice is between "clever" and "explains itself", pick the one that explains itself.
+
+## Current status
+
+**Phase 0 in progress.** The solution (`shop133.slnx`) and the full project layout exist and build clean on .NET 10; every project is empty scaffolding beyond that. `docker-compose.yml`, the Contracts events, and the databases are still pending.
+
+| Phase | Scope | Status |
+|---|---|---|
+| 0 | Solution scaffolding, docker-compose, Contracts | In progress — scaffolding done |
+| 1 | Catalog.API | Not started |
+| 2 | Orders.API (synchronous) | Not started |
+| 3 | MassTransit + RabbitMQ messaging | Not started |
+| 4 | Saga + compensations | Not started |
+| 5 | YARP Gateway | Not started |
+| 6 | Frontend (MVC + Bootstrap 5) | Not started |
+| 7 | Observability | Not started |
+| 8 | Optional extras | Not started |
+
+**Rule:** never reference a project path as if it exists. Verify with Glob first. Paths in the "Solution layout" section below are the *target* structure, not the current one. Update this table when a phase closes.
+
+## Stack
+
+| Concern | Choice | Notes |
+|---|---|---|
+| Runtime | **.NET 10** (`net10.0`) | SDK 10.0.303 installed. 9.0.306 also present — do not target it. |
+| APIs | ASP.NET Core **controller-based APIs** | `ControllerBase` + `[ApiController]`. Not Minimal APIs — decided in Phase 0. |
+| ORM | EF Core 10 | SQL Server provider |
+| Database | SQL Server 2022 (Docker) | One database per service |
+| Messaging | **MassTransit 8.x** + RabbitMQ | Pin the major — see below |
+| Gateway | YARP 2.x | |
+| Frontend | ASP.NET Core MVC + Bootstrap 5 | |
+| Observability | OpenTelemetry → Jaeger, Serilog | |
+| Containers | Docker + Docker Compose | |
+
+**MassTransit must stay on 8.x.** v8 is Apache 2.0 and receives fixes through at least end of 2026. v9 moved to a commercial license. Never upgrade to 9.x without asking.
+
+## Solution layout (target)
+
+```
+shop133/
+├── src/
+│   ├── Services/
+│   │   ├── Catalog/       Catalog.API, Catalog.Infrastructure
+│   │   ├── Orders/        Orders.API, Orders.Domain (saga), Orders.Infrastructure
+│   │   ├── Payments/      Payments.API
+│   │   ├── Inventory/     Inventory.API
+│   │   └── Notifications/ Notifications.API
+│   ├── Gateway/           Shop133.Gateway
+│   ├── Frontend/          Shop133.Web
+│   └── Shared/            Shop133.Contracts
+├── docker-compose.yml
+└── docker-compose.override.yml
+```
+
+Do not create projects outside this structure without asking.
+
+## Architecture rules
+
+These are the rules the project exists to teach. Breaking one silently defeats the purpose.
+
+**1. One database per service.** No service opens a connection to another service's database. Not for a "quick read", not for a join, not for a report. If a service needs another's data, it gets it through an event or an API call. `CatalogDb`, `OrdersDb`, `InventoryDb`, `PaymentsDb` each have exactly one owner.
+
+**2. Services communicate through events.** From Phase 3 onward, cross-service communication goes through RabbitMQ. The synchronous `HttpClient` call from Orders → Catalog in Phase 2 is *deliberate technical debt* meant to make the coupling painful; mark it `// PHASE-2 DEBT: replaced by OrderCreated event in Phase 3` and delete it in Phase 3.
+
+**3. The Frontend talks only to the Gateway.** `Shop133.Web` never holds a base URL of an individual service. CORS, rate limiting, and (later) auth are centralized at the Gateway.
+
+**4. `Shop133.Contracts` stays thin.** Immutable `record` types for events and DTOs only. No business logic, no EF Core, no MassTransit dependency, no validation attributes. Every service references it; it references nothing. Changing a contract is a breaking change across the system — treat it as such.
+
+**5. Dependency direction inside a service:** `.API` → `.Infrastructure` → `.Domain`. The domain layer references no other project. Saga state machines live in `Orders.Domain`.
+
+**6. Every message consumer is idempotent.** RabbitMQ guarantees at-least-once delivery, so duplicates *will* happen. Persist processed `MessageId`s and skip repeats. This is not optional polish — "duplicate event" is one of the four mandatory test scenarios.
+
+**7. Compensation is explicit.** When payment fails after stock was reserved, the saga publishes `ReleaseStock`. There is no path where reserved stock leaks.
+
+## Conventions
+
+- **All code identifiers in English**, PascalCase for types and properties: `Product.Name`, `Order.Status` — not `Producto.Nombre`. Comments and docs may be Spanish; code may not be mixed.
+- **Events are past tense** and are `record` types: `OrderCreated`, `StockReserved`, `StockRejected`, `PaymentCompleted`, `PaymentFailed`, `OrderConfirmed`, `OrderCancelled`.
+- **Commands are imperative**: `ReserveStock`, `ReleaseStock`.
+- **Assembly naming**: shared/infrastructure projects take the `Shop133.` prefix (`Shop133.Contracts`, `Shop133.Gateway`, `Shop133.Web`); service projects do not (`Catalog.API`, `Orders.Domain`).
+- **Databases**: `CatalogDb`, `OrdersDb`, `InventoryDb`, `PaymentsDb`. The saga state is persisted in `OrdersDb`.
+- **Secrets** go in User Secrets or environment variables, never in `appsettings.json`.
+- **Controllers** live in `Controllers/`, are named `<Plural>Controller`, and carry `[ApiController]` + `[Route("[controller]")]`. Keep them thin: bind, delegate, return `ActionResult<T>`. Business logic belongs in `.Infrastructure`/`.Domain`, not in the action. MassTransit consumers are *not* controllers — they live in `Consumers/` from Phase 3 on.
+
+## Commands
+
+Available now:
+
+```powershell
+docker compose up -d sqlserver rabbitmq jaeger   # after Phase 0
+docker compose down
+```
+
+Available after Phase 0 scaffolding:
+
+```powershell
+dotnet build
+dotnet test
+dotnet run --project src/Services/Catalog/Catalog.API
+
+# EF Core migrations — DbContext lives in Infrastructure, host in API
+dotnet ef migrations add <Name> `
+  --project src/Services/Catalog/Catalog.Infrastructure `
+  --startup-project src/Services/Catalog/Catalog.API
+dotnet ef database update `
+  --project src/Services/Catalog/Catalog.Infrastructure `
+  --startup-project src/Services/Catalog/Catalog.API
+```
+
+Local UIs: RabbitMQ management `http://localhost:15672` (guest/guest) · Jaeger `http://localhost:16686`
+
+## Environment gotchas
+
+- **PowerShell 5.1 has no `&&`.** Chain with `;` or run commands separately. Backtick (`` ` ``) is the line-continuation character, not backslash.
+- **SQL Server 2022 image**: use `MSSQL_SA_PASSWORD`, not the deprecated `SA_PASSWORD`.
+- **OpenAPI on .NET 10**: use the built-in `Microsoft.AspNetCore.OpenApi` package (`AddOpenApi()` / `MapOpenApi()`) with Scalar for the UI. Swashbuckle was dropped from the templates in .NET 9 — do not reintroduce it out of habit.
+- **Jaeger all-in-one** needs `COLLECTOR_OTLP_ENABLED=true` to accept OTLP directly from the OpenTelemetry SDK.
+- **Connection strings**: container-to-container uses the compose service name (`Server=sqlserver`), host-to-container uses `localhost,1433`. Mixing these up is the most common Phase 0 failure.
+- **MassTransit 8.x** ships `net8.0`/`net9.0` targets; that is fine on a `net10.0` host. Do not "fix" this by upgrading to v9.
+
+## Working agreements
+
+- **Ask before adding a NuGet package.** The dependency list is part of the learning exercise.
+- **Ask before adding a project** not in the target layout above.
+- **Update the status table** in this file when a phase closes.
+- Prefer boring, explicit code over abstraction. This codebase is meant to be read.
+- When a change touches a service boundary (a new event, a changed contract, a new cross-service call), call it out explicitly rather than folding it into a larger diff.

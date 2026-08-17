@@ -1,0 +1,6 @@
+﻿@Orders.API_HostAddress = http://localhost:5189
+
+GET {{Orders.API_HostAddress}}/openapi/v1.json
+Accept: application/json
+
+###
