@@ -1,0 +1,100 @@
+# shop133 — infraestructura local (Fase 0)
+#
+# Este archivo define SOLO los servicios de infraestructura. Los servicios de
+# aplicacion (Catalog.API, Orders.API, ...) se agregan en la Fase 1, cuando
+# existan sus Dockerfiles.
+#
+# IMPORTANTE — las dos formas de alcanzar estos contenedores:
+#
+#   1. Contenedor -> contenedor: por el NOMBRE DEL SERVICIO dentro de la red
+#      shop133-net. Ej: "Server=sqlserver,1433", "amqp://rabbitmq:5672".
+#      Eso funciona solo con lo definido en ESTE archivo.
+#
+#   2. Host -> contenedor: por "localhost" y el puerto publicado. Ej:
+#      "Server=localhost,1433". Los puertos al host NO se publican aqui: viven
+#      en docker-compose.override.yml, que Compose fusiona automaticamente.
+#
+# Confundir ambas es el fallo mas comun de esta fase.
+#
+# Credenciales: se leen del archivo .env de la raiz (no versionado).
+# Copia .env.example a .env antes del primer arranque.
+
+services:
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: shop133-sqlserver
+    environment:
+      - ACCEPT_EULA=Y
+      # MSSQL_SA_PASSWORD, no SA_PASSWORD: esta ultima quedo deprecada en la
+      # imagen de SQL Server 2022.
+      - MSSQL_SA_PASSWORD=${MSSQL_SA_PASSWORD}
+      - MSSQL_PID=Developer
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+    healthcheck:
+      # $$ escapa la interpolacion de Compose: la variable la resuelve el shell
+      # del contenedor, no el compose file.
+      # -C (trust server certificate) es obligatorio con mssql-tools18, que por
+      # defecto exige un certificado TLS valido y falla contra el autofirmado.
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q \"SELECT 1\" || exit 1"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      # El primer arranque tarda ~20-30s en aceptar conexiones.
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - shop133-net
+
+  rabbitmq:
+    # La variante -management incluye la UI web del puerto 15672.
+    image: rabbitmq:4-management-alpine
+    container_name: shop133-rabbitmq
+    # El nombre del nodo de RabbitMQ deriva del hostname. Sin fijarlo, cada
+    # recreacion del contenedor genera un nodo nuevo que ignora los datos del
+    # volumen anterior.
+    hostname: shop133-rabbitmq
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - shop133-net
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: shop133-jaeger
+    environment:
+      # Sin esto, Jaeger no acepta OTLP directo desde el SDK de OpenTelemetry.
+      # Es el receptor que consumira la Fase 7.
+      - COLLECTOR_OTLP_ENABLED=true
+    # Sin healthcheck a proposito: la imagen all-in-one no trae shell ni wget,
+    # asi que cualquier test: fallaria siempre.
+    #
+    # Sin volumen a proposito: el almacenamiento por defecto es en memoria. Las
+    # trazas se pierden al reiniciar el contenedor. Aceptable en desarrollo.
+    restart: unless-stopped
+    networks:
+      - shop133-net
+
+networks:
+  shop133-net:
+    name: shop133-net
+    driver: bridge
+
+volumes:
+  sqlserver-data:
+  rabbitmq-data:

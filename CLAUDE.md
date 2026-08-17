@@ -12,7 +12,11 @@ This is a side project optimized for understanding distributed-systems tradeoffs
 
 ## Current status
 
-**Phase 0 in progress.** The solution (`shop133.slnx`) and the full project layout exist and build clean on .NET 10; every project is empty scaffolding beyond that. `docker-compose.yml`, the Contracts events, and the databases are still pending.
+**Phase 0 in progress.** The solution (`shop133.slnx`) and the full project layout exist and build clean on .NET 10; every project is empty scaffolding beyond that. The local infrastructure is up: `docker-compose.yml` + `docker-compose.override.yml` bring up SQL Server, RabbitMQ and Jaeger. The Contracts events and the per-service databases are still pending.
+
+**Compose layout:** `docker-compose.yml` defines the services and publishes **no** host ports — that file is the container-to-container view (`Server=sqlserver`). `docker-compose.override.yml` holds every host port mapping (`Server=localhost,1433`) and is merged automatically. Credentials come from a gitignored `.env`; `.env.example` is the versioned template.
+
+Roadmap items are numbered (`0.1` … `8.5`). From 0.2 onward every completed sub-phase leaves a document in [docs/](docs/) — see "Sub-phase documentation" below.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -58,6 +62,7 @@ shop133/
 │   ├── Gateway/           Shop133.Gateway
 │   ├── Frontend/          Shop133.Web
 │   └── Shared/            Shop133.Contracts
+├── docs/                  One .md per completed sub-phase + README.md index
 ├── docker-compose.yml
 └── docker-compose.override.yml
 ```
@@ -91,6 +96,37 @@ These are the rules the project exists to teach. Breaking one silently defeats t
 - **Databases**: `CatalogDb`, `OrdersDb`, `InventoryDb`, `PaymentsDb`. The saga state is persisted in `OrdersDb`.
 - **Secrets** go in User Secrets or environment variables, never in `appsettings.json`.
 - **Controllers** live in `Controllers/`, are named `<Plural>Controller`, and carry `[ApiController]` + `[Route("[controller]")]`. Keep them thin: bind, delegate, return `ActionResult<T>`. Business logic belongs in `.Infrastructure`/`.Domain`, not in the action. MassTransit consumers are *not* controllers — they live in `Consumers/` from Phase 3 on.
+
+## Sub-phase documentation
+
+Every checklist item in [plan-desarrollo-ishop.md](plan-desarrollo-ishop.md) carries a stable number (`0.1`, `0.2`, … `8.5`). **Completing one produces a document in `docs/`.** This is not a wrap-up step to do if there is time left — it is part of the definition of done.
+
+**A sub-phase is not closed until all three of these are true:**
+
+1. `docs/fase_<phase>_<item>.md` exists (the dot becomes an underscore: `0.2` → `fase_0_2.md`).
+2. The checkbox in the roadmap is ticked **and** links to it: `- [x] **0.2** <título> — [doc](docs/fase_0_2.md)`.
+3. `docs/README.md` has a row for it in the index table.
+
+Do not report a sub-phase as finished with any of the three missing.
+
+**Documents are written in Spanish** (code identifiers stay English, as everywhere else). Required sections, in this order:
+
+| Sección | Contenido |
+|---|---|
+| `# Fase X.Y — <título>` | Con una línea de fecha, estado y link al roadmap. |
+| **Objetivo** | Qué resuelve el punto y por qué está en esa posición del roadmap. Incluye lo que queda deliberadamente fuera de alcance. |
+| **Decisiones** | Cada decisión no obvia, con **la alternativa que se descartó y el motivo**. |
+| **Cambios** | Archivos creados o modificados, con ruta relativa y el rol de cada uno. |
+| **Detalles que cuestan tiempo** | Los gotchas concretos: lo que no es evidente y costaría volver a descubrir. |
+| **Verificación** | Los comandos que se ejecutaron **con su salida real**. |
+| **Pendiente** | Lo que queda fuera y en qué punto o fase entra. |
+
+Dos reglas sobre el contenido:
+
+- **La sección de Decisiones es la que da valor al documento.** Si solo describe *qué* se hizo y no *por qué* se eligió eso sobre la alternativa, no está haciendo su trabajo — el código ya dice qué hay.
+- **Se documenta lo que se ejecutó y se observó, no lo que se pretendía hacer.** Si una verificación falló, se saltó o dio un resultado inesperado, va en el documento. Un problema encontrado por el camino (y cómo se resolvió) vale más que una lista de comandos que salieron bien.
+
+[docs/fase_0_2.md](docs/fase_0_2.md) es la referencia de formato.
 
 ## Commands
 
@@ -132,6 +168,7 @@ Local UIs: RabbitMQ management `http://localhost:15672` (guest/guest) · Jaeger 
 
 - **Ask before adding a NuGet package.** The dependency list is part of the learning exercise.
 - **Ask before adding a project** not in the target layout above.
+- **Never close a sub-phase without its `docs/` document**, the roadmap link and the index row — see "Sub-phase documentation" above.
 - **Update the status table** in this file when a phase closes.
 - Prefer boring, explicit code over abstraction. This codebase is meant to be read.
 - When a change touches a service boundary (a new event, a changed contract, a new cross-service call), call it out explicitly rather than folding it into a larger diff.
