@@ -12,15 +12,15 @@ This is a side project optimized for understanding distributed-systems tradeoffs
 
 ## Current status
 
-**Phase 0 in progress.** The solution (`shop133.slnx`) and the full project layout exist and build clean on .NET 10; every service project is still empty scaffolding. The local infrastructure is up: `docker-compose.yml` + `docker-compose.override.yml` bring up SQL Server, RabbitMQ and Jaeger. `Shop133.Contracts` now holds the 9 message types (7 events + 2 commands) and the `OrderLine` DTO — see [docs/fase_0_3.md](docs/fase_0_3.md); note the decision that `OrderId`/`ProductId` are `Guid`, which binds `Product.Id` in Phase 1.1. The per-service databases are still pending.
+**Phase 0 in progress.** The solution (`shop133.slnx`) and the full project layout exist and build clean on .NET 10; every service project is still empty scaffolding. The local infrastructure is up: `docker-compose.yml` + `docker-compose.override.yml` bring up SQL Server, RabbitMQ and Jaeger. `Shop133.Contracts` now holds the 9 message types (7 events + 2 commands) and the `OrderLine` DTO — see [docs/fase_0_3.md](docs/fase_0_3.md); note the decision that `OrderId`/`ProductId` are `Guid`, which binds `Product.Id` in Phase 1.1. The four databases and **one SQL login per service** are created by the `db-init` compose service — see [docs/fase_0_4.md](docs/fase_0_4.md). Still pending in Phase 0: the branch convention (`0.5`) and the architecture-test project (`0.6`). No `tests/` directory exists yet.
 
 **Compose layout:** `docker-compose.yml` defines the services and publishes **no** host ports — that file is the container-to-container view (`Server=sqlserver`). `docker-compose.override.yml` holds every host port mapping (`Server=localhost,1433`) and is merged automatically. Credentials come from a gitignored `.env`; `.env.example` is the versioned template.
 
-Roadmap items are numbered (`0.1` … `8.5`). From 0.2 onward every completed sub-phase leaves a document in [docs/](docs/) — see "Sub-phase documentation" below.
+Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed sub-phase leaves a document in [docs/](docs/) — see "Sub-phase documentation" below.
 
 | Phase | Scope | Status |
 |---|---|---|
-| 0 | Solution scaffolding, docker-compose, Contracts | In progress — scaffolding done |
+| 0 | Solution scaffolding, docker-compose, Contracts, architecture tests | In progress — scaffolding done |
 | 1 | Catalog.API | Not started |
 | 2 | Orders.API (synchronous) | Not started |
 | 3 | MassTransit + RabbitMQ messaging | Not started |
@@ -28,7 +28,7 @@ Roadmap items are numbered (`0.1` … `8.5`). From 0.2 onward every completed su
 | 5 | YARP Gateway | Not started |
 | 6 | Frontend (MVC + Bootstrap 5) | Not started |
 | 7 | Observability | Not started |
-| 8 | Optional extras | Not started |
+| 8 | Optional extras (auth, real-infra integration tests, CI/CD, E2E) | Not started |
 
 **Rule:** never reference a project path as if it exists. Verify with Glob first. Paths in the "Solution layout" section below are the *target* structure, not the current one. Update this table when a phase closes.
 
@@ -45,6 +45,7 @@ Roadmap items are numbered (`0.1` … `8.5`). From 0.2 onward every completed su
 | Frontend | ASP.NET Core MVC + Bootstrap 5 | |
 | Observability | OpenTelemetry → Jaeger, Serilog | |
 | Containers | Docker + Docker Compose | |
+| Testing | xUnit + MassTransit test harness + Testcontainers | xUnit's own `Assert` — no FluentAssertions, see "Testing" below |
 
 **MassTransit must stay on 8.x.** v8 is Apache 2.0 and receives fixes through at least end of 2026. v9 moved to a commercial license. Never upgrade to 9.x without asking.
 
@@ -62,6 +63,14 @@ shop133/
 │   ├── Gateway/           Shop133.Gateway
 │   ├── Frontend/          Shop133.Web
 │   └── Shared/            Shop133.Contracts
+├── tests/
+│   ├── Shop133.ArchitectureTests/   The rules in this file, made executable
+│   └── Services/
+│       ├── Catalog/       Catalog.Tests
+│       ├── Orders/        Orders.Tests (saga + consumers)
+│       ├── Inventory/     Inventory.Tests
+│       └── Payments/      Payments.Tests
+├── db/init/               SQL run by the db-init compose service (databases + per-service logins)
 ├── docs/                  One .md per completed sub-phase + README.md index
 ├── docker-compose.yml
 └── docker-compose.override.yml
@@ -73,7 +82,7 @@ Do not create projects outside this structure without asking.
 
 These are the rules the project exists to teach. Breaking one silently defeats the purpose.
 
-**1. One database per service.** No service opens a connection to another service's database. Not for a "quick read", not for a join, not for a report. If a service needs another's data, it gets it through an event or an API call. `CatalogDb`, `OrdersDb`, `InventoryDb`, `PaymentsDb` each have exactly one owner.
+**1. One database per service.** No service opens a connection to another service's database. Not for a "quick read", not for a join, not for a report. If a service needs another's data, it gets it through an event or an API call. `CatalogDb`, `OrdersDb`, `InventoryDb`, `PaymentsDb` each have exactly one owner. Since Phase 0.4 this is enforced by SQL Server, not by convention: each service connects with its own login (`catalog_user`, `orders_user`, …) that has `db_owner` on its own database and no access at all to the others. Reaching for a neighbour's database fails with `Msg 916`. Never "fix" that by switching a service to `sa`.
 
 **2. Services communicate through events.** From Phase 3 onward, cross-service communication goes through RabbitMQ. The synchronous `HttpClient` call from Orders → Catalog in Phase 2 is *deliberate technical debt* meant to make the coupling painful; mark it `// PHASE-2 DEBT: replaced by OrderCreated event in Phase 3` and delete it in Phase 3.
 
@@ -96,6 +105,26 @@ These are the rules the project exists to teach. Breaking one silently defeats t
 - **Databases**: `CatalogDb`, `OrdersDb`, `InventoryDb`, `PaymentsDb`. The saga state is persisted in `OrdersDb`.
 - **Secrets** go in User Secrets or environment variables, never in `appsettings.json`.
 - **Controllers** live in `Controllers/`, are named `<Plural>Controller`, and carry `[ApiController]` + `[Route("[controller]")]`. Keep them thin: bind, delegate, return `ActionResult<T>`. Business logic belongs in `.Infrastructure`/`.Domain`, not in the action. MassTransit consumers are *not* controllers — they live in `Consumers/` from Phase 3 on.
+
+## Testing
+
+Tests are not a phase. They are numbered items spread across the roadmap — `0.6`, `1.7`, `2.4`, `3.7`, `4.7`, `5.4`, plus `8.2`/`8.6` — landing where the code they cover starts to exist. See "Estrategia de tests" in [plan-desarrollo-shop133.md](plan-desarrollo-shop133.md) for the full mapping.
+
+**1. Never the EF Core InMemory provider.** It enforces no relational constraints and has no real transactions, so it green-lights code that fails against SQL Server. Real SQL Server through Testcontainers, or the data layer goes untested — there is no third option.
+
+**2. Saga and consumer logic is tested with the MassTransit test harness** (`AddMassTransitTestHarness`, in-memory transport), not against a real broker. Milliseconds instead of seconds, which is what makes it viable to have dozens of saga cases. Real RabbitMQ appears only in `8.2`, and only for what the harness cannot cover: the exchange topology MassTransit creates by convention.
+
+**3. Every consumer gets an idempotency test** — deliver the same `MessageId` twice, assert a single effect. This is the only reliable check of architecture rule 6; by-hand verification does not survive a refactor.
+
+**4. Architecture tests are rules 1, 4 and 5 in executable form.** When adding a new architecture rule to this file, consider whether `Shop133.ArchitectureTests` can enforce it. A rule that only lives in prose gets broken silently — which is the exact failure this project is meant to avoid.
+
+**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both.
+
+**6. Naming**: project `<Project>.Tests`, class `<SUT>Tests`, method `Method_Scenario_ExpectedResult`. English identifiers, like all other code.
+
+**7. Assertions use xUnit's own `Assert`.** Deliberate: **FluentAssertions 8.x moved to a commercial license** for non-open-source use — the same trap as MassTransit 9. If fluent syntax ever becomes worth a package, prefer Shouldly (BSD) over pinning FluentAssertions to 7.x.
+
+Packages these items will need, all still subject to "ask before adding a NuGet package": `xunit.v3`, `Microsoft.NET.Test.Sdk`, `MassTransit.TestFramework`, `Microsoft.AspNetCore.Mvc.Testing`, `Testcontainers.MsSql`, `Testcontainers.RabbitMq`, `NetArchTest.Rules`, `WireMock.Net`, `Respawn`.
 
 ## Sub-phase documentation
 
@@ -133,7 +162,11 @@ Dos reglas sobre el contenido:
 Available now:
 
 ```powershell
-docker compose up -d sqlserver rabbitmq jaeger   # after Phase 0
+# No service list: naming services explicitly would skip db-init, which creates
+# the four databases and their per-service logins. It exits 0 once done, so it
+# only shows up under `ps -a`.
+docker compose up -d
+docker compose ps -a
 docker compose down
 ```
 
@@ -141,8 +174,11 @@ Available after Phase 0 scaffolding:
 
 ```powershell
 dotnet build
-dotnet test
 dotnet run --project src/Services/Catalog/Catalog.API
+
+# Tests — see the "Testing" section for what each category covers
+dotnet test --filter Category=Fast   # development loop, no Docker needed
+dotnet test                          # everything, requires Docker running
 
 # EF Core migrations — DbContext lives in Infrastructure, host in API
 dotnet ef migrations add <Name> `
@@ -161,7 +197,7 @@ Local UIs: RabbitMQ management `http://localhost:15672` (guest/guest) · Jaeger 
 - **SQL Server 2022 image**: use `MSSQL_SA_PASSWORD`, not the deprecated `SA_PASSWORD`.
 - **OpenAPI on .NET 10**: use the built-in `Microsoft.AspNetCore.OpenApi` package (`AddOpenApi()` / `MapOpenApi()`) with Scalar for the UI. Swashbuckle was dropped from the templates in .NET 9 — do not reintroduce it out of habit.
 - **Jaeger all-in-one** needs `COLLECTOR_OTLP_ENABLED=true` to accept OTLP directly from the OpenTelemetry SDK.
-- **Connection strings**: container-to-container uses the compose service name (`Server=sqlserver`), host-to-container uses `localhost,1433`. Mixing these up is the most common Phase 0 failure.
+- **Connection strings**: container-to-container uses the compose service name (`Server=sqlserver`), host-to-container uses `localhost,1433`. Mixing these up is the most common Phase 0 failure. Both need `TrustServerCertificate=True` (self-signed cert — same reason `sqlcmd` needs `-C`), and both use the service's own login, never `sa`.
 - **MassTransit 8.x** ships `net8.0`/`net9.0` targets; that is fine on a `net10.0` host. Do not "fix" this by upgrading to v9.
 
 ## Working agreements

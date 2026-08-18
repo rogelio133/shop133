@@ -42,6 +42,19 @@ shop133/
 │   │   └── Shop133.Web/                 (MVC + Bootstrap 5)
 │   └── Shared/
 │       └── Shop133.Contracts/           (eventos compartidos: OrderCreated, StockReserved, etc.)
+├── tests/
+│   ├── Shop133.ArchitectureTests/       (reglas de CLAUDE.md ejecutables)
+│   └── Services/
+│       ├── Catalog/
+│       │   └── Catalog.Tests/
+│       ├── Orders/
+│       │   └── Orders.Tests/            (saga + consumers)
+│       ├── Inventory/
+│       │   └── Inventory.Tests/
+│       └── Payments/
+│           └── Payments.Tests/
+├── db/
+│   └── init/                            (scripts SQL que ejecuta el servicio db-init)
 ├── docs/                                (un .md por subfase completada — ver docs/README.md)
 ├── docker-compose.yml
 └── docker-compose.override.yml
@@ -51,13 +64,39 @@ shop133/
 
 ---
 
+## Estrategia de tests
+
+Los tests no son una fase — están repartidos por el roadmap, en el punto donde el código que prueban empieza a existir. La razón: lo que este proyecto existe para enseñar (la saga, las compensaciones, la idempotencia) es justo lo que no se puede verificar a mano de forma fiable. Comprobar una compensación con curl y la UI de RabbitMQ funciona una vez; no te avisa cuando la Fase 5 la rompe.
+
+**Qué tipo de test cubre qué:**
+
+| Tipo | Herramienta | Qué verifica | Coste |
+|---|---|---|---|
+| Arquitectura | NetArchTest | Reglas estructurales: Contracts sin dependencias, dirección de referencias, eventos inmutables | Milisegundos |
+| Saga y consumers | Harness de MassTransit (transporte en memoria) | Transiciones de estado, caminos de compensación, idempotencia | Milisegundos |
+| Componente | `WebApplicationFactory` + Testcontainers | API + EF Core contra SQL Server real, de extremo a extremo dentro de un servicio | Segundos |
+| Integración real | Testcontainers (SQL Server + RabbitMQ) | Persistencia de la saga, topología de exchanges, migraciones EF | Decenas de segundos |
+
+**Qué se deja fuera deliberadamente:**
+
+- **Contract testing (Pact).** Tiene sentido cuando productor y consumidor viven en repos y equipos distintos. Aquí `Shop133.Contracts` compartido *es* el contrato, y el compilador ya hace ese trabajo: renombrar una propiedad rompe la build de todos los servicios.
+- **Tests unitarios de controllers CRUD.** Los controllers son delgados por convención (bind, delega, devuelve); no hay lógica que probar y el test solo duplicaría el mapeo.
+- **E2E extensivo.** Caro de mantener y frágil. Solo un par de smoke tests en 8.6.
+
+**El conjunto mínimo que rinde** a ritmo de side project: tests de arquitectura + saga con harness + una rebanada de componente por servicio. Todo lo demás es opcional.
+
+---
+
 ## Fase 0 — Setup base (3-4 días)
 
 - [x] **0.1** Crear solución y estructura de carpetas
 - [x] **0.2** Configurar `docker-compose.yml` con: SQL Server, RabbitMQ, Jaeger — [doc](docs/fase_0_2.md)
 - [x] **0.3** Crear proyecto `Shop133.Contracts` con eventos base — [doc](docs/fase_0_3.md)
-- [ ] **0.4** Configurar SQL Server con una base de datos por servicio (`CatalogDb`, `OrdersDb`, `InventoryDb`, `PaymentsDb`)
+- [x] **0.4** Configurar SQL Server con una base de datos por servicio (`CatalogDb`, `OrdersDb`, `InventoryDb`, `PaymentsDb`) — [doc](docs/fase_0_4.md)
 - [ ] **0.5** Repositorio Git con convención de branches (`main`, `develop`, `feature/*`)
+- [ ] **0.6** Proyecto `tests/Shop133.ArchitectureTests` con NetArchTest: `Shop133.Contracts` sin dependencias externas, eventos como `record` inmutables, `Orders.Domain` sin referencias a otros proyectos, ningún servicio referencia el `DbContext` de otro
+
+**Por qué 0.6 va aquí y no más tarde:** los proyectos ya existen vacíos y `Shop133.Contracts` ya tiene sus 9 mensajes. Fijar las reglas *antes* de escribir código de servicio es lo que las convierte en una barrera; añadirlas después es un ejercicio de arqueología.
 
 **Docker Compose — servicio SQL Server:**
 ```yaml
@@ -82,8 +121,11 @@ sqlserver:
 - [ ] **1.4** Seed de datos de prueba
 - [ ] **1.5** Swagger/OpenAPI habilitado
 - [ ] **1.6** Dockerfile del servicio
+- [ ] **1.7** `Catalog.Tests`: tests de componente con `WebApplicationFactory` + Testcontainers (SQL Server) sobre los endpoints de 1.3
 
 **Objetivo de la fase:** tener un servicio funcional end-to-end (DB → API → Docker) antes de meter mensajería.
+
+**Sobre 1.7:** es la primera infraestructura de test del proyecto (fixture del contenedor, reset de datos entre tests) y se monta sobre el servicio más simple, para reutilizarla después en los demás. Nada de provider InMemory de EF Core: no aplica constraints ni transacciones reales y deja pasar bugs que en SQL Server explotan.
 
 ---
 
@@ -92,8 +134,11 @@ sqlserver:
 - [ ] **2.1** Modelo `Order`, `OrderItem` (estado: Pending, Confirmed, Cancelled)
 - [ ] **2.2** EF Core contra `OrdersDb`
 - [ ] **2.3** `POST /orders` que llama síncronamente (HttpClient) a Catalog.API para validar productos/precios
+- [ ] **2.4** `Orders.Tests`: test del acoplamiento síncrono con WireMock.Net — camino feliz **y** "Catalog caído → Orders falla"
 
 **Objetivo de la fase:** aquí **sentirás el acoplamiento** — si Catalog.API está caído, Orders falla. Este dolor es intencional; es el que resuelves en la Fase 3. No es una tarea entregable, por eso no lleva número.
+
+**Sobre 2.4:** estos tests son deuda igual que el código que prueban — márcalos `// PHASE-2 DEBT` y bórralos en 3.7. El objetivo no es cobertura, es hacer el fallo **reproducible**: un test que afirma "Catalog caído ⇒ el pedido no se crea" y que en la Fase 3 deja de tener sentido. El diff que lo elimina documenta el cambio de arquitectura mejor que un párrafo.
 
 ---
 
@@ -105,6 +150,9 @@ sqlserver:
 - [ ] **3.4** Inventory.API consume `OrderCreated`, valida y reserva stock contra `InventoryDb`, publica `StockReserved`/`StockRejected`
 - [ ] **3.5** Payments.API consume `StockReserved`, simula cobro, publica `PaymentCompleted`/`PaymentFailed`
 - [ ] **3.6** Implementar **idempotencia**: guardar `MessageId` procesados para evitar duplicados
+- [ ] **3.7** Tests de consumers con `MassTransit.TestFramework` (`AddMassTransitTestHarness`): Inventory y Payments publican el evento correcto ante cada entrada, más el **test de idempotencia** (mismo `MessageId` dos veces → un solo efecto). Incluye borrar los tests de 2.4
+
+**Sobre 3.7:** el harness usa transporte en memoria — sin Docker, sin RabbitMQ, milisegundos por test. RabbitMQ real se prueba en 8.2, y solo para lo que el harness no puede cubrir (topología de exchanges). El test de idempotencia es la única verificación fiable de 3.6: a mano habría que republicar el mismo mensaje y comparar estado de base de datos.
 
 ---
 
@@ -118,12 +166,15 @@ Este es el núcleo del aprendizaje.
 - [ ] **4.4** Implementar evento de compensación `ReleaseStock` cuando el pago falla después de reservar
 - [ ] **4.5** Persistir el estado de la Saga en `OrdersDb` (SQL Server como Saga repository)
 - [ ] **4.6** Notifications.API consume `OrderConfirmed`/`OrderCancelled` y "envía" notificación (log o mock de email)
+- [ ] **4.7** Automatizar los 4 escenarios obligatorios contra `OrderStateMachine` con el harness de MassTransit
 
 **Escenarios de prueba obligatorios:**
 1. Compra exitosa (feliz)
 2. Sin stock disponible
 3. Stock reservado pero pago rechazado (compensación)
 4. Evento duplicado (verificar idempotencia)
+
+Esta lista es la **especificación del punto 4.7**. Escribir esos tests *antes* que la máquina de estados te obliga a decidir los estados finales y qué mensajes salen en cada camino, que es el diseño de la saga. El caso 3 en concreto afirma que se publica **exactamente un** `ReleaseStock` y que el estado final es `Cancelled` — la regla de que el stock reservado nunca se filtra, en forma ejecutable.
 
 ---
 
@@ -132,6 +183,7 @@ Este es el núcleo del aprendizaje.
 - [ ] **5.1** Configurar rutas: `/api/catalog/*`, `/api/orders/*`, etc. hacia cada servicio
 - [ ] **5.2** Agregar rate limiting básico
 - [ ] **5.3** Centralizar CORS aquí (para que el Frontend solo hable con el Gateway)
+- [ ] **5.4** Smoke de enrutado: cada ruta de 5.1 alcanza su servicio y el rate limiting de 5.2 devuelve `429` al superar el umbral
 
 ---
 
@@ -167,10 +219,13 @@ Este es el "aha" del proyecto: ver visualmente la complejidad que la arquitectur
 ## Fase 8 — Pulido y extras opcionales (según tiempo)
 
 - [ ] **8.1** Autenticación con JWT en el Gateway (Identity o Auth0/Keycloak)
-- [ ] **8.2** Tests de integración con Testcontainers (SQL Server + RabbitMQ reales en contenedores para tests)
+- [ ] **8.2** Tests de integración con infraestructura real (Testcontainers): persistencia de la Saga en SQL Server con concurrencia optimista, topología de exchanges que MassTransit crea por convención, migraciones EF contra SQL Server real
 - [ ] **8.3** CI/CD con GitHub Actions (build, test, push de imágenes Docker)
 - [ ] **8.4** Health checks (`/health`) en cada servicio + panel simple en el Frontend
 - [ ] **8.5** Migrar Kafka en lugar de RabbitMQ como ejercicio comparativo (opcional, ambicioso)
+- [ ] **8.6** Dos o tres smoke tests E2E sobre `docker compose` (camino feliz y compensación)
+
+**Sobre 8.2:** Testcontainers ya entra en 1.7 para los tests de componente; lo que queda aquí es lo que ni esos tests ni el harness en memoria pueden cubrir — el comportamiento de la infraestructura real. `dotnet test` en 8.3 debe correr las dos categorías (`Fast` y `Docker`).
 
 ---
 
@@ -187,6 +242,8 @@ Este es el "aha" del proyecto: ver visualmente la complejidad que la arquitectur
 | 6. Frontend Bootstrap | 1-1.5 semanas |
 | 7. Observabilidad | 4-5 días |
 | **Total núcleo (Fases 0-7)** | **~7-9 semanas** a ritmo de side project (5-10h/semana) |
+
+Los items de test (0.6, 1.7, 2.4, 3.7, 4.7, 5.4) añaden en torno a un 15-20% al tiempo de su fase; los rangos de arriba ya lo absorben. Ese coste se recupera en la Fase 4: depurar una saga sin tests automatizados es republicar mensajes a mano y leer la UI de RabbitMQ.
 
 La Fase 8 es indefinida — extiéndela según lo que quieras profundizar.
 

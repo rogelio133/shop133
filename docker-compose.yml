@@ -51,6 +51,56 @@ services:
     networks:
       - shop133-net
 
+  # Crea las 4 bases (CatalogDb, OrdersDb, InventoryDb, PaymentsDb) y un login
+  # por servicio con permiso SOLO sobre la suya. Arranca, ejecuta el script y
+  # sale con 0: no es un servicio de larga vida, por eso no lleva healthcheck
+  # ni restart. Con "docker compose ps" no aparece; hace falta "ps -a".
+  #
+  # El script es idempotente, asi que correrlo en cada "up" no tiene efecto.
+  db-init:
+    # Reutiliza la imagen de SQL Server en lugar de mcr.../mssql-tools: ya trae
+    # /opt/mssql-tools18/bin/sqlcmd y evita descargar (y mantener) una segunda
+    # imagen. La de mssql-tools ademas se quedo en la version 17.
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: shop133-db-init
+    depends_on:
+      sqlserver:
+        # Esto es lo que evita el clasico "wait-for-it": no arranca hasta que
+        # el healthcheck de sqlserver responde al SELECT 1.
+        condition: service_healthy
+    environment:
+      - MSSQL_SA_PASSWORD=${MSSQL_SA_PASSWORD}
+      # Las lee sqlcmd como variables de script, $(NOMBRE) dentro del .sql.
+      - CATALOG_DB_PASSWORD=${CATALOG_DB_PASSWORD}
+      - ORDERS_DB_PASSWORD=${ORDERS_DB_PASSWORD}
+      - INVENTORY_DB_PASSWORD=${INVENTORY_DB_PASSWORD}
+      - PAYMENTS_DB_PASSWORD=${PAYMENTS_DB_PASSWORD}
+    volumes:
+      - ./db/init:/db-init:ro
+    # entrypoint OBLIGATORIO: el de la imagen arranca el motor de SQL Server.
+    # Sin sobrescribirlo, este contenedor levantaria un segundo SQL Server en
+    # vez de ejecutar el script.
+    #
+    # Y tiene que ser un shell de verdad ("bash -c"): Compose parte un command
+    # en formato string sin shell, asi que "$$MSSQL_SA_PASSWORD" llegaria a
+    # sqlcmd como texto literal. La alternativa, dejar que Compose interpole
+    # ${MSSQL_SA_PASSWORD}, deja la contrasena en claro en "compose config".
+    entrypoint: ["/bin/bash", "-c"]
+    # LISTA de un solo elemento, no string: si se escribe como string, Compose
+    # lo parte en argv y "bash -c" solo ejecutaria el primer trozo (sqlcmd sin
+    # ningun argumento). Todo el comando tiene que llegar como UN argumento.
+    #
+    # -C: trust del certificado autofirmado (igual que el healthcheck).
+    # -b: salir con codigo != 0 si el script falla. Sin el, el contenedor sale
+    #     con 0 aunque el SQL reviente y el fallo pasa desapercibido.
+    command:
+      - >
+        /opt/mssql-tools18/bin/sqlcmd -S sqlserver -U sa -P "$$MSSQL_SA_PASSWORD"
+        -C -b -i /db-init/01-create-databases.sql
+    restart: "no"
+    networks:
+      - shop133-net
+
   rabbitmq:
     # La variante -management incluye la UI web del puerto 15672.
     image: rabbitmq:4-management-alpine
