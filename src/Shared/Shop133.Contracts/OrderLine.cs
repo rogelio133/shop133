@@ -10,10 +10,21 @@ namespace Shop133.Contracts;
 /// UnitPrice es el precio *congelado* en el momento del pedido, no el precio
 /// actual del catálogo. Si Catalog cambia el precio después, el pedido ya
 /// cobrado no se ve afectado.
+///
+/// ProductId es la clave sustituta de Catalog, no el Sku. Mismo motivo que el
+/// precio congelado: una línea de pedido no puede depender de un dato que
+/// Catalog cambia después, y un código de producto se corrige o se renumera.
+/// La clave sustituta no cambia nunca.
+///
+/// Es un int, a diferencia de OrderId, que es Guid. La asimetría es deliberada:
+/// el tipo del id lo decide quién lo acuña y cuándo. Orders.API necesita el
+/// OrderId antes de tocar la base porque es la clave de correlación de la saga;
+/// un producto lo crea Catalog con un POST síncrono y su base es el único
+/// escritor. Ver docs/fase_1_1.md.
 /// </summary>
 public sealed record OrderLine
 {
-    public required Guid ProductId { get; init; }
+    public required int ProductId { get; init; }
     public required int Quantity { get; init; }
     public required decimal UnitPrice { get; init; }
 }

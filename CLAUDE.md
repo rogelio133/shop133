@@ -12,7 +12,15 @@ This is a side project optimized for understanding distributed-systems tradeoffs
 
 ## Current status
 
-**Phase 0 complete.** The solution (`shop133.slnx`) and the full project layout exist and build clean on .NET 10; every service project is still empty scaffolding. The local infrastructure is up: `docker-compose.yml` + `docker-compose.override.yml` bring up SQL Server, RabbitMQ and Jaeger. `Shop133.Contracts` now holds the 9 message types (7 events + 2 commands) and the `OrderLine` DTO — see [docs/fase_0_3.md](docs/fase_0_3.md); note the decision that `OrderId`/`ProductId` are `Guid`, which binds `Product.Id` in Phase 1.1. The four databases and **one SQL login per service** are created by the `db-init` compose service — see [docs/fase_0_4.md](docs/fase_0_4.md). The branch model (`main` / `develop` / `feature/*`) is fixed and live on `origin` — see [docs/fase_0_5.md](docs/fase_0_5.md) and the "Git workflow" section below. `tests/Shop133.ArchitectureTests` makes rules 1, 3, 4 and 5 below executable — 11 tests, all `Category=Fast` — see [docs/fase_0_6.md](docs/fase_0_6.md); it also moved the whole repo onto **Microsoft.Testing.Platform** (opt-in in `global.json`), which changes the `dotnet test` filter syntax. Phase 0 is **closed**: both PRs (`feature/fase-0 → develop`, then `develop → main`) were merged as merge commits, `feature/fase-0` is deleted, and `main` carries the annotated `fase-0` tag. Work continues on `feature/fase-1-catalog`, cut from `develop`.
+**Phase 0 complete.** The solution (`shop133.slnx`) and the full project layout exist and build clean on .NET 10; every service project is still empty scaffolding. The local infrastructure is up: `docker-compose.yml` + `docker-compose.override.yml` bring up SQL Server, RabbitMQ and Jaeger. `Shop133.Contracts` now holds the 9 message types (7 events + 2 commands) and the `OrderLine` DTO — see [docs/fase_0_3.md](docs/fase_0_3.md) — but read its decision 4 with the revision note attached to it: `OrderId` is a `Guid`, `ProductId` is an `int` since `1.1`. The four databases and **one SQL login per service** are created by the `db-init` compose service — see [docs/fase_0_4.md](docs/fase_0_4.md). The branch model (`main` / `develop` / `feature/*`) is fixed and live on `origin` — see [docs/fase_0_5.md](docs/fase_0_5.md) and the "Git workflow" section below. `tests/Shop133.ArchitectureTests` makes rules 1, 3, 4 and 5 below executable — 11 tests, all `Category=Fast` — see [docs/fase_0_6.md](docs/fase_0_6.md); it also moved the whole repo onto **Microsoft.Testing.Platform** (opt-in in `global.json`), which changes the `dotnet test` filter syntax. Phase 0 is **closed**: both PRs (`feature/fase-0 → develop`, then `develop → main`) were merged as merge commits, `feature/fase-0` is deleted, and `main` carries the annotated `fase-0` tag. Work continues on `feature/fase-1-catalog`, cut from `develop`.
+
+**Phase 1 in progress.** `1.1` landed the first business type of the project: `Product` in `Catalog.Infrastructure/Entities/` — a `sealed class` with private setters and a validating constructor, plus a private parameterless one for EF Core. `Catalog.Infrastructure` still has no packages and no project references; EF Core arrives in `1.2`.
+
+**`Product.Id` is an `int`, assigned by SQL Server via `IDENTITY`** — this reverses half of the decision in `0.3`, which had bound it to `Guid`; `OrderLine.ProductId` changed with it. **The ids in this system are deliberately asymmetric and this is not an oversight**: `OrderId` stays a `Guid` because it is the saga's correlation key and Orders.API must mint it before touching the database, while a product is created by a synchronous `POST` against the only database that writes it. The rule to carry forward is *the id type is decided by who mints it and when* — do not "restore consistency" by making them match. See decision 2 in [docs/fase_1_1.md](docs/fase_1_1.md).
+
+That document also keeps a measured finding that no longer affects `Product` but still applies to `OrderId` when it is persisted in `4.5`: SQL Server compares `uniqueidentifier` starting from the *last* six bytes, so a UUID v7 arrives inside the database as unordered as a random one, and the usual "v7 fixes clustered-index fragmentation" argument is false.
+
+`Product.Sku` is the product's business code — required, stored `Trim()`-ed and upper-cased so `lap-14` and `LAP-14` cannot become two products. Uniqueness is **not** enforced by the entity; it needs a unique index in `1.2`. And `Product.Stock` is the number the catalog *displays*: the reservable stock belongs to `InventoryDb` from `3.4` on, and nothing may decrement this column when an order is placed.
 
 **Compose layout:** `docker-compose.yml` defines the services and publishes **no** host ports — that file is the container-to-container view (`Server=sqlserver`). `docker-compose.override.yml` holds every host port mapping (`Server=localhost,1433`) and is merged automatically. Credentials come from a gitignored `.env`; `.env.example` is the versioned template.
 
@@ -21,7 +29,7 @@ Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed su
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Solution scaffolding, docker-compose, Contracts, architecture tests | **Closed** — merged to `main`, tagged `fase-0` |
-| 1 | Catalog.API | Not started |
+| 1 | Catalog.API | **In progress** — 1.1 done, 1.2–1.7 pending |
 | 2 | Orders.API (synchronous) | Not started |
 | 3 | MassTransit + RabbitMQ messaging | Not started |
 | 4 | Saga + compensations | Not started |
@@ -228,6 +236,7 @@ Local UIs: RabbitMQ management `http://localhost:15672` (guest/guest) · Jaeger 
 ## Environment gotchas
 
 - **PowerShell 5.1 has no `&&`.** Chain with `;` or run commands separately. Backtick (`` ` ``) is the line-continuation character, not backslash.
+- **A new `.cs` file needs no `.csproj` edit — but Visual Studio needs a refresh.** SDK-style projects glob every `**/*.cs` under the project folder implicitly (`Microsoft.NET.Sdk.DefaultItems.props`), so a file created from outside the IDE is already compiled. Verify with `dotnet msbuild <project>.csproj -getItem:Compile`, which lists it. **Never add `<Compile Include="..." />`** to make a file "appear": it is redundant, and alongside the default glob it produces duplicate-item errors (`NETSDK1022`). When Solution Explorer does not show the file, the stale thing is VS's own cache (`.vs/ProjectEvaluation/`), not the project — refresh Solution Explorer, then Unload/Reload the project, then reopen the solution, and as a last resort delete `.vs/` with VS closed (it is gitignored IDE state and regenerates).
 - **SQL Server 2022 image**: use `MSSQL_SA_PASSWORD`, not the deprecated `SA_PASSWORD`.
 - **OpenAPI on .NET 10**: use the built-in `Microsoft.AspNetCore.OpenApi` package (`AddOpenApi()` / `MapOpenApi()`) with Scalar for the UI. Swashbuckle was dropped from the templates in .NET 9 — do not reintroduce it out of habit.
 - **Jaeger all-in-one** needs `COLLECTOR_OTLP_ENABLED=true` to accept OTLP directly from the OpenTelemetry SDK.
@@ -236,6 +245,8 @@ Local UIs: RabbitMQ management `http://localhost:15672` (guest/guest) · Jaeger 
 
 ## Working agreements
 
+- **Never run git write commands.** `git add`, `git commit`, `git push`, `git tag`, branch creation and PRs are the user's job — always. Suggest the commit message if it helps, but do not stage or commit anything, not even after finishing a sub-phase.
+- **After creating or deleting `.cs` files, build the affected project and list the paths.** Run `dotnet build <project>` — that is what proves the implicit glob picked the file up and that it compiles — and end the reply with the created/deleted paths so they can be refreshed in Visual Studio without hunting for them. A file written but never compiled is not delivered. See the globbing gotcha above for why the fix is never a `.csproj` edit.
 - **Ask before adding a NuGet package.** The dependency list is part of the learning exercise.
 - **Ask before adding a project** not in the target layout above.
 - **Never close a sub-phase without its `docs/` document**, the roadmap link and the index row — see "Sub-phase documentation" above.

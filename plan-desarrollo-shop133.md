@@ -115,7 +115,7 @@ sqlserver:
 
 ## Fase 1 — Catalog.API (síncrono, base) (1 semana)
 
-- [ ] **1.1** Modelo `Product` (Id, Nombre, Descripción, Precio, Stock inicial, ImagenUrl)
+- [x] **1.1** Modelo `Product` (Id, SKU, Nombre, Descripción, Precio, Stock inicial, ImagenUrl) — [doc](docs/fase_1_1.md)
 - [ ] **1.2** EF Core + migraciones contra SQL Server (`CatalogDb`)
 - [ ] **1.3** Endpoints: `GET /products`, `GET /products/{id}`, `POST /products`, `PUT`, `DELETE`
 - [ ] **1.4** Seed de datos de prueba

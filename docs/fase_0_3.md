@@ -66,6 +66,12 @@ Esto es el principio general y conviene tenerlo escrito: **un evento debe llevar
 
 **Consecuencia que hay que recordar:** el punto **1.1** tiene que definir `Product.Id` como `Guid`, no como `int`. Es una decisión tomada aquí que se cobra en otra fase, y por eso está escrita.
 
+> **⚠️ Revisado en 1.1 (2026-08-18): la mitad de esta decisión se revirtió.** `OrderId` sigue siendo `Guid`; **`ProductId` pasó a `int`** y `OrderLine.ProductId` se cambió en consecuencia.
+>
+> El fallo está en el párrafo de arriba: justifica **los dos** ids con un solo argumento, y el argumento —que el productor acuña el id sin consultar a nadie— solo es decisivo para `OrderId`, que es la clave de correlación de la saga y tiene que existir antes de tocar la base. Un producto lo crea Catalog con un `POST` síncrono sobre su propia base; no hay nada que adelantar. El razonamiento se extendió a `ProductId` por arrastre, no por comprobarlo.
+>
+> El texto original se conserva tal cual: es el registro de lo que se decidió y con qué motivo. El desarrollo completo, con las alternativas descartadas, está en la **decisión 2 de [fase_1_1.md](fase_1_1.md)**.
+
 ### 5. Sin `CorrelationId` ni `OccurredAt` en los contratos
 
 **Descartado:** añadir `Guid CorrelationId` a cada mensaje. Es lo que MassTransit detecta por convención sin configurar nada, así que es la opción de menor fricción.
@@ -220,7 +226,7 @@ De la Fase 0 quedan:
 
 Consecuencias de este punto en fases posteriores, para no perderlas de vista:
 
-- **Fase 1.1** — `Product.Id` tiene que ser `Guid`, por la decisión 4.
+- ~~**Fase 1.1** — `Product.Id` tiene que ser `Guid`, por la decisión 4.~~ **Revertido en 1.1:** `Product.Id` es `int` y `OrderLine.ProductId` también. Ver la nota de la decisión 4 y [fase_1_1.md](fase_1_1.md).
 - **Fase 3.1** — confirmar que el serializador de MassTransit 8 conserva la validación de `required`.
 - **Fase 3.6** — la idempotencia usa el `MessageId` del sobre de MassTransit, no un campo de estos contratos.
 - **Fase 4.1** — la saga correlaciona con `.CorrelateById(x => x.Message.OrderId)`; sin esa línea no hay correlación, porque no hay `CorrelationId` en los mensajes.
