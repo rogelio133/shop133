@@ -12,7 +12,7 @@ This is a side project optimized for understanding distributed-systems tradeoffs
 
 ## Current status
 
-**Phase 0 in progress.** The solution (`shop133.slnx`) and the full project layout exist and build clean on .NET 10; every service project is still empty scaffolding. The local infrastructure is up: `docker-compose.yml` + `docker-compose.override.yml` bring up SQL Server, RabbitMQ and Jaeger. `Shop133.Contracts` now holds the 9 message types (7 events + 2 commands) and the `OrderLine` DTO — see [docs/fase_0_3.md](docs/fase_0_3.md); note the decision that `OrderId`/`ProductId` are `Guid`, which binds `Product.Id` in Phase 1.1. The four databases and **one SQL login per service** are created by the `db-init` compose service — see [docs/fase_0_4.md](docs/fase_0_4.md). Still pending in Phase 0: the branch convention (`0.5`) and the architecture-test project (`0.6`). No `tests/` directory exists yet.
+**Phase 0 in progress.** The solution (`shop133.slnx`) and the full project layout exist and build clean on .NET 10; every service project is still empty scaffolding. The local infrastructure is up: `docker-compose.yml` + `docker-compose.override.yml` bring up SQL Server, RabbitMQ and Jaeger. `Shop133.Contracts` now holds the 9 message types (7 events + 2 commands) and the `OrderLine` DTO — see [docs/fase_0_3.md](docs/fase_0_3.md); note the decision that `OrderId`/`ProductId` are `Guid`, which binds `Product.Id` in Phase 1.1. The four databases and **one SQL login per service** are created by the `db-init` compose service — see [docs/fase_0_4.md](docs/fase_0_4.md). The branch model (`main` / `develop` / `feature/*`) is fixed and live on `origin` — see [docs/fase_0_5.md](docs/fase_0_5.md) and the "Git workflow" section below. Still pending in Phase 0: the architecture-test project (`0.6`). No `tests/` directory exists yet.
 
 **Compose layout:** `docker-compose.yml` defines the services and publishes **no** host ports — that file is the container-to-container view (`Server=sqlserver`). `docker-compose.override.yml` holds every host port mapping (`Server=localhost,1433`) and is merged automatically. Credentials come from a gitignored `.env`; `.env.example` is the versioned template.
 
@@ -105,6 +105,27 @@ These are the rules the project exists to teach. Breaking one silently defeats t
 - **Databases**: `CatalogDb`, `OrdersDb`, `InventoryDb`, `PaymentsDb`. The saga state is persisted in `OrdersDb`.
 - **Secrets** go in User Secrets or environment variables, never in `appsettings.json`.
 - **Controllers** live in `Controllers/`, are named `<Plural>Controller`, and carry `[ApiController]` + `[Route("[controller]")]`. Keep them thin: bind, delegate, return `ActionResult<T>`. Business logic belongs in `.Infrastructure`/`.Domain`, not in the action. MassTransit consumers are *not* controllers — they live in `Consumers/` from Phase 3 on.
+
+## Git workflow
+
+Three long-lived rules, decided in `0.5` — see [docs/fase_0_5.md](docs/fase_0_5.md).
+
+**Branches:**
+
+| Branch | Role |
+|---|---|
+| `main` | Stable. Advances **only when a phase closes**, via `--no-ff` merge from `develop`, and gets a tag. Never commit to it directly. |
+| `develop` | Integration branch. Every sub-phase lands here. This is the branch you branch *from* and merge *back into*. |
+| `feature/*` | One branch per phase: `feature/fase-1-catalog`. Cut from `develop`, merged back into `develop` with `--no-ff`, then deleted. |
+
+- **Branch names use slashes and hyphens, never underscores**: `feature/fase-1-catalog`, not `feature_fase_1`. The slash is what makes `feature/*` a namespace that Git tooling can filter.
+- **A phase gets one branch, not a branch per sub-phase.** Sub-phases are commits inside it; the branch closes when the phase does.
+- **`--no-ff` on both merges.** A fast-forward erases the fact that a set of commits belonged to one phase, which is exactly the history worth keeping here.
+- **Tags on `main`, one per closed phase**: `fase-0`, `fase-1`, … Annotated (`git tag -a`), so the tag carries a message and a date.
+
+**Commits:** one line, `<sub-phase> <what changed, in English, past tense>` — `0.5 git branching convention defined`. The sub-phase number is the link between a commit, its roadmap item and its `docs/` document. English like every other identifier; the prose in `docs/` is where Spanish lives.
+
+**Never rewrite published history.** `develop` and `main` are pushed; `--force` on either is off the table. A mistake gets a follow-up commit or a `git revert`.
 
 ## Testing
 
