@@ -94,7 +94,7 @@ Los tests no son una fase — están repartidos por el roadmap, en el punto dond
 - [x] **0.3** Crear proyecto `Shop133.Contracts` con eventos base — [doc](docs/fase_0_3.md)
 - [x] **0.4** Configurar SQL Server con una base de datos por servicio (`CatalogDb`, `OrdersDb`, `InventoryDb`, `PaymentsDb`) — [doc](docs/fase_0_4.md)
 - [x] **0.5** Repositorio Git con convención de branches (`main`, `develop`, `feature/*`) — [doc](docs/fase_0_5.md)
-- [ ] **0.6** Proyecto `tests/Shop133.ArchitectureTests` con NetArchTest: `Shop133.Contracts` sin dependencias externas, eventos como `record` inmutables, `Orders.Domain` sin referencias a otros proyectos, ningún servicio referencia el `DbContext` de otro
+- [x] **0.6** Proyecto `tests/Shop133.ArchitectureTests` con NetArchTest: `Shop133.Contracts` sin dependencias externas, eventos como `record` inmutables, `Orders.Domain` sin referencias a otros proyectos, ningún servicio referencia el `DbContext` de otro — [doc](docs/fase_0_6.md)
 
 **Por qué 0.6 va aquí y no más tarde:** los proyectos ya existen vacíos y `Shop133.Contracts` ya tiene sus 9 mensajes. Fijar las reglas *antes* de escribir código de servicio es lo que las convierte en una barrera; añadirlas después es un ejercicio de arqueología.
 

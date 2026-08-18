@@ -12,7 +12,7 @@ This is a side project optimized for understanding distributed-systems tradeoffs
 
 ## Current status
 
-**Phase 0 in progress.** The solution (`shop133.slnx`) and the full project layout exist and build clean on .NET 10; every service project is still empty scaffolding. The local infrastructure is up: `docker-compose.yml` + `docker-compose.override.yml` bring up SQL Server, RabbitMQ and Jaeger. `Shop133.Contracts` now holds the 9 message types (7 events + 2 commands) and the `OrderLine` DTO — see [docs/fase_0_3.md](docs/fase_0_3.md); note the decision that `OrderId`/`ProductId` are `Guid`, which binds `Product.Id` in Phase 1.1. The four databases and **one SQL login per service** are created by the `db-init` compose service — see [docs/fase_0_4.md](docs/fase_0_4.md). The branch model (`main` / `develop` / `feature/*`) is fixed and live on `origin` — see [docs/fase_0_5.md](docs/fase_0_5.md) and the "Git workflow" section below. Still pending in Phase 0: the architecture-test project (`0.6`). No `tests/` directory exists yet.
+**Phase 0 complete.** The solution (`shop133.slnx`) and the full project layout exist and build clean on .NET 10; every service project is still empty scaffolding. The local infrastructure is up: `docker-compose.yml` + `docker-compose.override.yml` bring up SQL Server, RabbitMQ and Jaeger. `Shop133.Contracts` now holds the 9 message types (7 events + 2 commands) and the `OrderLine` DTO — see [docs/fase_0_3.md](docs/fase_0_3.md); note the decision that `OrderId`/`ProductId` are `Guid`, which binds `Product.Id` in Phase 1.1. The four databases and **one SQL login per service** are created by the `db-init` compose service — see [docs/fase_0_4.md](docs/fase_0_4.md). The branch model (`main` / `develop` / `feature/*`) is fixed and live on `origin` — see [docs/fase_0_5.md](docs/fase_0_5.md) and the "Git workflow" section below. `tests/Shop133.ArchitectureTests` makes rules 1, 3, 4 and 5 below executable — 11 tests, all `Category=Fast` — see [docs/fase_0_6.md](docs/fase_0_6.md); it also moved the whole repo onto **Microsoft.Testing.Platform** (opt-in in `global.json`), which changes the `dotnet test` filter syntax. Phase 0 closes with the `feature/fase-0 → develop → main` PRs and the `fase-0` tag.
 
 **Compose layout:** `docker-compose.yml` defines the services and publishes **no** host ports — that file is the container-to-container view (`Server=sqlserver`). `docker-compose.override.yml` holds every host port mapping (`Server=localhost,1433`) and is merged automatically. Credentials come from a gitignored `.env`; `.env.example` is the versioned template.
 
@@ -20,7 +20,7 @@ Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed su
 
 | Phase | Scope | Status |
 |---|---|---|
-| 0 | Solution scaffolding, docker-compose, Contracts, architecture tests | In progress — scaffolding done |
+| 0 | Solution scaffolding, docker-compose, Contracts, architecture tests | Complete — pending merge + `fase-0` tag |
 | 1 | Catalog.API | Not started |
 | 2 | Orders.API (synchronous) | Not started |
 | 3 | MassTransit + RabbitMQ messaging | Not started |
@@ -90,7 +90,7 @@ These are the rules the project exists to teach. Breaking one silently defeats t
 
 **4. `Shop133.Contracts` stays thin.** Immutable `record` types for events and DTOs only. No business logic, no EF Core, no MassTransit dependency, no validation attributes. Every service references it; it references nothing. Changing a contract is a breaking change across the system — treat it as such.
 
-**5. Dependency direction inside a service:** `.API` → `.Infrastructure` → `.Domain`. The domain layer references no other project. Saga state machines live in `Orders.Domain`.
+**5. Dependency direction inside a service:** `.API` → `.Infrastructure` → `.Domain`. The domain layer references no project other than `Shop133.Contracts` — that single exception exists because saga state machines live in `Orders.Domain` and consume the shared messages; duplicating them inside the domain would defeat rule 4. Enforced by `LayeringRulesTests`.
 
 **6. Every message consumer is idempotent.** RabbitMQ guarantees at-least-once delivery, so duplicates *will* happen. Persist processed `MessageId`s and skip repeats. This is not optional polish — "duplicate event" is one of the four mandatory test scenarios.
 
@@ -108,7 +108,7 @@ These are the rules the project exists to teach. Breaking one silently defeats t
 
 ## Git workflow
 
-Three long-lived rules, decided in `0.5` — see [docs/fase_0_5.md](docs/fase_0_5.md).
+Three long-lived rules, decided in `0.5` — see [docs/fase_0_5.md](docs/fase_0_5.md) for the *why*, and [docs/git.md](docs/git.md) for the step-by-step *how* (branching, committing, closing a phase, recovering from mistakes).
 
 **Branches:**
 
@@ -121,6 +121,8 @@ Three long-lived rules, decided in `0.5` — see [docs/fase_0_5.md](docs/fase_0_
 - **Branch names use slashes and hyphens, never underscores**: `feature/fase-1-catalog`, not `feature_fase_1`. The slash is what makes `feature/*` a namespace that Git tooling can filter.
 - **A phase gets one branch, not a branch per sub-phase.** Sub-phases are commits inside it; the branch closes when the phase does.
 - **`--no-ff` on both merges.** A fast-forward erases the fact that a set of commits belonged to one phase, which is exactly the history worth keeping here.
+- **Both merges are executed as Pull Requests on github.com**, using the **"Create a merge commit"** button — which produces exactly the `--no-ff` merge commit the rule above requires. *Squash and merge* and *Rebase and merge* are forbidden: the first collapses the per-sub-phase commits that link roadmap ↔ commit ↔ `docs/`, the second erases the phase boundary. Watch the `base:` dropdown — GitHub defaults it to `main`, so a `feature/* → develop` PR needs it changed by hand.
+- **The phase tag stays local.** A merged PR does not create an annotated tag, so after the `develop → main` PR: `git switch main; git pull; git tag -a fase-N -m "..."; git push origin fase-N`.
 - **Tags on `main`, one per closed phase**: `fase-0`, `fase-1`, … Annotated (`git tag -a`), so the tag carries a message and a date.
 
 **Commits:** one line, `<sub-phase> <what changed, in English, past tense>` — `0.5 git branching convention defined`. The sub-phase number is the link between a commit, its roadmap item and its `docs/` document. English like every other identifier; the prose in `docs/` is where Spanish lives.
@@ -137,15 +139,19 @@ Tests are not a phase. They are numbered items spread across the roadmap — `0.
 
 **3. Every consumer gets an idempotency test** — deliver the same `MessageId` twice, assert a single effect. This is the only reliable check of architecture rule 6; by-hand verification does not survive a refactor.
 
-**4. Architecture tests are rules 1, 4 and 5 in executable form.** When adding a new architecture rule to this file, consider whether `Shop133.ArchitectureTests` can enforce it. A rule that only lives in prose gets broken silently — which is the exact failure this project is meant to avoid.
+**4. Architecture tests are rules 1, 3, 4 and 5 in executable form.** Live since `0.6` — see [docs/fase_0_6.md](docs/fase_0_6.md). When adding a new architecture rule to this file, consider whether `Shop133.ArchitectureTests` can enforce it. A rule that only lives in prose gets broken silently — which is the exact failure this project is meant to avoid.
 
-**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both.
+The reference rules read the **`.csproj` files**, not the compiled assemblies: Roslyn prunes unused references from the manifest, so with service projects still empty an assembly-level check would pass vacuously. `ProjectGraph.cs` is that reader; add new reference rules on top of it. Rules about *types* (records, immutability) use plain reflection, and `NetArchTest` covers the one namespace-dependency assertion.
+
+**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The first `Docker` test arrives in `1.7`; everything today is `Fast`.
+
+**5b. Test projects run on Microsoft.Testing.Platform, not VSTest.** The .NET 10 SDK dropped the VSTest bridge that `xunit.v3` used to run through, so the opt-in lives in `global.json` (`"test": { "runner": "Microsoft.Testing.Platform" }`) and every test project needs `<OutputType>Exe</OutputType>` — it launches itself. Consequences: `Microsoft.NET.Test.Sdk` and `xunit.runner.visualstudio` are VSTest infrastructure and must **not** be added, and the filter syntax changed (see "Commands").
 
 **6. Naming**: project `<Project>.Tests`, class `<SUT>Tests`, method `Method_Scenario_ExpectedResult`. English identifiers, like all other code.
 
 **7. Assertions use xUnit's own `Assert`.** Deliberate: **FluentAssertions 8.x moved to a commercial license** for non-open-source use — the same trap as MassTransit 9. If fluent syntax ever becomes worth a package, prefer Shouldly (BSD) over pinning FluentAssertions to 7.x.
 
-Packages these items will need, all still subject to "ask before adding a NuGet package": `xunit.v3`, `Microsoft.NET.Test.Sdk`, `MassTransit.TestFramework`, `Microsoft.AspNetCore.Mvc.Testing`, `Testcontainers.MsSql`, `Testcontainers.RabbitMq`, `NetArchTest.Rules`, `WireMock.Net`, `Respawn`.
+Already in use: `xunit.v3` 4.0.0, `NetArchTest.Rules` 1.3.2. Packages the remaining items will need, all still subject to "ask before adding a NuGet package": `MassTransit.TestFramework`, `Microsoft.AspNetCore.Mvc.Testing`, `Testcontainers.MsSql`, `Testcontainers.RabbitMq`, `WireMock.Net`, `Respawn`.
 
 ## Sub-phase documentation
 
@@ -197,9 +203,16 @@ Available after Phase 0 scaffolding:
 dotnet build
 dotnet run --project src/Services/Catalog/Catalog.API
 
-# Tests — see the "Testing" section for what each category covers
-dotnet test --filter Category=Fast   # development loop, no Docker needed
-dotnet test                          # everything, requires Docker running
+# Tests — see the "Testing" section for what each category covers.
+# Filter options come from the xunit adapter, so they go AFTER `--`.
+dotnet test                                        # everything (needs Docker from 1.7 on)
+dotnet test -- --filter-trait "Category=Fast"      # development loop, no Docker needed
+dotnet test -- --filter-class "*ContractsRulesTests"
+dotnet test tests/Shop133.ArchitectureTests        # a single test project
+
+# Gotchas: `--filter Category=Fast` (VSTest style, before `--`) is gone; `--trait` is not
+# the option name under MTP, and passing it yields a silent "Zero tests ran".
+# `dotnet test -- --help` crashes the CLI — use `dotnet test --project <path> --help`.
 
 # EF Core migrations — DbContext lives in Infrastructure, host in API
 dotnet ef migrations add <Name> `
