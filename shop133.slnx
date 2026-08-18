@@ -28,4 +28,7 @@
   <Folder Name="/src/Shared/">
     <Project Path="src/Shared/Shop133.Contracts/Shop133.Contracts.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Shop133.ArchitectureTests/Shop133.ArchitectureTests.csproj" />
+  </Folder>
 </Solution>

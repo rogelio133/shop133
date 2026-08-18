@@ -6,17 +6,21 @@ Guidance for Claude Code when working in this repository.
 
 **shop133** is a learning-oriented e-commerce backend built as .NET microservices. The pedagogical core is the **order saga with compensations**: an order flows through stock reservation and payment, and a failed payment must automatically release previously reserved stock — no manual intervention.
 
-The roadmap lives in [plan-desarrollo-ishop.md](plan-desarrollo-ishop.md) (Spanish). It is the source of truth for *what* gets built and in what order. This file is the source of truth for *how*.
+The roadmap lives in [plan-desarrollo-shop133.md](plan-desarrollo-shop133.md) (Spanish). It is the source of truth for *what* gets built and in what order. This file is the source of truth for *how*.
 
 This is a side project optimized for understanding distributed-systems tradeoffs, not for shipping to production. When a choice is between "clever" and "explains itself", pick the one that explains itself.
 
 ## Current status
 
-**Phase 0 in progress.** The solution (`shop133.slnx`) and the full project layout exist and build clean on .NET 10; every project is empty scaffolding beyond that. `docker-compose.yml`, the Contracts events, and the databases are still pending.
+**Phase 0 complete.** The solution (`shop133.slnx`) and the full project layout exist and build clean on .NET 10; every service project is still empty scaffolding. The local infrastructure is up: `docker-compose.yml` + `docker-compose.override.yml` bring up SQL Server, RabbitMQ and Jaeger. `Shop133.Contracts` now holds the 9 message types (7 events + 2 commands) and the `OrderLine` DTO — see [docs/fase_0_3.md](docs/fase_0_3.md); note the decision that `OrderId`/`ProductId` are `Guid`, which binds `Product.Id` in Phase 1.1. The four databases and **one SQL login per service** are created by the `db-init` compose service — see [docs/fase_0_4.md](docs/fase_0_4.md). The branch model (`main` / `develop` / `feature/*`) is fixed and live on `origin` — see [docs/fase_0_5.md](docs/fase_0_5.md) and the "Git workflow" section below. `tests/Shop133.ArchitectureTests` makes rules 1, 3, 4 and 5 below executable — 11 tests, all `Category=Fast` — see [docs/fase_0_6.md](docs/fase_0_6.md); it also moved the whole repo onto **Microsoft.Testing.Platform** (opt-in in `global.json`), which changes the `dotnet test` filter syntax. Phase 0 closes with the `feature/fase-0 → develop → main` PRs and the `fase-0` tag.
+
+**Compose layout:** `docker-compose.yml` defines the services and publishes **no** host ports — that file is the container-to-container view (`Server=sqlserver`). `docker-compose.override.yml` holds every host port mapping (`Server=localhost,1433`) and is merged automatically. Credentials come from a gitignored `.env`; `.env.example` is the versioned template.
+
+Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed sub-phase leaves a document in [docs/](docs/) — see "Sub-phase documentation" below.
 
 | Phase | Scope | Status |
 |---|---|---|
-| 0 | Solution scaffolding, docker-compose, Contracts | In progress — scaffolding done |
+| 0 | Solution scaffolding, docker-compose, Contracts, architecture tests | Complete — pending merge + `fase-0` tag |
 | 1 | Catalog.API | Not started |
 | 2 | Orders.API (synchronous) | Not started |
 | 3 | MassTransit + RabbitMQ messaging | Not started |
@@ -24,7 +28,7 @@ This is a side project optimized for understanding distributed-systems tradeoffs
 | 5 | YARP Gateway | Not started |
 | 6 | Frontend (MVC + Bootstrap 5) | Not started |
 | 7 | Observability | Not started |
-| 8 | Optional extras | Not started |
+| 8 | Optional extras (auth, real-infra integration tests, CI/CD, E2E) | Not started |
 
 **Rule:** never reference a project path as if it exists. Verify with Glob first. Paths in the "Solution layout" section below are the *target* structure, not the current one. Update this table when a phase closes.
 
@@ -41,6 +45,7 @@ This is a side project optimized for understanding distributed-systems tradeoffs
 | Frontend | ASP.NET Core MVC + Bootstrap 5 | |
 | Observability | OpenTelemetry → Jaeger, Serilog | |
 | Containers | Docker + Docker Compose | |
+| Testing | xUnit + MassTransit test harness + Testcontainers | xUnit's own `Assert` — no FluentAssertions, see "Testing" below |
 
 **MassTransit must stay on 8.x.** v8 is Apache 2.0 and receives fixes through at least end of 2026. v9 moved to a commercial license. Never upgrade to 9.x without asking.
 
@@ -58,6 +63,15 @@ shop133/
 │   ├── Gateway/           Shop133.Gateway
 │   ├── Frontend/          Shop133.Web
 │   └── Shared/            Shop133.Contracts
+├── tests/
+│   ├── Shop133.ArchitectureTests/   The rules in this file, made executable
+│   └── Services/
+│       ├── Catalog/       Catalog.Tests
+│       ├── Orders/        Orders.Tests (saga + consumers)
+│       ├── Inventory/     Inventory.Tests
+│       └── Payments/      Payments.Tests
+├── db/init/               SQL run by the db-init compose service (databases + per-service logins)
+├── docs/                  One .md per completed sub-phase + README.md index
 ├── docker-compose.yml
 └── docker-compose.override.yml
 ```
@@ -68,7 +82,7 @@ Do not create projects outside this structure without asking.
 
 These are the rules the project exists to teach. Breaking one silently defeats the purpose.
 
-**1. One database per service.** No service opens a connection to another service's database. Not for a "quick read", not for a join, not for a report. If a service needs another's data, it gets it through an event or an API call. `CatalogDb`, `OrdersDb`, `InventoryDb`, `PaymentsDb` each have exactly one owner.
+**1. One database per service.** No service opens a connection to another service's database. Not for a "quick read", not for a join, not for a report. If a service needs another's data, it gets it through an event or an API call. `CatalogDb`, `OrdersDb`, `InventoryDb`, `PaymentsDb` each have exactly one owner. Since Phase 0.4 this is enforced by SQL Server, not by convention: each service connects with its own login (`catalog_user`, `orders_user`, …) that has `db_owner` on its own database and no access at all to the others. Reaching for a neighbour's database fails with `Msg 916`. Never "fix" that by switching a service to `sa`.
 
 **2. Services communicate through events.** From Phase 3 onward, cross-service communication goes through RabbitMQ. The synchronous `HttpClient` call from Orders → Catalog in Phase 2 is *deliberate technical debt* meant to make the coupling painful; mark it `// PHASE-2 DEBT: replaced by OrderCreated event in Phase 3` and delete it in Phase 3.
 
@@ -76,7 +90,7 @@ These are the rules the project exists to teach. Breaking one silently defeats t
 
 **4. `Shop133.Contracts` stays thin.** Immutable `record` types for events and DTOs only. No business logic, no EF Core, no MassTransit dependency, no validation attributes. Every service references it; it references nothing. Changing a contract is a breaking change across the system — treat it as such.
 
-**5. Dependency direction inside a service:** `.API` → `.Infrastructure` → `.Domain`. The domain layer references no other project. Saga state machines live in `Orders.Domain`.
+**5. Dependency direction inside a service:** `.API` → `.Infrastructure` → `.Domain`. The domain layer references no project other than `Shop133.Contracts` — that single exception exists because saga state machines live in `Orders.Domain` and consume the shared messages; duplicating them inside the domain would defeat rule 4. Enforced by `LayeringRulesTests`.
 
 **6. Every message consumer is idempotent.** RabbitMQ guarantees at-least-once delivery, so duplicates *will* happen. Persist processed `MessageId`s and skip repeats. This is not optional polish — "duplicate event" is one of the four mandatory test scenarios.
 
@@ -92,12 +106,94 @@ These are the rules the project exists to teach. Breaking one silently defeats t
 - **Secrets** go in User Secrets or environment variables, never in `appsettings.json`.
 - **Controllers** live in `Controllers/`, are named `<Plural>Controller`, and carry `[ApiController]` + `[Route("[controller]")]`. Keep them thin: bind, delegate, return `ActionResult<T>`. Business logic belongs in `.Infrastructure`/`.Domain`, not in the action. MassTransit consumers are *not* controllers — they live in `Consumers/` from Phase 3 on.
 
+## Git workflow
+
+Three long-lived rules, decided in `0.5` — see [docs/fase_0_5.md](docs/fase_0_5.md) for the *why*, and [docs/git.md](docs/git.md) for the step-by-step *how* (branching, committing, closing a phase, recovering from mistakes).
+
+**Branches:**
+
+| Branch | Role |
+|---|---|
+| `main` | Stable. Advances **only when a phase closes**, via `--no-ff` merge from `develop`, and gets a tag. Never commit to it directly. |
+| `develop` | Integration branch. Every sub-phase lands here. This is the branch you branch *from* and merge *back into*. |
+| `feature/*` | One branch per phase: `feature/fase-1-catalog`. Cut from `develop`, merged back into `develop` with `--no-ff`, then deleted. |
+
+- **Branch names use slashes and hyphens, never underscores**: `feature/fase-1-catalog`, not `feature_fase_1`. The slash is what makes `feature/*` a namespace that Git tooling can filter.
+- **A phase gets one branch, not a branch per sub-phase.** Sub-phases are commits inside it; the branch closes when the phase does.
+- **`--no-ff` on both merges.** A fast-forward erases the fact that a set of commits belonged to one phase, which is exactly the history worth keeping here.
+- **Both merges are executed as Pull Requests on github.com**, using the **"Create a merge commit"** button — which produces exactly the `--no-ff` merge commit the rule above requires. *Squash and merge* and *Rebase and merge* are forbidden: the first collapses the per-sub-phase commits that link roadmap ↔ commit ↔ `docs/`, the second erases the phase boundary. Watch the `base:` dropdown — GitHub defaults it to `main`, so a `feature/* → develop` PR needs it changed by hand.
+- **The phase tag stays local.** A merged PR does not create an annotated tag, so after the `develop → main` PR: `git switch main; git pull; git tag -a fase-N -m "..."; git push origin fase-N`.
+- **Tags on `main`, one per closed phase**: `fase-0`, `fase-1`, … Annotated (`git tag -a`), so the tag carries a message and a date.
+
+**Commits:** one line, `<sub-phase> <what changed, in English, past tense>` — `0.5 git branching convention defined`. The sub-phase number is the link between a commit, its roadmap item and its `docs/` document. English like every other identifier; the prose in `docs/` is where Spanish lives.
+
+**Never rewrite published history.** `develop` and `main` are pushed; `--force` on either is off the table. A mistake gets a follow-up commit or a `git revert`.
+
+## Testing
+
+Tests are not a phase. They are numbered items spread across the roadmap — `0.6`, `1.7`, `2.4`, `3.7`, `4.7`, `5.4`, plus `8.2`/`8.6` — landing where the code they cover starts to exist. See "Estrategia de tests" in [plan-desarrollo-shop133.md](plan-desarrollo-shop133.md) for the full mapping.
+
+**1. Never the EF Core InMemory provider.** It enforces no relational constraints and has no real transactions, so it green-lights code that fails against SQL Server. Real SQL Server through Testcontainers, or the data layer goes untested — there is no third option.
+
+**2. Saga and consumer logic is tested with the MassTransit test harness** (`AddMassTransitTestHarness`, in-memory transport), not against a real broker. Milliseconds instead of seconds, which is what makes it viable to have dozens of saga cases. Real RabbitMQ appears only in `8.2`, and only for what the harness cannot cover: the exchange topology MassTransit creates by convention.
+
+**3. Every consumer gets an idempotency test** — deliver the same `MessageId` twice, assert a single effect. This is the only reliable check of architecture rule 6; by-hand verification does not survive a refactor.
+
+**4. Architecture tests are rules 1, 3, 4 and 5 in executable form.** Live since `0.6` — see [docs/fase_0_6.md](docs/fase_0_6.md). When adding a new architecture rule to this file, consider whether `Shop133.ArchitectureTests` can enforce it. A rule that only lives in prose gets broken silently — which is the exact failure this project is meant to avoid.
+
+The reference rules read the **`.csproj` files**, not the compiled assemblies: Roslyn prunes unused references from the manifest, so with service projects still empty an assembly-level check would pass vacuously. `ProjectGraph.cs` is that reader; add new reference rules on top of it. Rules about *types* (records, immutability) use plain reflection, and `NetArchTest` covers the one namespace-dependency assertion.
+
+**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The first `Docker` test arrives in `1.7`; everything today is `Fast`.
+
+**5b. Test projects run on Microsoft.Testing.Platform, not VSTest.** The .NET 10 SDK dropped the VSTest bridge that `xunit.v3` used to run through, so the opt-in lives in `global.json` (`"test": { "runner": "Microsoft.Testing.Platform" }`) and every test project needs `<OutputType>Exe</OutputType>` — it launches itself. Consequences: `Microsoft.NET.Test.Sdk` and `xunit.runner.visualstudio` are VSTest infrastructure and must **not** be added, and the filter syntax changed (see "Commands").
+
+**6. Naming**: project `<Project>.Tests`, class `<SUT>Tests`, method `Method_Scenario_ExpectedResult`. English identifiers, like all other code.
+
+**7. Assertions use xUnit's own `Assert`.** Deliberate: **FluentAssertions 8.x moved to a commercial license** for non-open-source use — the same trap as MassTransit 9. If fluent syntax ever becomes worth a package, prefer Shouldly (BSD) over pinning FluentAssertions to 7.x.
+
+Already in use: `xunit.v3` 4.0.0, `NetArchTest.Rules` 1.3.2. Packages the remaining items will need, all still subject to "ask before adding a NuGet package": `MassTransit.TestFramework`, `Microsoft.AspNetCore.Mvc.Testing`, `Testcontainers.MsSql`, `Testcontainers.RabbitMq`, `WireMock.Net`, `Respawn`.
+
+## Sub-phase documentation
+
+Every checklist item in [plan-desarrollo-shop133.md](plan-desarrollo-shop133.md) carries a stable number (`0.1`, `0.2`, … `8.5`). **Completing one produces a document in `docs/`.** This is not a wrap-up step to do if there is time left — it is part of the definition of done.
+
+**A sub-phase is not closed until all three of these are true:**
+
+1. `docs/fase_<phase>_<item>.md` exists (the dot becomes an underscore: `0.2` → `fase_0_2.md`).
+2. The checkbox in the roadmap is ticked **and** links to it: `- [x] **0.2** <título> — [doc](docs/fase_0_2.md)`.
+3. `docs/README.md` has a row for it in the index table.
+
+Do not report a sub-phase as finished with any of the three missing.
+
+**Documents are written in Spanish** (code identifiers stay English, as everywhere else). Required sections, in this order:
+
+| Sección | Contenido |
+|---|---|
+| `# Fase X.Y — <título>` | Con una línea de fecha, estado y link al roadmap. |
+| **Objetivo** | Qué resuelve el punto y por qué está en esa posición del roadmap. Incluye lo que queda deliberadamente fuera de alcance. |
+| **Decisiones** | Cada decisión no obvia, con **la alternativa que se descartó y el motivo**. |
+| **Cambios** | Archivos creados o modificados, con ruta relativa y el rol de cada uno. |
+| **Detalles que cuestan tiempo** | Los gotchas concretos: lo que no es evidente y costaría volver a descubrir. |
+| **Verificación** | Los comandos que se ejecutaron **con su salida real**. |
+| **Pendiente** | Lo que queda fuera y en qué punto o fase entra. |
+
+Dos reglas sobre el contenido:
+
+- **La sección de Decisiones es la que da valor al documento.** Si solo describe *qué* se hizo y no *por qué* se eligió eso sobre la alternativa, no está haciendo su trabajo — el código ya dice qué hay.
+- **Se documenta lo que se ejecutó y se observó, no lo que se pretendía hacer.** Si una verificación falló, se saltó o dio un resultado inesperado, va en el documento. Un problema encontrado por el camino (y cómo se resolvió) vale más que una lista de comandos que salieron bien.
+
+[docs/fase_0_2.md](docs/fase_0_2.md) es la referencia de formato.
+
 ## Commands
 
 Available now:
 
 ```powershell
-docker compose up -d sqlserver rabbitmq jaeger   # after Phase 0
+# No service list: naming services explicitly would skip db-init, which creates
+# the four databases and their per-service logins. It exits 0 once done, so it
+# only shows up under `ps -a`.
+docker compose up -d
+docker compose ps -a
 docker compose down
 ```
 
@@ -105,8 +201,18 @@ Available after Phase 0 scaffolding:
 
 ```powershell
 dotnet build
-dotnet test
 dotnet run --project src/Services/Catalog/Catalog.API
+
+# Tests — see the "Testing" section for what each category covers.
+# Filter options come from the xunit adapter, so they go AFTER `--`.
+dotnet test                                        # everything (needs Docker from 1.7 on)
+dotnet test -- --filter-trait "Category=Fast"      # development loop, no Docker needed
+dotnet test -- --filter-class "*ContractsRulesTests"
+dotnet test tests/Shop133.ArchitectureTests        # a single test project
+
+# Gotchas: `--filter Category=Fast` (VSTest style, before `--`) is gone; `--trait` is not
+# the option name under MTP, and passing it yields a silent "Zero tests ran".
+# `dotnet test -- --help` crashes the CLI — use `dotnet test --project <path> --help`.
 
 # EF Core migrations — DbContext lives in Infrastructure, host in API
 dotnet ef migrations add <Name> `
@@ -125,13 +231,14 @@ Local UIs: RabbitMQ management `http://localhost:15672` (guest/guest) · Jaeger 
 - **SQL Server 2022 image**: use `MSSQL_SA_PASSWORD`, not the deprecated `SA_PASSWORD`.
 - **OpenAPI on .NET 10**: use the built-in `Microsoft.AspNetCore.OpenApi` package (`AddOpenApi()` / `MapOpenApi()`) with Scalar for the UI. Swashbuckle was dropped from the templates in .NET 9 — do not reintroduce it out of habit.
 - **Jaeger all-in-one** needs `COLLECTOR_OTLP_ENABLED=true` to accept OTLP directly from the OpenTelemetry SDK.
-- **Connection strings**: container-to-container uses the compose service name (`Server=sqlserver`), host-to-container uses `localhost,1433`. Mixing these up is the most common Phase 0 failure.
+- **Connection strings**: container-to-container uses the compose service name (`Server=sqlserver`), host-to-container uses `localhost,1433`. Mixing these up is the most common Phase 0 failure. Both need `TrustServerCertificate=True` (self-signed cert — same reason `sqlcmd` needs `-C`), and both use the service's own login, never `sa`.
 - **MassTransit 8.x** ships `net8.0`/`net9.0` targets; that is fine on a `net10.0` host. Do not "fix" this by upgrading to v9.
 
 ## Working agreements
 
 - **Ask before adding a NuGet package.** The dependency list is part of the learning exercise.
 - **Ask before adding a project** not in the target layout above.
+- **Never close a sub-phase without its `docs/` document**, the roadmap link and the index row — see "Sub-phase documentation" above.
 - **Update the status table** in this file when a phase closes.
 - Prefer boring, explicit code over abstraction. This codebase is meant to be read.
 - When a change touches a service boundary (a new event, a changed contract, a new cross-service call), call it out explicitly rather than folding it into a larger diff.

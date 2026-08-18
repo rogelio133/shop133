@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- xunit.v3 corre sobre Microsoft.Testing.Platform: el proyecto de test es
+         un ejecutable que se lanza a sí mismo, no una dll que cargue un runner. -->
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.0" />
+    <PackageReference Include="NetArchTest.Rules" Version="1.3.2" />
+  </ItemGroup>
+
+  <!--
+    Única referencia a proyecto: Shop133.Contracts, porque sus reglas se
+    comprueban sobre tipos cargados por reflexión y para eso hace falta el
+    ensamblado. Los demás proyectos se inspeccionan como ficheros .csproj
+    (ver ProjectGraph.cs), no como ensamblados: así este proyecto de test no
+    acaba referenciando la solución entera.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Shared\Shop133.Contracts\Shop133.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

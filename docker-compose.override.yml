@@ -1,0 +1,37 @@
+# shop133 — overrides de desarrollo local
+#
+# Compose fusiona este archivo automaticamente: "docker compose up -d" ya lo
+# aplica, sin flags.
+#
+# Aqui vive TODA la publicacion de puertos al host. En docker-compose.yml no
+# hay ni un solo "ports:", y esa separacion es intencional:
+#
+#   - docker-compose.yml   -> como se hablan los contenedores entre si
+#                             (por nombre de servicio: Server=sqlserver)
+#   - este archivo         -> como los alcanzas tu desde el host
+#                             (por localhost: Server=localhost,1433)
+#
+# Mientras las APIs corran desde Visual Studio necesitas lo segundo. Cuando en
+# la Fase 1 corran dentro de contenedores, usaran lo primero.
+#
+# Para ver la definicion sin overrides:
+#   docker compose -f docker-compose.yml config
+
+services:
+
+  sqlserver:
+    ports:
+      # EF Core, SSMS o Azure Data Studio desde el host.
+      # Connection string: Server=localhost,1433;User Id=sa;Password=...
+      - "1433:1433"
+
+  rabbitmq:
+    ports:
+      - "5672:5672"    # AMQP — el que usara MassTransit
+      - "15672:15672"  # UI de management: http://localhost:15672
+
+  jaeger:
+    ports:
+      - "16686:16686"  # UI de Jaeger: http://localhost:16686
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
