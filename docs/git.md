@@ -315,7 +315,16 @@ git ls-remote --heads origin
 git ls-remote --tags origin
 ```
 
-`main` y `develop` deben apuntar al mismo commit (la fase acaba de cerrarse), y `feature/fase-1-catalog` debe existir en local y en `origin`.
+`main` debe quedar **un commit por delante de `develop`**, no en el mismo commit. Es lo esperado: el PR 2 se mergeó con *Create a merge commit*, así que GitHub creó sobre `main` un commit de merge que `develop` no tiene. Solo coincidirían si el merge hubiera sido fast-forward — justo lo que la convención prohíbe.
+
+Lo que sí debe coincidir es el **contenido**:
+
+```powershell
+git diff develop main                              # sin salida = mismo árbol
+git rev-list --left-right --count develop...main   # 0   1
+```
+
+Y `feature/fase-1-catalog` debe existir en local y en `origin`, apuntando al mismo commit que `develop`.
 
 ---
 
