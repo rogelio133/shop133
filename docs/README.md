@@ -8,6 +8,14 @@ Estos documentos existen para dejar por escrito **por qué** se hizo algo de una
 
 La regla que obliga a generarlos está en [CLAUDE.md](../CLAUDE.md), sección *Sub-phase documentation*.
 
+## Guías
+
+Documentos de procedimiento, no ligados a un punto del roadmap. No siguen la convención de nombres ni la plantilla de arriba.
+
+| Documento | Contenido |
+|---|---|
+| [git.md](git.md) | Cómo nombrar ramas, escribir commits, hacer push y cerrar una fase con Pull Requests. El *cómo* de lo que [fase_0_5.md](fase_0_5.md) justifica. |
+
 ## Índice
 
 | Punto | Título | Fecha | Documento |
@@ -15,5 +23,7 @@ La regla que obliga a generarlos está en [CLAUDE.md](../CLAUDE.md), sección *S
 | 0.2 | Configurar `docker-compose.yml` con SQL Server, RabbitMQ y Jaeger | 2026-08-17 | [fase_0_2.md](fase_0_2.md) |
 | 0.3 | Crear proyecto `Shop133.Contracts` con eventos base | 2026-08-17 | [fase_0_3.md](fase_0_3.md) |
 | 0.4 | Configurar SQL Server con una base de datos por servicio | 2026-08-17 | [fase_0_4.md](fase_0_4.md) |
+| 0.5 | Repositorio Git con convención de branches | 2026-08-17 | [fase_0_5.md](fase_0_5.md) |
+| 0.6 | Tests de arquitectura con NetArchTest | 2026-08-18 | [fase_0_6.md](fase_0_6.md) |
 
 El punto **0.1** (crear solución y estructura de carpetas) se completó antes de que existiera esta convención y no se documentó retroactivamente.
