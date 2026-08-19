@@ -1,13 +1,23 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>68338323-79cd-438c-8318-156fbcfe0191</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
+    <!--
+      El DbContext vive en Catalog.Infrastructure, pero .Design va aqui: las
+      herramientas dotnet-ef lo buscan en el STARTUP project, que es el que
+      construye el host del que sacan la configuracion.
+
+      PrivateAssets="all" porque es infraestructura de diseno: no debe
+      propagarse a quien referencie a Catalog.API ni acabar en la imagen de 1.6.
+    -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.8" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>

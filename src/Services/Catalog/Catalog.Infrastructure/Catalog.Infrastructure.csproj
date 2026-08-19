@@ -6,4 +6,17 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <!--
+    Primer paquete NuGet del proyecto (1.2). El provider de SQL Server arrastra
+    Microsoft.EntityFrameworkCore y .Relational, asi que no hace falta
+    declararlos aparte.
+
+    Version 10.0.8 y no la ultima (10.0.11): es la que tiene la herramienta
+    global dotnet-ef instalada. Con la herramienta mas vieja que el runtime,
+    "dotnet ef" avisa en cada comando.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.8" />
+  </ItemGroup>
+
 </Project>
