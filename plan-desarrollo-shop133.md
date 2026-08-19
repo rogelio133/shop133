@@ -117,7 +117,7 @@ sqlserver:
 
 - [x] **1.1** Modelo `Product` (Id, SKU, Nombre, Descripción, Precio, Stock inicial, ImagenUrl) — [doc](docs/fase_1_1.md)
 - [x] **1.2** EF Core + migraciones contra SQL Server (`CatalogDb`) — [doc](docs/fase_1_2.md)
-- [ ] **1.3** Endpoints: `GET /products`, `GET /products/{id}`, `POST /products`, `PUT`, `DELETE`
+- [x] **1.3** Endpoints: `GET /products`, `GET /products/{id}`, `POST /products`, `PUT`, `DELETE` — [doc](docs/fase_1_3.md)
 - [ ] **1.4** Seed de datos de prueba
 - [ ] **1.5** Swagger/OpenAPI habilitado
 - [ ] **1.6** Dockerfile del servicio

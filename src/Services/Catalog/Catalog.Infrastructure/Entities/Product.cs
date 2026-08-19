@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace Catalog.Infrastructure.Entities;
 
 /// <summary>
@@ -44,23 +46,27 @@ public sealed class Product
         // saga y tiene que existir antes de tocar la base. Un producto lo crea
         // Catalog con un POST síncrono y su propia base es el único escritor,
         // así que no hay nada que adelantar.
+        Apply(sku, name, description, price, stock, imageUrl);
+    }
 
-        // ToUpperInvariant antes de validar, no después: puede alargar la
-        // cadena en Unicode (ß -> SS), y lo que tiene que caber en
-        // SkuMaxLength es el valor que se persiste. La guarda de null va suelta
-        // porque sku.ToUpperInvariant() reventaría antes de llegar a Validated.
-        ArgumentException.ThrowIfNullOrWhiteSpace(sku, nameof(sku));
-        Sku = Validated(sku.ToUpperInvariant(), SkuMaxLength, nameof(sku));
-
-        Name = Validated(name, NameMaxLength, nameof(name));
-        Description = Validated(description, DescriptionMaxLength, nameof(description));
-        ImageUrl = imageUrl is null ? null : Validated(imageUrl, ImageUrlMaxLength, nameof(imageUrl));
-
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(price);
-        ArgumentOutOfRangeException.ThrowIfNegative(stock);
-
-        Price = price;
-        Stock = stock;
+    /// <summary>
+    /// Reemplaza el estado completo del producto — la vía de mutación que
+    /// <c>PUT /products/{id}</c> necesita (1.3). 1.1 la dejó deliberadamente sin
+    /// escribir para no inventarle la firma antes de tener el caso de uso.
+    ///
+    /// Es un reemplazo total y no una serie de setters por campo: el verbo es
+    /// PUT, que por definición manda el recurso entero. Un PATCH por campos
+    /// necesitaría otra firma, y no está en el roadmap.
+    ///
+    /// El <see cref="Sku"/> sí se puede cambiar; el <see cref="Id"/> no. Es la
+    /// tabla de la decisión 9 de docs/fase_1_1.md: el código de negocio se
+    /// corrige y se renumera, la clave sustituta no cambia nunca. Cambiarlo
+    /// puede chocar con el índice único de 1.2, así que el PUT devuelve 409
+    /// igual que el POST.
+    /// </summary>
+    public void Update(string sku, string name, string description, decimal price, int stock, string? imageUrl = null)
+    {
+        Apply(sku, name, description, price, stock, imageUrl);
     }
 
     /// <summary>
@@ -79,6 +85,57 @@ public sealed class Product
         Sku = null!;
         Name = null!;
         Description = null!;
+    }
+
+    /// <summary>
+    /// Valida y asigna el estado completo. Lo comparten el constructor público
+    /// y <see cref="Update"/>, que hacen exactamente lo mismo: uno sobre una
+    /// entidad recién nacida y otro sobre una que EF ya rastrea.
+    ///
+    /// **Valida todo en locales y asigna al final, en bloque.** No es estilo: si
+    /// se asignara sobre la marcha, un precio inválido dejaría el producto con
+    /// el Sku y el Name nuevos y el precio viejo. En un constructor daría igual
+    /// (el objeto se descarta), pero en <see cref="Update"/> esa entidad medio
+    /// mutada está en el ChangeTracker y el siguiente SaveChanges la escribiría.
+    ///
+    /// El <c>[MemberNotNull]</c> es lo que permite que el constructor público
+    /// delegue aquí: sin él el compilador no ve que las tres propiedades no
+    /// anulables quedan inicializadas y avisa con CS8618.
+    /// </summary>
+    [MemberNotNull(nameof(Sku), nameof(Name), nameof(Description))]
+    private void Apply(string sku, string name, string description, decimal price, int stock, string? imageUrl)
+    {
+        // ToUpperInvariant antes de validar, no después: lo que tiene que caber
+        // en SkuMaxLength es el valor que se persiste, no el que llegó.
+        //
+        // CORRECCIÓN (1.3): 1.1 justificaba este orden diciendo que pasar a
+        // mayúsculas puede alargar la cadena (ß -> SS). Es falso en .NET.
+        // ToUpperInvariant usa *simple case mapping*, que es 1:1 — recorridos
+        // los 63.488 caracteres del BMP, ninguno cambia de longitud al pasarlo
+        // por ToUpperInvariant, ß incluido. El orden se mantiene porque sigue
+        // siendo el correcto (se valida lo que se guarda), pero ya no descansa
+        // sobre un caso que no existe.
+        //
+        // La guarda de null va suelta y duplica la que hace Validated: sin ella
+        // sku.ToUpperInvariant() reventaría con NullReferenceException antes de
+        // llegar allí, y 1.3 necesita el paramName para devolver un 400 que
+        // nombre el campo.
+        ArgumentException.ThrowIfNullOrWhiteSpace(sku, nameof(sku));
+
+        var validatedSku = Validated(sku.ToUpperInvariant(), SkuMaxLength, nameof(sku));
+        var validatedName = Validated(name, NameMaxLength, nameof(name));
+        var validatedDescription = Validated(description, DescriptionMaxLength, nameof(description));
+        var validatedImageUrl = imageUrl is null ? null : Validated(imageUrl, ImageUrlMaxLength, nameof(imageUrl));
+
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(price);
+        ArgumentOutOfRangeException.ThrowIfNegative(stock);
+
+        Sku = validatedSku;
+        Name = validatedName;
+        Description = validatedDescription;
+        ImageUrl = validatedImageUrl;
+        Price = price;
+        Stock = stock;
     }
 
     /// <summary>

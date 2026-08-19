@@ -6,6 +6,12 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddControllers();
+
+// El enrutado ya es case-insensitive, así que /products entra igual sin esto.
+// Lo que arregla es la URL *generada*: sin ello, el Location del 201 de
+// POST /products sale como "/Products/1" y el documento OpenAPI que consume 1.5
+// publica las rutas capitalizadas, contradiciendo lo que dice el roadmap.
+builder.Services.Configure<RouteOptions>(options => options.LowercaseUrls = true);
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 
