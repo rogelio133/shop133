@@ -119,7 +119,7 @@ sqlserver:
 - [x] **1.2** EF Core + migraciones contra SQL Server (`CatalogDb`) — [doc](docs/fase_1_2.md)
 - [x] **1.3** Endpoints: `GET /products`, `GET /products/{id}`, `POST /products`, `PUT`, `DELETE` — [doc](docs/fase_1_3.md)
 - [x] **1.4** Seed de datos de prueba — [doc](docs/fase_1_4.md)
-- [ ] **1.5** Swagger/OpenAPI habilitado
+- [x] **1.5** Swagger/OpenAPI habilitado — [doc](docs/fase_1_5.md)
 - [ ] **1.6** Dockerfile del servicio
 - [ ] **1.7** `Catalog.Tests`: tests de componente con `WebApplicationFactory` + Testcontainers (SQL Server) sobre los endpoints de 1.3
 

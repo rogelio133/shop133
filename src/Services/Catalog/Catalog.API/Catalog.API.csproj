@@ -10,6 +10,16 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
     <!--
+      La UI de 1.5. Solo consume el JSON que ya genera Microsoft.AspNetCore.OpenApi;
+      no vuelve a inspeccionar la aplicacion, que es lo que hace Swashbuckle y el
+      motivo de descartarlo (ademas de que salio de las plantillas en .NET 9).
+      Licencia MIT, con target net10.0 propio.
+
+      Sin PrivateAssets, al reves que .Design: esto es runtime y tiene que acabar
+      en la imagen de 1.6.
+    -->
+    <PackageReference Include="Scalar.AspNetCore" Version="2.14.14" />
+    <!--
       El DbContext vive en Catalog.Infrastructure, pero .Design va aqui: las
       herramientas dotnet-ef lo buscan en el STARTUP project, que es el que
       construye el host del que sacan la configuracion.

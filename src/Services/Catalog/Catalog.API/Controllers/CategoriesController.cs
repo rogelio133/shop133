@@ -39,6 +39,11 @@ public sealed class CategoriesController(CatalogDbContext db) : ControllerBase
     /// es un 200 con un array vacío, no un "no encontrado".
     /// </summary>
     [HttpGet]
+    [EndpointSummary("Lista las categorías del catálogo")]
+    [EndpointDescription(
+        "La lista completa, ordenada por nombre. Es la fuente de los categoryId válidos para " +
+        "POST /products y PUT /products/{id}: mandar uno que no esté aquí devuelve 400. " +
+        "Solo lectura — las categorías se añaden con una migración, no por HTTP.")]
     [ProducesResponseType<IReadOnlyList<CategoryResponse>>(StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<CategoryResponse>>> GetAll(CancellationToken cancellationToken)
     {
