@@ -10,6 +10,16 @@ namespace Shop133.ArchitectureTests;
 [Trait("Category", "Fast")]
 public sealed class LayeringRulesTests
 {
+    private const string EfCorePackagePrefix = "Microsoft.EntityFrameworkCore";
+
+    /// <summary>
+    /// El único paquete de EF Core que puede vivir fuera de .Infrastructure, y
+    /// solo en un .API. No es una concesión estética: <c>dotnet ef</c> construye
+    /// el host del startup project para leer la configuración, y busca ahí las
+    /// herramientas de diseño.
+    /// </summary>
+    private const string DesignPackageId = "Microsoft.EntityFrameworkCore.Design";
+
     [Fact]
     public void OrdersDomain_ProjectReferences_ContainOnlyContracts()
     {
@@ -42,6 +52,33 @@ public sealed class LayeringRulesTests
             string.Join(", ", offenders));
     }
 
+    /// <summary>
+    /// La misma regla 5 pero mirando paquetes en vez de proyectos: EF Core es
+    /// una decisión de la capa de persistencia y no debe filtrarse a las otras.
+    /// Un <c>DbSet</c> en un controller o un <c>[Index]</c> sobre una entidad de
+    /// dominio compilan perfectamente; lo que los impide es no tener el paquete.
+    ///
+    /// Vive desde 1.2, que es cuando entró el primer paquete de EF Core en el
+    /// repositorio (Catalog.Infrastructure).
+    /// </summary>
+    [Fact]
+    public void EfCorePackages_LiveOnlyIn_InfrastructureProjects()
+    {
+        var offenders = ProjectGraph.Projects.Values
+            .Where(project => !project.IsInfrastructure)
+            .SelectMany(
+                project => project.PackageReferences.Where(packageId => IsForbiddenEfCorePackage(project, packageId)),
+                (project, packageId) => $"{project.Name} → {packageId}")
+            .ToList();
+
+        Assert.True(
+            offenders.Count == 0,
+            "EF Core solo se declara en la capa .Infrastructure. La única excepción es " +
+            $"{DesignPackageId} en un proyecto .API: las herramientas dotnet-ef lo buscan en el " +
+            "startup project, no en el que contiene el DbContext. Paquetes fuera de sitio: " +
+            string.Join(", ", offenders));
+    }
+
     [Fact]
     public void InfrastructureProjects_DoNotReference_ApiProjects()
     {
@@ -56,5 +93,19 @@ public sealed class LayeringRulesTests
             offenders.Count == 0,
             "La flecha .API → .Infrastructure no se invierte. Referencias prohibidas: " +
             string.Join(", ", offenders));
+    }
+
+    /// <summary>
+    /// Un paquete de EF Core en un proyecto que no es .Infrastructure, salvo el
+    /// caso de <see cref="DesignPackageId"/> en un .API.
+    /// </summary>
+    private static bool IsForbiddenEfCorePackage(ProjectInfo project, string packageId)
+    {
+        if (!packageId.StartsWith(EfCorePackagePrefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return !(project.IsApi && packageId == DesignPackageId);
     }
 }

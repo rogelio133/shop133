@@ -1,0 +1,54 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- Igual que Shop133.ArchitectureTests: xunit.v3 corre sobre
+         Microsoft.Testing.Platform, así que el proyecto de test es un
+         ejecutable que se lanza a sí mismo. Ver la regla 5b de CLAUDE.md. -->
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.0" />
+    <!-- WebApplicationFactory<Program>. Línea 10.0, alineada con el
+         Microsoft.AspNetCore.OpenApi de Catalog.API. -->
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.11" />
+    <!-- El SQL Server real de estos tests. La regla 1 de "Testing" en CLAUDE.md
+         prohíbe el provider InMemory: no aplica el índice único de 1.2, así que
+         el 409 de Sku duplicado —el camino que más valor tiene aquí— pasaría en
+         verde sin ejecutarse nunca. -->
+    <!--
+      4.14.0 y no 4.13.0, aunque la primera ejecución con 4.14.0 en esta máquina
+      fallara con "An Application Control policy has blocked this file
+      (0x800711C7)": ese bloqueo es de Smart App Control y es *transitorio* — la
+      primera carga de un ensamblado sin firmar y sin reputación se rechaza
+      mientras se consulta al Intelligent Security Graph, y la siguiente ya pasa.
+      Le tocó igual a Testcontainers.dll 4.13.0. Ver docs/fase_1_7.md.
+
+      Quedarse en 4.13.0 además costaba caro: arrastra SSH.NET 2025.1.0, con la
+      vulnerabilidad alta GHSA-q939-rpr3-3284, y el build fallaba con NU1903.
+      Subir a 4.14.0 es exactamente lo que arregla eso — es el único cambio de
+      esa versión: mismo Docker.DotNet.Enhanced 4.3.3, SSH.NET 2026.0.0.
+    -->
+    <PackageReference Include="Testcontainers.MsSql" Version="4.14.0" />
+  </ItemGroup>
+
+  <!--
+    Una sola referencia: Catalog.API. Arrastra transitivamente
+    Catalog.Infrastructure (entidades, CatalogDbContext, Microsoft.Data.SqlClient)
+    y Shop133.Contracts. Los DTOs de Catalog.API/Models se usan tal cual en los
+    tests para que un cambio de contrato rompa la compilación en vez de un
+    assert.
+
+    Este proyecto acaba viendo EF Core por la vía transitiva, pero no incumple
+    EfCorePackages_LiveOnlyIn_InfrastructureProjects: ProjectGraph solo enumera
+    <repo>/src, así que tests/ es invisible para las 12 reglas de 0.6.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\..\src\Services\Catalog\Catalog.API\Catalog.API.csproj" />
+  </ItemGroup>
+
+</Project>

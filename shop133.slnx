@@ -31,4 +31,8 @@
   <Folder Name="/tests/">
     <Project Path="tests/Shop133.ArchitectureTests/Shop133.ArchitectureTests.csproj" />
   </Folder>
+  <Folder Name="/tests/Services/" />
+  <Folder Name="/tests/Services/Catalog/">
+    <Project Path="tests/Services/Catalog/Catalog.Tests/Catalog.Tests.csproj" />
+  </Folder>
 </Solution>
