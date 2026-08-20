@@ -30,6 +30,17 @@ services:
       - "5672:5672"    # AMQP — el que usara MassTransit
       - "15672:15672"  # UI de management: http://localhost:15672
 
+  catalog-api:
+    ports:
+      # 5125 y no 5124: 5124 (http) y 7024 (https) los ocupa el perfil de
+      # launchSettings.json. Con puertos distintos puedes tener el contenedor y
+      # el "dotnet run" del IDE arriba a la vez y compararlos; con el mismo, el
+      # segundo muere con "port is already allocated".
+      #
+      #   contenedor -> http://localhost:5125/scalar/
+      #   IDE        -> http://localhost:5124/scalar/
+      - "5125:8080"
+
   jaeger:
     ports:
       - "16686:16686"  # UI de Jaeger: http://localhost:16686

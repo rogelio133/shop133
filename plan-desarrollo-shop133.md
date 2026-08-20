@@ -115,13 +115,13 @@ sqlserver:
 
 ## Fase 1 — Catalog.API (síncrono, base) (1 semana)
 
-- [ ] **1.1** Modelo `Product` (Id, Nombre, Descripción, Precio, Stock inicial, ImagenUrl)
-- [ ] **1.2** EF Core + migraciones contra SQL Server (`CatalogDb`)
-- [ ] **1.3** Endpoints: `GET /products`, `GET /products/{id}`, `POST /products`, `PUT`, `DELETE`
-- [ ] **1.4** Seed de datos de prueba
-- [ ] **1.5** Swagger/OpenAPI habilitado
-- [ ] **1.6** Dockerfile del servicio
-- [ ] **1.7** `Catalog.Tests`: tests de componente con `WebApplicationFactory` + Testcontainers (SQL Server) sobre los endpoints de 1.3
+- [x] **1.1** Modelo `Product` (Id, SKU, Nombre, Descripción, Precio, Stock inicial, ImagenUrl) — [doc](docs/fase_1_1.md)
+- [x] **1.2** EF Core + migraciones contra SQL Server (`CatalogDb`) — [doc](docs/fase_1_2.md)
+- [x] **1.3** Endpoints: `GET /products`, `GET /products/{id}`, `POST /products`, `PUT`, `DELETE` — [doc](docs/fase_1_3.md)
+- [x] **1.4** Seed de datos de prueba — [doc](docs/fase_1_4.md)
+- [x] **1.5** Swagger/OpenAPI habilitado — [doc](docs/fase_1_5.md)
+- [x] **1.6** Dockerfile del servicio — [doc](docs/fase_1_6.md)
+- [x] **1.7** `Catalog.Tests`: tests de componente con `WebApplicationFactory` + Testcontainers (SQL Server) sobre los endpoints de 1.3 — [doc](docs/fase_1_7.md)
 
 **Objetivo de la fase:** tener un servicio funcional end-to-end (DB → API → Docker) antes de meter mensajería.
 

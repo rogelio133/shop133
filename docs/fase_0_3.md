@@ -66,6 +66,12 @@ Esto es el principio general y conviene tenerlo escrito: **un evento debe llevar
 
 **Consecuencia que hay que recordar:** el punto **1.1** tiene que definir `Product.Id` como `Guid`, no como `int`. Es una decisión tomada aquí que se cobra en otra fase, y por eso está escrita.
 
+> **⚠️ Revisado en 1.1 (2026-08-18): la mitad de esta decisión se revirtió.** `OrderId` sigue siendo `Guid`; **`ProductId` pasó a `int`** y `OrderLine.ProductId` se cambió en consecuencia.
+>
+> El fallo está en el párrafo de arriba: justifica **los dos** ids con un solo argumento, y el argumento —que el productor acuña el id sin consultar a nadie— solo es decisivo para `OrderId`, que es la clave de correlación de la saga y tiene que existir antes de tocar la base. Un producto lo crea Catalog con un `POST` síncrono sobre su propia base; no hay nada que adelantar. El razonamiento se extendió a `ProductId` por arrastre, no por comprobarlo.
+>
+> El texto original se conserva tal cual: es el registro de lo que se decidió y con qué motivo. El desarrollo completo, con las alternativas descartadas, está en la **decisión 2 de [fase_1_1.md](fase_1_1.md)**.
+
 ### 5. Sin `CorrelationId` ni `OccurredAt` en los contratos
 
 **Descartado:** añadir `Guid CorrelationId` a cada mensaje. Es lo que MassTransit detecta por convención sin configurar nada, así que es la opción de menor fricción.
@@ -87,6 +93,18 @@ Inventory.API no necesita saber precios. Con rigor, un comando debería llevar e
 **Descartado:** un `StockLine { ProductId, Quantity }` aparte. Es más correcto, pero deja dos tipos casi idénticos que hay que mantener en paralelo y traducir uno al otro en la saga.
 
 **Elegido:** un solo `OrderLine`. Es una concesión consciente, no un descuido: se acepta enviar un campo que un consumidor no mira a cambio de no duplicar el tipo. Queda escrito aquí para que dentro de tres meses no parezca un olvido.
+
+> **⚠️ Revisado el 2026-08-19: `OrderLine` congela también el SKU y el nombre.** Se añadieron `ProductSku` y `ProductName`. La decisión de arriba **se mantiene** —sigue habiendo un solo `OrderLine`— pero su balance cambió: Inventory pasa de ignorar 1 campo de 3 a ignorar **3 de 5**.
+>
+> **Por qué se añaden.** `UnitPrice` ya iba congelado, pero el SKU y el nombre no, y eso era una inconsistencia, no una decisión. Un pedido no es una vista del catálogo: es un **hecho histórico** —qué se compró, cuánto y a qué precio— y con una base por servicio no hay clave foránea que lo respalde. SQL Server no soporta FK entre bases y, además, `orders_user` no tiene permiso sobre `CatalogDb` desde `0.4`. Lo que sustituye a la integridad referencial es **copiar lo que hace falta en el instante del pedido**.
+>
+> Tal y como estaba, mostrar un pedido legible obligaba a llamar a Catalog para traducir `ProductId → nombre`, que es exactamente la dependencia que la mensajería viene a eliminar. Y desde `1.3` el catálogo **borra productos físicamente**: sin estos campos, borrar un producto vendido dejaba al pedido sin poder decir qué se compró. Con ellos el pedido queda íntegro y lo único que se pierde es el enlace a la ficha, que puede dar `404` sin que nada se rompa.
+>
+> **Descartado (otra vez) partir en `OrderLine` + `StockLine`.** Con 3 campos sobrantes de 5, el argumento de la decisión original se debilita y el reparto correcto sería un `StockLine { ProductId, Quantity }` para los comandos a Inventory. No se hace **hoy** porque `Inventory.API` todavía no existe: partir el tipo ahora es especular sobre lo que necesitará, y en `3.4` puede querer el nombre para sus propios logs. Además obligaría a la saga a mapear `OrderLine → StockLine` en la Fase 4, código que se escribiría a ciegas. **Se decide de nuevo en `3.4`, con el consumidor delante** — y esta nota es el recordatorio de que hay que decidirlo.
+>
+> **Coste del cambio: cero, medido.** `OrderLine` viaja dentro de `OrderCreated`, `ReserveStock` y `ReleaseStock`, así que por la regla 4 de [CLAUDE.md](../CLAUDE.md) es un breaking change de todo el sistema. Una búsqueda de `OrderLine` en `src/` devolvió 6 archivos: los 4 de Contracts y 2 de Catalog **donde solo aparece en comentarios**. Ningún servicio lo consume todavía, y la build siguió en 0 errores. Ese es el argumento entero para hacerlo ahora: en la Fase 3 habría significado reescribir tres consumers a la vez.
+>
+> **Consecuencia que hay que arrastrar.** Los cinco campos hay que rellenarlos, y tres salen de Catalog. En `2.3` los trae la llamada `HttpClient` que ya estaba planificada como deuda deliberada —este cambio la hace *más* visible, que es para lo que existe—. Pero cuando `3.3` borre esa llamada y Orders publique `OrderCreated` sin preguntar a nadie, **alguien tendrá que seguir rellenando la foto**. Es el problema de *propiedad del dato frente a localidad del dato*, y las salidas conocidas son que el carrito los arrastre desde el frontend o que Orders mantenga una read-model del catálogo alimentada por eventos. No se decide aquí; se deja anotado porque es una pregunta que aparece tarde y cara si no se ve venir.
 
 ### 7. Propiedades `required` + `init`, no records posicionales
 
@@ -220,7 +238,7 @@ De la Fase 0 quedan:
 
 Consecuencias de este punto en fases posteriores, para no perderlas de vista:
 
-- **Fase 1.1** — `Product.Id` tiene que ser `Guid`, por la decisión 4.
+- ~~**Fase 1.1** — `Product.Id` tiene que ser `Guid`, por la decisión 4.~~ **Revertido en 1.1:** `Product.Id` es `int` y `OrderLine.ProductId` también. Ver la nota de la decisión 4 y [fase_1_1.md](fase_1_1.md).
 - **Fase 3.1** — confirmar que el serializador de MassTransit 8 conserva la validación de `required`.
 - **Fase 3.6** — la idempotencia usa el `MessageId` del sobre de MassTransit, no un campo de estos contratos.
 - **Fase 4.1** — la saga correlaciona con `.CorrelateById(x => x.Message.OrderId)`; sin esa línea no hay correlación, porque no hay `CorrelationId` en los mensajes.

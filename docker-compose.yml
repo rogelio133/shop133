@@ -124,6 +124,67 @@ services:
     networks:
       - shop133-net
 
+  # --- Servicios de aplicacion (Fase 1) ---------------------------------
+
+  # Catalog.API — primer servicio de negocio del proyecto (1.6).
+  catalog-api:
+    build:
+      # El contexto es la RAIZ, no la carpeta del proyecto: Catalog.API.csproj
+      # referencia ..\..\..\Shared\Shop133.Contracts y Docker no puede copiar
+      # nada por encima del contexto. Ver los comentarios del Dockerfile.
+      context: .
+      dockerfile: src/Services/Catalog/Catalog.API/Dockerfile
+    # Nombre explicito para que la imagen no se llame shop133-catalog-api con
+    # el prefijo del proyecto de compose.
+    image: shop133/catalog-api:latest
+    container_name: shop133-catalog-api
+    depends_on:
+      db-init:
+        # Sobre db-init y NO sobre sqlserver, que es lo que se hace por
+        # instinto. En 0.4 se midio: "docker compose up -d" vuelve cuando
+        # db-init ARRANCA, no cuando termina, y el script tarda ~5s en crear
+        # las 4 bases y sus logins. Con la guarda puesta en sqlserver, este
+        # contenedor arrancaria contra una CatalogDb que aun no existe.
+        #
+        # Esto es tambien lo que justifica el -b de sqlcmd en db-init: sin el,
+        # el script saldria con 0 aunque fallara y "completed successfully"
+        # seria mentira.
+        condition: service_completed_successfully
+    environment:
+      # Explicito aunque Production ya es el valor por defecto cuando la
+      # variable no esta: la decision de 1.5 de quitar la guarda IsDevelopment()
+      # de MapOpenApi() depende de esto, y merece verse en el archivo.
+      #
+      # Efecto secundario que hay que tener presente: en Production los User
+      # Secrets NO se cargan. De ahi la variable de abajo.
+      - ASPNETCORE_ENVIRONMENT=Production
+      # El doble guion bajo es como .NET traduce jerarquia de configuracion en
+      # variables de entorno: ConnectionStrings__CatalogDb equivale a la clave
+      # "ConnectionStrings:CatalogDb" que lee Program.cs.
+      #
+      # Server=sqlserver,1433 — el nombre del SERVICIO dentro de shop133-net.
+      # "localhost,1433" aqui apuntaria al propio contenedor de la API.
+      #
+      # La contrasena se deriva de ${CATALOG_DB_PASSWORD}, la MISMA variable que
+      # consume db-init para crear el login. Descartado meter un
+      # CONNECTIONSTRINGS__CATALOGDB completo en .env: serian dos sitios con la
+      # contrasena, y el dia que uno cambie sin el otro el sintoma es un "Login
+      # failed for user 'catalog_user'" que no dice donde esta la copia vieja.
+      #
+      # TrustServerCertificate=True es obligatorio, no opcional:
+      # Microsoft.Data.SqlClient cifra por defecto desde la v4.0 y el
+      # certificado de SQL Server es autofirmado (mismo motivo que el -C de
+      # sqlcmd).
+      - "ConnectionStrings__CatalogDb=Server=sqlserver,1433;Database=CatalogDb;User Id=catalog_user;Password=${CATALOG_DB_PASSWORD};TrustServerCertificate=True"
+    # Sin healthcheck a proposito: no hay endpoint /health hasta 8.4, y la
+    # imagen aspnet de .NET 8+ ya no incluye curl ni wget, asi que cualquier
+    # test: HTTP fallaria siempre y dejaria el contenedor en unhealthy.
+    restart: unless-stopped
+    networks:
+      - shop133-net
+
+  # --- Observabilidad ---------------------------------------------------
+
   jaeger:
     image: jaegertracing/all-in-one:1.62.0
     container_name: shop133-jaeger
