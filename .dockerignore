@@ -1,0 +1,54 @@
+# shop133 — contexto de build para las imagenes de los servicios (Fase 1.6)
+#
+# El contexto de build es la RAIZ del repositorio, no la carpeta del proyecto:
+# Catalog.API.csproj referencia ..\..\..\Shared\Shop133.Contracts, asi que un
+# contexto mas estrecho no podria restaurar. La consecuencia es que sin este
+# archivo Docker empaqueta y envia al daemon todo el repo, incluyendo:
+#
+#   - los bin/ y obj/ de los 11 proyectos (el obj/ de Shop133.Web solo ya tiene
+#     cientos de ficheros compressed/*.gz de static web assets)
+#   - .git/ entero, con toda la historia
+#   - .env, con las contrasenas de SQL Server
+#
+# Regla al editar: nunca excluir **/*.csproj ni global.json — son justo lo que
+# la capa de restore del Dockerfile necesita copiar primero.
+
+# --- Salida de compilacion ----------------------------------------------
+# Copiar bin/ y obj/ del host al contenedor no solo engorda el contexto: mete
+# artefactos compilados contra el SDK del host en un build que va a compilar
+# de cero, y "dotnet restore" puede leer un obj/project.assets.json ajeno.
+**/bin/
+**/obj/
+**/[Dd]ebug/
+**/[Rr]elease/
+artifacts/
+
+# --- Git e IDE ----------------------------------------------------------
+.git/
+.gitignore
+.gitattributes
+.vs/
+.vscode/
+.idea/
+**/*.user
+**/*.suo
+
+# --- Secretos y configuracion local -------------------------------------
+# .env lo consume docker compose desde el HOST para interpolar ${...}; no tiene
+# ninguna razon para entrar en la imagen.
+.env
+**/appsettings.*.Local.json
+**/appsettings.Local.json
+
+# --- Tests y sus resultados ---------------------------------------------
+# El proyecto de tests no forma parte de ninguna imagen de servicio.
+tests/
+**/[Tt]est[Rr]esult*/
+
+# --- Documentacion e infraestructura ------------------------------------
+docs/
+db/
+*.md
+docker-compose*.yml
+.env.example
+LICENSE

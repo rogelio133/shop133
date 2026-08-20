@@ -75,7 +75,20 @@ var app = builder.Build();
 app.MapOpenApi();
 app.MapScalarApiReference();
 
-app.UseHttpsRedirection();
+// Guardado con IsDevelopment() desde 1.6, y por el motivo contrario al de
+// MapOpenApi() de arriba: el contenedor solo escucha HTTP (ASPNETCORE_HTTP_PORTS
+// = 8080, sin puerto https), asi que sin la guarda el middleware no encuentra a
+// donde redirigir y loguea "Failed to determine the https port for redirect" en
+// CADA peticion — un warning por request en "docker compose logs".
+//
+// Descartado dejarlo sin guarda y asumir el ruido, y descartado tambien borrar
+// la linea: el perfil "https" de launchSettings.json sigue existiendo y ahi la
+// redireccion si tiene sentido. Desde la Fase 5 la terminacion TLS es trabajo
+// del Gateway, no de cada servicio.
+if (app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
 
 app.UseAuthorization();
 
