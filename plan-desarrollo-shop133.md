@@ -121,7 +121,7 @@ sqlserver:
 - [x] **1.4** Seed de datos de prueba — [doc](docs/fase_1_4.md)
 - [x] **1.5** Swagger/OpenAPI habilitado — [doc](docs/fase_1_5.md)
 - [x] **1.6** Dockerfile del servicio — [doc](docs/fase_1_6.md)
-- [ ] **1.7** `Catalog.Tests`: tests de componente con `WebApplicationFactory` + Testcontainers (SQL Server) sobre los endpoints de 1.3
+- [x] **1.7** `Catalog.Tests`: tests de componente con `WebApplicationFactory` + Testcontainers (SQL Server) sobre los endpoints de 1.3 — [doc](docs/fase_1_7.md)
 
 **Objetivo de la fase:** tener un servicio funcional end-to-end (DB → API → Docker) antes de meter mensajería.
 

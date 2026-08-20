@@ -95,3 +95,15 @@ app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+
+// Los top-level statements generan una clase Program *internal*, y
+// WebApplicationFactory<Program> necesita que el tipo sea accesible desde
+// Catalog.Tests. Esta línea es la única razón por la que existe: no añade
+// comportamiento, solo hace público el tipo que el compilador ya genera.
+//
+// Descartado <InternalsVisibleTo Include="Catalog.Tests" /> en el .csproj, que
+// dejaría Program internal y acotaría el permiso a un ensamblado con nombre.
+// Es la opción más estricta, pero pone la razón en un archivo distinto del que
+// la provoca: quien lea Program.cs no vería por qué el tipo es visible desde
+// fuera. Aquí el motivo está a la vista, que es lo que este repositorio valora.
+public partial class Program { }

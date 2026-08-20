@@ -31,5 +31,6 @@ Documentos de procedimiento, no ligados a un punto del roadmap. No siguen la con
 | 1.4 | Seed de datos de prueba y catálogo de categorías | 2026-08-19 | [fase_1_4.md](fase_1_4.md) |
 | 1.5 | Swagger/OpenAPI habilitado | 2026-08-20 | [fase_1_5.md](fase_1_5.md) |
 | 1.6 | Dockerfile del servicio | 2026-08-20 | [fase_1_6.md](fase_1_6.md) |
+| 1.7 | Tests de componente con `WebApplicationFactory` + Testcontainers | 2026-08-20 | [fase_1_7.md](fase_1_7.md) |
 
 El punto **0.1** (crear solución y estructura de carpetas) se completó antes de que existiera esta convención y no se documentó retroactivamente.
