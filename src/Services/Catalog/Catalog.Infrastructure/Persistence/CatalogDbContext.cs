@@ -24,11 +24,22 @@ public sealed class CatalogDbContext(DbContextOptions<CatalogDbContext> options)
 {
     public DbSet<Product> Products => Set<Product>();
 
+    /// <summary>
+    /// El catálogo de categorías (1.4). Es de solo lectura en la práctica —
+    /// las 5 filas las pone el seed y no hay endpoint de escritura— pero se
+    /// expone como <see cref="DbSet{TEntity}"/> normal: el
+    /// <c>ProductsController</c> necesita consultarlo para validar el
+    /// <c>CategoryId</c> que llega en un POST o un PUT.
+    /// </summary>
+    public DbSet<Category> Categories => Set<Category>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         // ApplyConfiguration explícito, no ApplyConfigurationsFromAssembly: con
-        // una sola entidad el escaneo por reflexión no ahorra nada y esconde
-        // qué se está registrando. Se cambia el día que haya media docena.
+        // dos entidades el escaneo por reflexión sigue sin ahorrar nada y
+        // esconde qué se está registrando. Se cambia el día que haya media
+        // docena.
+        modelBuilder.ApplyConfiguration(new CategoryConfiguration());
         modelBuilder.ApplyConfiguration(new ProductConfiguration());
 
         base.OnModelCreating(modelBuilder);

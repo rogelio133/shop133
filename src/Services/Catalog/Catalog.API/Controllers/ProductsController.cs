@@ -41,6 +41,7 @@ public sealed class ProductsController(CatalogDbContext db) : ControllerBase
     {
         var products = await db.Products
             .AsNoTracking()
+            .Include(product => product.Category)
             .OrderBy(product => product.Id)
             .ToListAsync(cancellationToken);
 
@@ -61,6 +62,7 @@ public sealed class ProductsController(CatalogDbContext db) : ControllerBase
     {
         var product = await db.Products
             .AsNoTracking()
+            .Include(candidate => candidate.Category)
             .FirstOrDefaultAsync(candidate => candidate.Id == id, cancellationToken);
 
         return product is null
@@ -76,6 +78,16 @@ public sealed class ProductsController(CatalogDbContext db) : ControllerBase
         CreateProductRequest request,
         CancellationToken cancellationToken)
     {
+        // La categoría se busca —y no solo se comprueba con AnyAsync— porque la
+        // entidad que vuelve queda rastreada por el contexto, y eso es lo que
+        // hace que EF rellene product.Category por fix-up al añadir el producto.
+        // Sin ella, ProductResponse.From no tendría el nombre que devolver en el
+        // 201 y haría falta una segunda consulta.
+        if (await FindCategoryOrNull(request.CategoryId, cancellationToken) is null)
+        {
+            return UnknownCategory(request.CategoryId);
+        }
+
         Product product;
 
         try
@@ -86,6 +98,7 @@ public sealed class ProductsController(CatalogDbContext db) : ControllerBase
                 request.Description,
                 request.Price,
                 request.Stock,
+                request.CategoryId,
                 request.ImageUrl);
 
             db.Products.Add(product);
@@ -134,6 +147,15 @@ public sealed class ProductsController(CatalogDbContext db) : ControllerBase
             return NotFound();
         }
 
+        // 404 primero y 400 de categoría después: el 404 habla del recurso de la
+        // URL y el 400 del cuerpo. Un PUT a un id inexistente con una categoría
+        // también inexistente es un 404 — el recurso que se pretendía reemplazar
+        // no está, y lo que traía el cuerpo ya da igual.
+        if (await FindCategoryOrNull(request.CategoryId, cancellationToken) is null)
+        {
+            return UnknownCategory(request.CategoryId);
+        }
+
         try
         {
             product.Update(
@@ -142,6 +164,7 @@ public sealed class ProductsController(CatalogDbContext db) : ControllerBase
                 request.Description,
                 request.Price,
                 request.Stock,
+                request.CategoryId,
                 request.ImageUrl);
 
             await db.SaveChangesAsync(cancellationToken);
@@ -201,6 +224,42 @@ public sealed class ProductsController(CatalogDbContext db) : ControllerBase
     /// 1.1, junto con que el <c>ParamName</c> llega siempre relleno. Ese nombre
     /// es lo que permite devolver el error apuntando al campo.
     /// </summary>
+    /// <summary>
+    /// Comprueba que la categoría exista antes de guardar, en vez de dejar que
+    /// salte la clave foránea (1.4).
+    ///
+    /// *Descartado* guardar sin comprobar y traducir el error 547 de SQL Server
+    /// en <c>DbUpdateExceptionExtensions</c>, como ya se hace con el 2601/2627
+    /// del índice único. Ahorraría este viaje a la base, pero los dos casos no
+    /// son iguales: la unicidad **solo** la puede responder el conjunto entero
+    /// de filas en el instante del INSERT, así que ahí la excepción es la única
+    /// vía posible; que una categoría exista es una consulta corriente que se
+    /// puede hacer antes. Y el 547 no distingue *qué* FK falló, así que el
+    /// mensaje de error saldría peor.
+    ///
+    /// Devuelve la entidad y no un <c>bool</c> a propósito: al quedar rastreada
+    /// por el contexto, EF rellena por fix-up la navegación
+    /// <c>Product.Category</c> del producto que se añade justo después, que es
+    /// lo que necesita el 201 para incluir el nombre de la categoría.
+    /// </summary>
+    private Task<Category?> FindCategoryOrNull(int categoryId, CancellationToken cancellationToken) =>
+        db.Categories.FirstOrDefaultAsync(candidate => candidate.Id == categoryId, cancellationToken);
+
+    /// <summary>
+    /// 400 y no 404: el que no existe es el <c>CategoryId</c> del **cuerpo**, no
+    /// el recurso al que apunta la URL. Sale como <c>ValidationProblemDetails</c>
+    /// nombrando el campo, igual que los errores de DataAnnotations, para que el
+    /// cliente no tenga que distinguir dos formatos de error de entrada.
+    /// </summary>
+    private ActionResult UnknownCategory(int categoryId)
+    {
+        ModelState.AddModelError(
+            nameof(CreateProductRequest.CategoryId),
+            $"No existe la categoría {categoryId}. Las categorías válidas están en GET /categories.");
+
+        return ValidationProblem(ModelState);
+    }
+
     private ActionResult ToValidationProblem(ArgumentException exception)
     {
         ModelState.AddModelError(exception.ParamName ?? string.Empty, exception.Message);

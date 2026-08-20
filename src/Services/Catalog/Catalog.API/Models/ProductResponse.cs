@@ -31,6 +31,23 @@ public sealed record ProductResponse
 
     public string? ImageUrl { get; init; }
 
+    public required int CategoryId { get; init; }
+
+    /// <summary>
+    /// El nombre de la categoría viaja resuelto (1.4) y no solo su id.
+    ///
+    /// *Descartado* devolver únicamente <see cref="CategoryId"/> y dejar que el
+    /// cliente lo cruce contra <c>GET /categories</c>: una card de producto
+    /// necesita el nombre, así que ese diseño convierte cada listado en dos
+    /// llamadas y obliga a cada consumidor a escribir el mismo join.
+    ///
+    /// *Descartado* también anidarlo como sub-objeto
+    /// (<c>"category": { "id": …, "name": … }</c>): sería más expresivo, pero
+    /// hoy todo el DTO es plano y un solo campo anidado no justifica un segundo
+    /// tipo de respuesta.
+    /// </summary>
+    public required string CategoryName { get; init; }
+
     /// <summary>
     /// El único mapeo entidad → DTO del servicio. Está aquí y no en el
     /// controller para que las acciones sigan siendo bind, delega y devuelve.
@@ -44,5 +61,15 @@ public sealed record ProductResponse
         Price = product.Price,
         Stock = product.Stock,
         ImageUrl = product.ImageUrl,
+        CategoryId = product.CategoryId,
+
+        // La navegación es anulable porque puede no estar cargada, no porque el
+        // producto pueda no tener categoría. Un null aquí es siempre un error de
+        // la consulta que llamó a este método, así que se lanza con el mensaje
+        // que dice cómo arreglarlo en vez de dejar que salga un
+        // NullReferenceException a 20 frames de distancia.
+        CategoryName = product.Category?.Name ?? throw new InvalidOperationException(
+            $"El producto {product.Id} se mapeó sin su categoría cargada. " +
+            "Falta un Include(product => product.Category) en la consulta."),
     };
 }

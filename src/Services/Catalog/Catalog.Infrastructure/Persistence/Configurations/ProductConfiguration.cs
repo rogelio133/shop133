@@ -1,4 +1,5 @@
 using Catalog.Infrastructure.Entities;
+using Catalog.Infrastructure.Persistence.Seed;
 
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
@@ -69,5 +70,30 @@ internal sealed class ProductConfiguration : IEntityTypeConfiguration<Product>
 
         builder.Property(product => product.Stock)
             .IsRequired();
+
+        // La primera relación del modelo (1.4). Obligatoria: un producto sin
+        // categoría no se puede colocar en el catálogo.
+        builder.Property(product => product.CategoryId)
+            .IsRequired();
+
+        // WithMany() sin argumento porque Category no tiene colección inversa:
+        // la navegación es unidireccional a propósito, ver Product.Category.
+        //
+        // Restrict, y no el Cascade que EF pone por defecto en una FK
+        // obligatoria: borrar la categoría "Tazas" no puede llevarse por
+        // delante sus 10 productos sin que nadie lo haya pedido. Hoy ni
+        // siquiera hay endpoint para borrar una categoría, así que esto actúa
+        // solo como guarda del esquema — y esa es exactamente la idea: la
+        // restricción tiene que estar puesta *antes* de que exista la operación
+        // peligrosa, no después del primer accidente.
+        builder.HasOne(product => product.Category)
+            .WithMany()
+            .HasForeignKey(product => product.CategoryId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // Los 50 productos de souvenirs (1.4). Ojo: HasData no pasa por el
+        // constructor de Product, así que las guardas de Apply no se ejecutan
+        // sobre estas filas — ver la nota de CatalogSeedData.
+        builder.HasData(CatalogSeedData.Products);
     }
 }

@@ -40,6 +40,15 @@ public sealed record UpdateProductRequest
     [Range(0, int.MaxValue)]
     public required int Stock { get; init; }
 
+    /// <summary>
+    /// Se puede cambiar: recolocar un producto mal clasificado es una operación
+    /// de catálogo tan normal como corregirle el precio. Igual que en el alta,
+    /// la existencia de la categoría la comprueba el controller y un id
+    /// desconocido sale como 400.
+    /// </summary>
+    [Range(1, int.MaxValue)]
+    public required int CategoryId { get; init; }
+
     [MaxLength(Product.ImageUrlMaxLength)]
     public string? ImageUrl { get; init; }
 }

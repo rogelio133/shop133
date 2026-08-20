@@ -28,5 +28,6 @@ Documentos de procedimiento, no ligados a un punto del roadmap. No siguen la con
 | 1.1 | Modelo `Product` | 2026-08-18 | [fase_1_1.md](fase_1_1.md) |
 | 1.2 | EF Core + migraciones contra SQL Server (`CatalogDb`) | 2026-08-18 | [fase_1_2.md](fase_1_2.md) |
 | 1.3 | Endpoints CRUD de `Catalog.API` | 2026-08-19 | [fase_1_3.md](fase_1_3.md) |
+| 1.4 | Seed de datos de prueba y catálogo de categorías | 2026-08-19 | [fase_1_4.md](fase_1_4.md) |
 
 El punto **0.1** (crear solución y estructura de carpetas) se completó antes de que existiera esta convención y no se documentó retroactivamente.

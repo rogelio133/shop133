@@ -34,7 +34,14 @@ public sealed class Product
 
     public const int ImageUrlMaxLength = 500;
 
-    public Product(string sku, string name, string description, decimal price, int stock, string? imageUrl = null)
+    public Product(
+        string sku,
+        string name,
+        string description,
+        decimal price,
+        int stock,
+        int categoryId,
+        string? imageUrl = null)
     {
         // El Id no se asigna aquí: lo pone SQL Server con IDENTITY en el INSERT
         // (1.2). Hasta que se guarda vale 0.
@@ -46,7 +53,11 @@ public sealed class Product
         // saga y tiene que existir antes de tocar la base. Un producto lo crea
         // Catalog con un POST síncrono y su propia base es el único escritor,
         // así que no hay nada que adelantar.
-        Apply(sku, name, description, price, stock, imageUrl);
+        //
+        // categoryId va antes de imageUrl porque el opcional tiene que quedar
+        // último. Es obligatorio: un producto sin categoría no se puede colocar
+        // en el catálogo, así que no hay estado válido en el que falte.
+        Apply(sku, name, description, price, stock, categoryId, imageUrl);
     }
 
     /// <summary>
@@ -63,10 +74,21 @@ public sealed class Product
     /// corrige y se renumera, la clave sustituta no cambia nunca. Cambiarlo
     /// puede chocar con el índice único de 1.2, así que el PUT devuelve 409
     /// igual que el POST.
+    ///
+    /// La <see cref="CategoryId"/> también se puede cambiar (1.4): un producto
+    /// mal clasificado se recoloca, y es una operación de catálogo tan normal
+    /// como corregirle el precio.
     /// </summary>
-    public void Update(string sku, string name, string description, decimal price, int stock, string? imageUrl = null)
+    public void Update(
+        string sku,
+        string name,
+        string description,
+        decimal price,
+        int stock,
+        int categoryId,
+        string? imageUrl = null)
     {
-        Apply(sku, name, description, price, stock, imageUrl);
+        Apply(sku, name, description, price, stock, categoryId, imageUrl);
     }
 
     /// <summary>
@@ -103,7 +125,14 @@ public sealed class Product
     /// anulables quedan inicializadas y avisa con CS8618.
     /// </summary>
     [MemberNotNull(nameof(Sku), nameof(Name), nameof(Description))]
-    private void Apply(string sku, string name, string description, decimal price, int stock, string? imageUrl)
+    private void Apply(
+        string sku,
+        string name,
+        string description,
+        decimal price,
+        int stock,
+        int categoryId,
+        string? imageUrl)
     {
         // ToUpperInvariant antes de validar, no después: lo que tiene que caber
         // en SkuMaxLength es el valor que se persiste, no el que llegó.
@@ -130,12 +159,19 @@ public sealed class Product
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(price);
         ArgumentOutOfRangeException.ThrowIfNegative(stock);
 
+        // Lo único que la entidad puede afirmar sobre la categoría es que un id
+        // válido es positivo. Que *exista* es una pregunta sobre otra tabla, y
+        // una entidad no consulta la base de datos: la responden la FK del
+        // esquema y la comprobación explícita del ProductsController.
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(categoryId);
+
         Sku = validatedSku;
         Name = validatedName;
         Description = validatedDescription;
         ImageUrl = validatedImageUrl;
         Price = price;
         Stock = stock;
+        CategoryId = categoryId;
     }
 
     /// <summary>
@@ -172,9 +208,29 @@ public sealed class Product
     /// <summary>
     /// Imagen del producto, opcional — un producto sin foto es válido. No se
     /// comprueba que sea una URI absoluta a propósito: el seed de 1.4 puede
-    /// usar rutas relativas servidas por el propio frontend.
+    /// usar rutas relativas servidas por el propio frontend. Y las usa: todas
+    /// las 50 filas del seed llevan <c>/img/products/&lt;sku&gt;.jpg</c>.
     /// </summary>
     public string? ImageUrl { get; private set; }
+
+    /// <summary>
+    /// La categoría a la que pertenece (1.4). Clave foránea contra
+    /// <c>Categories</c>, obligatoria y con <c>DeleteBehavior.Restrict</c>.
+    /// </summary>
+    public int CategoryId { get; private set; }
+
+    /// <summary>
+    /// Navegación hacia la categoría. Es **anulable a propósito**, aunque
+    /// <see cref="CategoryId"/> sea obligatoria: nula no significa "producto sin
+    /// categoría", significa "esta consulta no la cargó". Solo viene rellena si
+    /// alguien pidió el <c>Include</c> o si EF hizo *fix-up* porque la categoría
+    /// ya estaba rastreada por el mismo contexto.
+    ///
+    /// La navegación es unidireccional: <see cref="Category"/> no tiene una
+    /// colección <c>Products</c>. Nadie la necesita hoy, y una relación con las
+    /// dos puntas obliga a mantenerlas sincronizadas a mano en memoria.
+    /// </summary>
+    public Category? Category { get; private set; }
 
     private static string Validated(string value, int maxLength, string parameterName)
     {

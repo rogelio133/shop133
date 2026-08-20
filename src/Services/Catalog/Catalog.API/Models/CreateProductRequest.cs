@@ -56,8 +56,21 @@ public sealed record CreateProductRequest
     public required int Stock { get; init; }
 
     /// <summary>
+    /// La categoría a la que pertenece (1.4). El rango solo dice que un id
+    /// válido es positivo; que **exista** lo comprueba el controller contra la
+    /// tabla <c>Categories</c> antes de guardar, y devuelve 400 si no.
+    ///
+    /// Es obligatorio y no anulable: un producto sin categoría no se puede
+    /// colocar en el catálogo. Como no tiene valor por defecto, los clientes
+    /// escritos contra la API de 1.3 dejan de compilar/validar — que es lo
+    /// correcto, porque el contrato cambió de verdad.
+    /// </summary>
+    [Range(1, int.MaxValue)]
+    public required int CategoryId { get; init; }
+
+    /// <summary>
     /// Opcional, como en la entidad. Sin <c>[Url]</c>: 1.1 decidió no exigir URI
-    /// absoluta porque el seed de 1.4 puede usar rutas relativas.
+    /// absoluta porque el seed de 1.4 puede usar rutas relativas — y las usa.
     /// </summary>
     [MaxLength(Product.ImageUrlMaxLength)]
     public string? ImageUrl { get; init; }
