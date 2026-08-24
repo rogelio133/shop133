@@ -1,13 +1,28 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>d80dc95a-cc6f-48dd-b62a-1b195c6af955</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
+    <!--
+      El DbContext vive en Orders.Infrastructure, pero .Design va aqui: las
+      herramientas dotnet-ef lo buscan en el STARTUP project, que es el que
+      construye el host del que sacan la configuracion (el connection string
+      esta en los User Secrets de este proyecto, no en los de Infrastructure).
+
+      PrivateAssets="all" porque es infraestructura de diseno: no debe
+      propagarse a quien referencie a Orders.API ni acabar en una imagen.
+
+      Es la excepcion que codifica EfCorePackages_LiveOnlyIn_InfrastructureProjects
+      en tests/Shop133.ArchitectureTests: EF Core solo en .Infrastructure, salvo
+      .Design en un .API.
+    -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.8" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
