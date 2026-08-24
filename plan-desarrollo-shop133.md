@@ -131,7 +131,7 @@ sqlserver:
 
 ## Fase 2 — Orders.API + comunicación síncrona inicial (1 semana)
 
-- [ ] **2.1** Modelo `Order`, `OrderItem` (estado: Pending, Confirmed, Cancelled)
+- [x] **2.1** Modelo `Order`, `OrderItem` (estado: Pending, Confirmed, Cancelled) — [doc](docs/fase_2_1.md)
 - [ ] **2.2** EF Core contra `OrdersDb`
 - [ ] **2.3** `POST /orders` que llama síncronamente (HttpClient) a Catalog.API para validar productos/precios
 - [ ] **2.4** `Orders.Tests`: test del acoplamiento síncrono con WireMock.Net — camino feliz **y** "Catalog caído → Orders falla"
