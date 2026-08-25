@@ -133,7 +133,7 @@ sqlserver:
 
 - [x] **2.1** Modelo `Order`, `OrderItem` (estado: Pending, Confirmed, Cancelled) — [doc](docs/fase_2_1.md)
 - [x] **2.2** EF Core contra `OrdersDb` — [doc](docs/fase_2_2.md)
-- [ ] **2.3** `POST /orders` que llama síncronamente (HttpClient) a Catalog.API para validar productos/precios
+- [x] **2.3** `POST /orders` que llama síncronamente (HttpClient) a Catalog.API para validar productos/precios — [doc](docs/fase_2_3.md)
 - [ ] **2.4** `Orders.Tests`: test del acoplamiento síncrono con WireMock.Net — camino feliz **y** "Catalog caído → Orders falla"
 
 **Objetivo de la fase:** aquí **sentirás el acoplamiento** — si Catalog.API está caído, Orders falla. Este dolor es intencional; es el que resuelves en la Fase 3. No es una tarea entregable, por eso no lleva número.
