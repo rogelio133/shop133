@@ -1,6 +1,61 @@
-﻿@Orders.API_HostAddress = http://localhost:5189
+@OrdersApi_HostAddress = http://localhost:5189
+@CatalogApi_HostAddress = http://localhost:5124
 
-GET {{Orders.API_HostAddress}}/openapi/v1.json
+### El documento OpenAPI (solo en Development)
+GET {{OrdersApi_HostAddress}}/openapi/v1.json
+Accept: application/json
+
+### Los productId salen de aquí: Catalog.API tiene que estar levantado
+GET {{CatalogApi_HostAddress}}/products
+Accept: application/json
+
+### Camino feliz — sustituye los productId por los del catálogo real
+POST {{OrdersApi_HostAddress}}/orders
+Content-Type: application/json
+
+{
+  "customerEmail": "cliente@example.com",
+  "items": [
+    { "productId": 1, "quantity": 2 }
+  ]
+}
+
+### Líneas repetidas: salen agrupadas en una sola de 5 unidades
+POST {{OrdersApi_HostAddress}}/orders
+Content-Type: application/json
+
+{
+  "customerEmail": "cliente@example.com",
+  "items": [
+    { "productId": 1, "quantity": 2 },
+    { "productId": 1, "quantity": 3 }
+  ]
+}
+
+### Producto inexistente: 400 nombrando la línea, no 404
+POST {{OrdersApi_HostAddress}}/orders
+Content-Type: application/json
+
+{
+  "customerEmail": "cliente@example.com",
+  "items": [
+    { "productId": 999999, "quantity": 1 }
+  ]
+}
+
+### Cuerpo inválido: correo mal formado y lista vacía
+POST {{OrdersApi_HostAddress}}/orders
+Content-Type: application/json
+
+{
+  "customerEmail": "no-es-un-email",
+  "items": []
+}
+
+### Catalog caído: para Catalog.API y repite el camino feliz -> 502 en ~5 s
+
+### Lectura del pedido: pega aquí el id que devolvió el 201
+GET {{OrdersApi_HostAddress}}/orders/00000000-0000-0000-0000-000000000000
 Accept: application/json
 
 ###
