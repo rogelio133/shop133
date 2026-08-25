@@ -54,7 +54,7 @@ public sealed class ContractsRulesTests
         Assert.True(
             contracts.PackageReferences.Count == 0,
             $"{contracts.Name} no debe referenciar ningún paquete NuGet, pero referencia: " +
-            string.Join(", ", contracts.PackageReferences));
+            string.Join(", ", contracts.PackageReferences.Select(package => package.Id)));
     }
 
     [Fact]

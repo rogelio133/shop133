@@ -23,6 +23,26 @@
       .Design en un .API.
     -->
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.8" PrivateAssets="all" />
+    <!--
+      MassTransit 8.x, con la version FIJADA a proposito (3.1).
+
+      La v9 paso a licencia comercial y ya esta publicada en nuget.org (9.2.0 el
+      dia que se escribio esto), asi que un "dotnet add package
+      MassTransit.RabbitMQ" sin fijar la version instala la de pago. Ver la
+      seccion Stack de CLAUDE.md. (No se puede escribir aqui el nombre de la
+      opcion: un comentario XML no admite dos guiones seguidos.)
+
+      La regla esta ademas en tests/Shop133.ArchitectureTests
+      (MassTransitPackages_StayOnMajorVersion8), para que no dependa de que
+      alguien recuerde leerla.
+
+      Se declara solo el transport: MassTransit.RabbitMQ arrastra el core
+      MassTransit, igual que el provider de SQL Server arrastra
+      Microsoft.EntityFrameworkCore en Orders.Infrastructure.
+
+      Trae targets net8.0/net9.0 y corre sobre net10.0 sin problema.
+    -->
+    <PackageReference Include="MassTransit.RabbitMQ" Version="8.5.10" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,4 +1,6 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using MassTransit;
+
+using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi;
 
 using Orders.Infrastructure.Catalog;
@@ -89,6 +91,51 @@ builder.Services.AddHttpClient<CatalogClient>(client =>
     // caído" tardaría minuto y medio por línea en devolver el 502 — el test de
     // 2.4 sería inviable y el fallo parecería un cuelgue en vez de un error.
     client.Timeout = TimeSpan.FromSeconds(5);
+});
+
+// --- Mensajería (3.1) -------------------------------------------------------
+//
+// El URI de RabbitMQ vive en User Secrets porque lleva usuario y contraseña:
+// misma decisión que el connection string de arriba, y la opuesta a la de
+// Services:CatalogBaseUrl, que está en appsettings.json justamente por no ser
+// un secreto.
+//
+// La guarda no es decorativa. Sin ella la clave ausente no falla aquí: falla al
+// arrancar el bus, dentro de un hosted service, con un mensaje que no menciona
+// la configuración. Aquí revienta antes de app.Build(), diciendo qué falta.
+//
+// En contenedor se sobreescribe con ConnectionStrings__RabbitMq, construido a
+// partir de ${RABBITMQ_DEFAULT_USER}/${RABBITMQ_DEFAULT_PASS} como hace
+// catalog-api con ${CATALOG_DB_PASSWORD}. Allí el host es "rabbitmq" —el nombre
+// del servicio dentro de shop133-net—, no "localhost".
+var rabbitMqConnectionString = builder.Configuration.GetConnectionString("RabbitMq")
+    ?? throw new InvalidOperationException(
+        "Falta la configuración 'ConnectionStrings:RabbitMq'. En local vive en User Secrets: " +
+        "dotnet user-secrets set \"ConnectionStrings:RabbitMq\" \"amqp://guest:guest@localhost:5672\" " +
+        "--project src/Services/Orders/Orders.API");
+
+builder.Services.AddMassTransit(x =>
+{
+    // Se fija ahora, con cero consumers, precisamente porque después no sale
+    // gratis: el formatter decide el nombre de la cola de cada consumer, y
+    // cambiarlo en 3.3 dejaría colas huérfanas en el broker que nadie vacía.
+    //
+    // Kebab-case en minúsculas: los nombres de cola de RabbitMQ distinguen
+    // mayúsculas, y "order-created" no da lugar a dudas donde "OrderCreated" sí.
+    x.SetKebabCaseEndpointNameFormatter();
+
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        // Host(Uri) saca usuario y contraseña del userinfo del URI, así que no
+        // hacen falta h.Username()/h.Password() por separado.
+        cfg.Host(new Uri(rabbitMqConnectionString));
+
+        // Hoy no registra nada: no hay consumers. Se deja puesta porque es la
+        // línea que 3.4 y 3.5 esperan encontrar — sin ella, registrar un
+        // IConsumer no crea su receive endpoint y el mensaje se pierde en
+        // silencio, que es el fallo más caro de diagnosticar de esta fase.
+        cfg.ConfigureEndpoints(context);
+    });
 });
 
 var app = builder.Build();

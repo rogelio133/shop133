@@ -144,7 +144,7 @@ sqlserver:
 
 ## Fase 3 — Mensajería con MassTransit + RabbitMQ (1-1.5 semanas)
 
-- [ ] **3.1** Instalar MassTransit + RabbitMQ transport en Orders, Inventory, Payments
+- [x] **3.1** Instalar MassTransit + RabbitMQ transport en Orders, Inventory, Payments — [doc](docs/fase_3_1.md)
 - [ ] **3.2** Definir eventos en `Shop133.Contracts`: `OrderCreated`, `StockReserved`, `StockRejected`, `PaymentCompleted`, `PaymentFailed`
 - [ ] **3.3** Orders.API publica `OrderCreated` en lugar de llamar síncronamente
 - [ ] **3.4** Inventory.API consume `OrderCreated`, valida y reserva stock contra `InventoryDb`, publica `StockReserved`/`StockRejected`

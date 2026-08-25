@@ -74,6 +74,22 @@ Three things the test host needs that are not obvious. **Two `UseSetting` calls,
 
 **An `Order` is constructed valid or not at all**: at least one line, and **no repeated `ProductId`**. The second one is not tidiness — those lines travel inside `ReserveStock`, and an Inventory that receives two entries for the same product has to guess whether to reserve the sum or treat the second as a duplicate. Grouping is `2.3`'s job; the aggregate only asserts the invariant. Two lines with the same *Sku* and different `ProductId` are fine.
 
+**Phase 3 is in progress on `feature/fase-3-messaging`. `3.1` is done** — see [docs/fase_3_1.md](docs/fase_3_1.md). `MassTransit.RabbitMQ` **8.5.10** (Apache-2.0) lives in `Orders.API`, `Inventory.API` and `Payments.API`, and **only the transport is declared** — it drags the core, same reasoning as the SQL Server provider. **The v9 trap is live, not theoretical**: 9.2.0 is published, so `dotnet add package MassTransit.RabbitMQ` without a version installs the commercial one. That warning is now executable — `PackageRulesTests.MassTransitPackages_StayOnMajorVersion8` reads the `Version` attribute out of every `src/` `.csproj` and fails on anything not `8.`, so the suite is **13 tests**. It lives in its own file and not in `LayeringRulesTests`, whose `EfCorePackages_LiveOnlyIn_InfrastructureProjects` also inspects packages but does so to assert rule 5; a licence rule is not a layering rule. `ProjectGraph.PackageReferences` therefore changed type from `IReadOnlyList<string>` to `IReadOnlyList<PackageReferenceInfo>` (id + version), and an **empty version counts as a violation** — it would mean the version was left to somewhere else. Nothing under `Shop133.Contracts` or `Orders.Domain` was touched: the `OrderStateMachine`'s dependency arrives with the state machine in `4.1`, not before.
+
+The broker URI is **one key, `ConnectionStrings:RabbitMq`**, in User Secrets (`amqp://guest:guest@localhost:5672`), guarded in `Program.cs` exactly like `ConnectionStrings:OrdersDb`; `cfg.Host(new Uri(...))` reads the credentials from the URI's userinfo, so no `h.Username()`/`h.Password()`. `Inventory.API` and `Payments.API` had no `UserSecretsId` and got one from `dotnet user-secrets init`. The guard matters more here than in `2.2`: without it a missing key does not fail at registration but when the **hosted service starts the bus**, in a message that never mentions configuration. `SetKebabCaseEndpointNameFormatter()` and `cfg.ConfigureEndpoints(context)` are both set **now, with zero consumers** — the first because the formatter names every consumer's queue and changing it in `3.4` would strand orphan queues in the broker, the second because without it registering an `IConsumer` creates no receive endpoint and the message is lost **silently**. The `AddMassTransit` block is a **literal copy in all three services**, deliberately: extracting it needs a project all three reference, and `Shop133.Contracts` must stay at zero packages. Same precedent as `SqlServerContainerFixture` in `2.4` — `3.4`/`3.5` will touch two of the copies, and that is when extraction gets decided with a diff in hand.
+
+**Installing the transport declares no topology at all — measured.** With the three services connected, the management API returns **zero queues and zero non-`amq.*` exchanges**. MassTransit 8.5 declares lazily: the bus endpoint appears when something needs a reply address or publishes, and the `Shop133.Contracts` exchanges when there is a publish (`3.3`) or a registered consumer (`3.4`). So **"no queues in the UI" does not mean the bus is not connected** — the proof is the *Connections* tab, where MassTransit names each connection after the assembly (`Orders.API`, `Inventory.API`, `Payments.API`). Expect to lose half an hour to this in `3.3` otherwise.
+
+**A dead broker does not take a service down, and that is the whole point of the item.** With `rabbitmq` stopped, Orders.API still starts, still serves HTTP (`GET /orders/{id}` returned its usual `404`, so the `OrdersDb` query ran), and MassTransit logs `warn: Connection Failed` plus `Retrying 00:00:05…` with backoff — never `fail`. On `docker compose start rabbitmq` it **reconnects on its own**, no restart. Contrast that with `2.3`: Catalog down means `502` and no order created. Same unavailability, opposite consequence.
+
+**`required` survives the serializer — the open question from `0.3` is closed.** Measured against the real `Shop133.Contracts` types with `SystemTextJsonMessageSerializer.Options`: a payload missing `productSku` throws `JsonException: … was missing required properties including: 'productSku'`. An incomplete message never reaches a consumer with `null` inside; it fails at deserialization, which in `3.4` means it lands in the error queue rather than as a `NullReferenceException` in consumer logic. Do not be misled by `RespectRequiredConstructorParameters = False` — that option is about constructor parameters, not `required` members, which are always validated.
+
+**Every new guard in a `Program.cs` is a new line in that service's test factory — they change together.** `3.1` added the `ConnectionStrings:RabbitMq` guard and **`Orders.Tests` went 17/17 red instantly**, because `WebApplicationFactory<Program>` runs the real `Program.cs` and the key is read before `app.Build()`, so `ConfigureTestServices` never gets a chance. The fix is a third `UseSetting` in `OrdersApiFactory`; its comment used to say "las dos claves" and now says three. **`3.3` owes the mirror image**: removing the `Services:CatalogBaseUrl` guard means removing its `UseSetting` too. Nothing but the suite catches this. The added key is **not** a real broker dependency — measured with `docker compose stop rabbitmq`, the tests still pass 6/6, because nothing publishes and the bus only warns; the key merely has to exist.
+
+**An XML comment cannot contain `--`.** Documenting the `--version` flag inside a `.csproj` comment broke all three projects with `error MSB4025`. It bites exactly when documenting a CLI option, which is when you most want to write it.
+
+`MassTransit.RabbitMQ` 8.5.10 resolves **`RabbitMQ.Client` 7.2.1**, the new async client rather than 6.x. That was the open risk against a RabbitMQ **4.x** broker, which dropped global QoS; nothing broke, but that version pair is where to look if a `PRECONDITION_FAILED` or channel close ever appears at startup. And **`guest` only authenticates from localhost** — fine while the services run from the IDE, a problem the day they get containers.
+
 **Endpoint prose lives in `[EndpointSummary]`/`[EndpointDescription]`, never in the XML comments.** `<GenerateDocumentationFile>` is deliberately **off**. The `<summary>` blocks all over the controllers are *design rationale* — "*Descartado* un CRUD completo…", references to roadmap items — written for whoever maintains the service; publishing them would turn the API reference into a logbook. Two audiences, two places, and the compiler flag must not merge them. Turning it on would also raise ~CS1591 across the DTOs in a build that reports `0 Warning(s)`. The cost is accepted duplication: the unknown-category `400` is now explained in the `ModelState` message, the XML comment and the attribute, with nothing keeping the three in sync. The document's `info` block is set by an inline `AddDocumentTransformer` in `Program.cs` — without Swashbuckle that is the only way to change a title that otherwise reads `Catalog.API | v1`, the assembly name.
 
 **`OpenApiInfo` is in the `Microsoft.OpenApi` namespace, not `Microsoft.OpenApi.Models`** — v2 (`2.7.5`, what `Microsoft.AspNetCore.OpenApi` 10.0.11 depends on) moved the types, so every tutorial's `using` fails to compile. Two more measured facts about the generated document: numeric fields come out as `"type": ["integer","string"]` (that is how .NET 10 expresses JSON's string-encoded numbers in OpenAPI 3.1, not something the `[Range]` attributes caused), and **`decimal` is announced as `"format": "double"`** — harmless until someone generates a client from the document, which is a Phase 6 concern.
@@ -105,7 +121,7 @@ Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed su
 | 0 | Solution scaffolding, docker-compose, Contracts, architecture tests | **Closed** — merged to `main`, tagged `fase-0` |
 | 1 | Catalog.API | **Code complete** — 1.1–1.7 done; awaiting the PRs to `develop`/`main` and the `fase-1` tag |
 | 2 | Orders.API (synchronous) | **Code complete** — 2.1–2.4 done; awaiting the PRs to `develop`/`main` and the `fase-2` tag |
-| 3 | MassTransit + RabbitMQ messaging | Not started |
+| 3 | MassTransit + RabbitMQ messaging | **In progress** — 3.1 done; 3.2–3.7 pending |
 | 4 | Saga + compensations | Not started |
 | 5 | YARP Gateway | Not started |
 | 6 | Frontend (MVC + Bootstrap 5) | Not started |
@@ -228,7 +244,7 @@ Tests are not a phase. They are numbered items spread across the roadmap — `0.
 
 The reference rules read the **`.csproj` files**, not the compiled assemblies: Roslyn prunes unused references from the manifest, so with service projects still empty an assembly-level check would pass vacuously. `ProjectGraph.cs` is that reader; add new reference rules on top of it. Rules about *types* (records, immutability) use plain reflection, and `NetArchTest` covers the one namespace-dependency assertion.
 
-**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`, and since `2.4`: **12 `Fast`** (`Shop133.ArchitectureTests`) and **36 `Docker`** (19 `Catalog.Tests` + 17 `Orders.Tests`), **48 in total**.
+**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`, and since `3.1`: **13 `Fast`** (`Shop133.ArchitectureTests`) and **36 `Docker`** (19 `Catalog.Tests` + 17 `Orders.Tests`), **49 in total**.
 
 **5b. Test projects run on Microsoft.Testing.Platform, not VSTest.** The .NET 10 SDK dropped the VSTest bridge that `xunit.v3` used to run through, so the opt-in lives in `global.json` (`"test": { "runner": "Microsoft.Testing.Platform" }`) and every test project needs `<OutputType>Exe</OutputType>` — it launches itself. Consequences: `Microsoft.NET.Test.Sdk` and `xunit.runner.visualstudio` are VSTest infrastructure and must **not** be added, and the filter syntax changed (see "Commands").
 
@@ -236,7 +252,7 @@ The reference rules read the **`.csproj` files**, not the compiled assemblies: R
 
 **7. Assertions use xUnit's own `Assert`.** Deliberate: **FluentAssertions 8.x moved to a commercial license** for non-open-source use — the same trap as MassTransit 9. If fluent syntax ever becomes worth a package, prefer Shouldly (BSD) over pinning FluentAssertions to 7.x.
 
-Already in use: `xunit.v3` 4.0.0, `NetArchTest.Rules` 1.3.2, since `1.7` `Microsoft.AspNetCore.Mvc.Testing` 10.0.11 + `Testcontainers.MsSql` 4.14.0, and since `2.4` **`WireMock.Net` 2.15.0** (Apache-2.0, `Orders.Tests` only, deleted in `3.7`). Packages the remaining items will need, all still subject to "ask before adding a NuGet package": `MassTransit.TestFramework`, `Testcontainers.RabbitMq`, `Respawn` — the last one was **considered and rejected twice**, in `1.7` and again in `2.4`, see [docs/fase_1_7.md](docs/fase_1_7.md) and [docs/fase_2_4.md](docs/fase_2_4.md).
+Already in use: `xunit.v3` 4.0.0, `NetArchTest.Rules` 1.3.2, since `1.7` `Microsoft.AspNetCore.Mvc.Testing` 10.0.11 + `Testcontainers.MsSql` 4.14.0, and since `2.4` **`WireMock.Net` 2.15.0** (Apache-2.0, `Orders.Tests` only, deleted in `3.7`). Packages the remaining items will need, all still subject to "ask before adding a NuGet package": `MassTransit.TestFramework`, `Testcontainers.RabbitMq`, `Respawn` — the last one was **considered and rejected twice**, in `1.7` and again in `2.4`, see [docs/fase_1_7.md](docs/fase_1_7.md) and [docs/fase_2_4.md](docs/fase_2_4.md). `MassTransit.TestFramework` must be **8.5.10** to match `src/`, and `MassTransitPackages_StayOnMajorVersion8` only scans `src/` — so in a test project the 8.x pin rests on nothing but this line.
 
 ## Sub-phase documentation
 
@@ -298,6 +314,23 @@ dotnet run --project src/Services/Catalog/Catalog.API   # 5124
 # Orders needs Catalog reachable at Services:CatalogBaseUrl (5124) since 2.3:
 # with Catalog down, POST /orders answers 502 by design.
 dotnet run --project src/Services/Orders/Orders.API      # 5189
+
+# Since 3.1 these three also connect to RabbitMQ on startup. A dead broker does
+# NOT stop them booting — it logs `warn: Connection Failed` and retries. They all
+# need ConnectionStrings:RabbitMq in User Secrets:
+#   dotnet user-secrets set "ConnectionStrings:RabbitMq" `
+#     "amqp://guest:guest@localhost:5672" --project src/Services/Orders/Orders.API
+dotnet run --project src/Services/Inventory/Inventory.API  # 5015
+dotnet run --project src/Services/Payments/Payments.API    # 5156
+
+# Inspect the broker without the UI. NOTE: with no consumers and no publishes,
+# both lists are legitimately EMPTY — MassTransit declares topology lazily, so
+# "no queues" is not evidence the bus is disconnected. Check connections instead.
+$c = New-Object System.Management.Automation.PSCredential('guest', `
+       (ConvertTo-SecureString 'guest' -AsPlainText -Force))
+Invoke-RestMethod http://localhost:15672/api/connections -Credential $c |
+  Select-Object @{n='client';e={$_.client_properties.connection_name}}, state
+Invoke-RestMethod http://localhost:15672/api/queues -Credential $c | Select-Object name
 
 # Tests — see the "Testing" section for what each category covers.
 #

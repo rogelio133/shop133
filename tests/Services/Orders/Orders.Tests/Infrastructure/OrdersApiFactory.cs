@@ -57,7 +57,7 @@ public sealed class OrdersApiFactory : WebApplicationFactory<Program>, IAsyncLif
         // en la base de desarrollo sin que nada lo delatara.
         builder.UseEnvironment("Testing");
 
-        // Las dos claves que Program.cs exige, y las dos por la misma razón: las
+        // Las TRES claves que Program.cs exige, y las tres por la misma razón: las
         // lee y lanza InvalidOperationException *antes* de app.Build(), así que
         // sustituir servicios en ConfigureTestServices llegaría tarde — el host
         // ni se construiría. Dándoles valor se prueban el AddDbContext y el
@@ -67,6 +67,21 @@ public sealed class OrdersApiFactory : WebApplicationFactory<Program>, IAsyncLif
         // PHASE-2 DEBT: cuando 3.3 sustituya la llamada síncrona por el evento
         // OrderCreated, esta clave desaparece de Program.cs y esta línea con ella.
         builder.UseSetting("Services:CatalogBaseUrl", catalogBaseUrl);
+
+        // Añadida en 3.1, cuando Program.cs empezó a exigir el URI del broker.
+        // Sin esta línea la suite entera falla con "Falta la configuración
+        // 'ConnectionStrings:RabbitMq'" — 17 de 17, medido.
+        //
+        // NO es una dependencia real de RabbitMQ: ningún test de 2.4 publica ni
+        // consume nada, y el bus arranca en un hosted service que, si no encuentra
+        // broker, se limita a avisar y reintentar en segundo plano (ver
+        // docs/fase_3_1.md). Con el broker levantado se conecta y no hace nada;
+        // con el broker caído los tests pasan igual. Lo único que hace falta es
+        // que la clave EXISTA.
+        //
+        // En 3.7 esto se sustituye por el harness en memoria de MassTransit, que
+        // es lo que permite probar consumers sin broker ni Docker.
+        builder.UseSetting("ConnectionStrings:RabbitMq", "amqp://guest:guest@localhost:5672");
     }
 
     /// <summary>
