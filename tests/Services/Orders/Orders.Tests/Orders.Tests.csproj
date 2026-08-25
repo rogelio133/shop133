@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- Igual que Catalog.Tests y Shop133.ArchitectureTests: xunit.v3 corre sobre
+         Microsoft.Testing.Platform, así que el proyecto de test es un ejecutable
+         que se lanza a sí mismo. Ver la regla 5b de CLAUDE.md. -->
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.0" />
+    <!-- WebApplicationFactory<Program>. Misma versión que en Catalog.Tests. -->
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.11" />
+    <!-- El SQL Server real. Regla 1 de "Testing" en CLAUDE.md: nada de provider
+         InMemory. Aquí importa por el tipo owned de 2.2 — OwnsMany con clave
+         compuesta e IDENTITY no existe fuera de una base relacional. -->
+    <PackageReference Include="Testcontainers.MsSql" Version="4.14.0" />
+    <!--
+      PHASE-2 DEBT: el stub de Catalog.API. Se va en 3.7 junto con CatalogClient
+      y los tests que lo usan; cuando Orders publique OrderCreated no habrá
+      ningún servicio al que suplantar por HTTP.
+
+      2.15.0, Apache-2.0, con lib/net8.0 (corre sin problema sobre net10.0). Es
+      un meta-paquete: arrastra WireMock.Net.Minimal —el servidor de verdad— más
+      GraphQL, ProtoBuf, MimePart, OpenTelemetry y SystemTextJsonPath.
+
+      *Descartado* WireMock.Net.Minimal, que basta para lo que se usa aquí
+      (WireMockServer + Request/Response builders). Ahorra cinco paquetes de
+      primer nivel pero deja el proyecto fuera de lo que documenta cualquier
+      ejemplo de WireMock, y el ahorro real es pequeño: el grueso del árbol
+      (NSwag.Core, Scriban, SimMetrics, TinyMapper, JmesPath) viene de Minimal.
+    -->
+    <PackageReference Include="WireMock.Net" Version="2.15.0" />
+  </ItemGroup>
+
+  <!--
+    Una sola referencia: Orders.API. Arrastra transitivamente
+    Orders.Infrastructure (OrdersDbContext, CatalogClient, Microsoft.Data.SqlClient),
+    Orders.Domain y Shop133.Contracts. Los DTOs de Orders.API/Models se usan tal
+    cual en los tests, para que un cambio de contrato rompa la compilación en vez
+    de un assert.
+
+    Como en Catalog.Tests, este proyecto ve EF Core por la vía transitiva sin
+    incumplir EfCorePackages_LiveOnlyIn_InfrastructureProjects: ProjectGraph solo
+    enumera <repo>/src, así que tests/ es invisible para las 12 reglas de 0.6.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\..\src\Services\Orders\Orders.API\Orders.API.csproj" />
+  </ItemGroup>
+
+</Project>

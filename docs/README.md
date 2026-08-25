@@ -35,5 +35,6 @@ Documentos de procedimiento, no ligados a un punto del roadmap. No siguen la con
 | 2.1 | Modelo `Order`, `OrderItem` | 2026-08-20 | [fase_2_1.md](fase_2_1.md) |
 | 2.2 | EF Core contra `OrdersDb` | 2026-08-24 | [fase_2_2.md](fase_2_2.md) |
 | 2.3 | `POST /orders` con llamada síncrona a Catalog.API | 2026-08-24 | [fase_2_3.md](fase_2_3.md) |
+| 2.4 | `Orders.Tests`: el acoplamiento síncrono con WireMock.Net | 2026-08-25 | [fase_2_4.md](fase_2_4.md) |
 
 El punto **0.1** (crear solución y estructura de carpetas) se completó antes de que existiera esta convención y no se documentó retroactivamente.
