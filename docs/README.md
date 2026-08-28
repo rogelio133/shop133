@@ -38,5 +38,6 @@ Documentos de procedimiento, no ligados a un punto del roadmap. No siguen la con
 | 2.4 | `Orders.Tests`: el acoplamiento síncrono con WireMock.Net | 2026-08-25 | [fase_2_4.md](fase_2_4.md) |
 | 3.1 | MassTransit + RabbitMQ transport en Orders, Inventory y Payments | 2026-08-25 | [fase_3_1.md](fase_3_1.md) |
 | 3.2 | Revisión de los eventos de `Shop133.Contracts` | 2026-08-25 | [fase_3_2.md](fase_3_2.md) |
+| 3.3 | Orders.API publica `OrderCreated` en lugar de llamar síncronamente | 2026-08-27 | [fase_3_3.md](fase_3_3.md) |
 
 El punto **0.1** (crear solución y estructura de carpetas) se completó antes de que existiera esta convención y no se documentó retroactivamente.

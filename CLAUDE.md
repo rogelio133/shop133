@@ -34,7 +34,9 @@ Two things about the test host that look optional and are not. The connection st
 
 **`dotnet test` is broken on this machine and it is not 1.7's doing**: it reports `Zero tests ran / error: 1` in ~150 ms for `Shop133.ArchitectureTests` too, while the same project run as its own executable gives 12/12. The child test host dies right after the `--server dotnettestcli` handshake. The likely cause is the SDK — this file used to record 10.0.303, the machine now has **10.0.400**, and `global.json` rolls forward on its own; 10.0.303 is no longer installed, so the comparison could not be made. `Microsoft.Testing.Platform` 2.3.3 is already the newest published, so there is nothing to upgrade to. Until it is fixed, run the test executables directly — and note the filter option is **`-trait`** there, not `--filter-trait`, which is a `dotnet test` option and errors out with `unknown option`. This must be resolved before `8.3`.
 
-**Smart App Control blocks the first load of an unsigned assembly.** A fresh package restore can make the suite fail with `An Application Control policy has blocked this file. (0x800711C7)` naming a Testcontainers DLL. **Just run it again** — the block is transient while Windows consults the Intelligent Security Graph, and the same file at the same path loads on the next attempt. Do not downgrade the package chasing it (the block moves to whichever assembly is new), and do not turn Smart App Control off: that is **irreversible** without reinstalling Windows.
+**Smart App Control blocks the load of unsigned assemblies, and re-running does not always clear it.** The suite fails with `An Application Control policy has blocked this file. (0x800711C7)` naming a Testcontainers DLL. The first remedy is to **run it again** — the block is often transient while Windows consults the Intelligent Security Graph. **But in `3.3` that failed: twelve retries over ~10 minutes and both `Orders.Tests` and `Catalog.Tests` stayed blocked on `Docker.DotNet.Handler.Abstractions.dll`**, which was not even freshly restored (created 2026-08-20). When it happens, the tests still *discover* correctly — the counts are right — and every one fails in the fixture constructor, so **a blocked run is distinguishable from a real failure by every test failing identically with `TypeInitializationException` on `TestcontainersSettings`**. Do not downgrade the package chasing it (the block moves to whichever assembly is new), and do not turn Smart App Control off: that is **irreversible** without reinstalling Windows. Verify by hand instead, and say so in the sub-phase doc.
+
+**Testcontainers can fail right after Docker Desktop starts even though `docker info` already answers**, with `NpipeEndpointAuthenticationProvider` in the stack: the `\\.\pipe\docker_engine` pipe appears later than the daemon. Wait and retry.
 
 **Phase 2: every item is done.** `2.4` closed the last one on `feature/fase-2-orders`; what remains is the git ceremony (PR to `develop`, PR to `main`, annotated `fase-2` tag), not code. `2.1` — see [docs/fase_2_1.md](docs/fase_2_1.md). It added the first business code of Orders: `Order`, `OrderItem` and the `OrderStatus` enum, all three in **`Orders.Domain/Entities/`** and not in `Orders.Infrastructure`. That is the mirror image of 1.1's decision, not a contradiction of it — Catalog has no `.Domain` because it is a CRUD, Orders has one because the saga lives there, and [OrderLine.cs](src/Shared/Shop133.Contracts/OrderLine.cs) has said "the `OrderItem` entity of Orders.Domain" in writing since `0.3`. **No `.csproj` was touched**: `Orders.Domain` still has its single `ProjectReference` to `Shop133.Contracts` and not one `PackageReference` — EF Core cannot go there, and `LayeringRulesTests` enforces both. The architecture suite stays at **12**. Nothing in `Shop133.Contracts` changed either: `OrderItem` **duplicates** `OrderLine`'s five fields rather than containing it, so the entity can gain columns without breaking the contract. `2.3` is what translates between them.
 
@@ -96,6 +98,28 @@ The broker URI is **one key, `ConnectionStrings:RabbitMq`**, in User Secrets (`a
 
 `MassTransit.RabbitMQ` 8.5.10 resolves **`RabbitMQ.Client` 7.2.1**, the new async client rather than 6.x. That was the open risk against a RabbitMQ **4.x** broker, which dropped global QoS; nothing broke, but that version pair is where to look if a `PRECONDITION_FAILED` or channel close ever appears at startup. And **`guest` only authenticates from localhost** — fine while the services run from the IDE, a problem the day they get containers.
 
+**`3.3` is done — the Phase 2 debt is gone and the project publishes its first message** — see [docs/fase_3_3.md](docs/fase_3_3.md). `Orders.Infrastructure/Catalog/` was deleted whole, along with the `Services:CatalogBaseUrl` guard, its `appsettings.json` section and its `UseSetting` in `OrdersApiFactory`. **No package was added and no `.csproj` under `src/` was touched**, so the architecture suite stays at **14** — a rule making rule 2 executable was considered and is **impossible with `ProjectGraph`**: `HttpClient` lives in the shared framework, so a service can call another over HTTP without leaving a trace in any reference.
+
+**Measured, and it is the whole point of the phase: with `catalog-api` stopped, `POST /orders` returns `201` in 420 ms.** In `2.3` the same request returned `502` after ~5 s. Equally measured, the other half: before the first POST the broker had **zero** non-`amq.*` exchanges, and after it `Shop133.Contracts.Events:OrderCreated` (fanout) exists. **There are still zero queues and that is correct** — a fanout with no bindings discards what it receives, so in `3.3` the message is published into the void; `3.4` creates the first queue by registering Inventory's consumer.
+
+**The open question from `0.3` is closed: the client sends the frozen snapshot.** `CreateOrderItemRequest` grew `productSku`, `productName` and `unitPrice`, which **reverses decision 4 of `2.3`** ("Catalog is authoritative on prices") — written up as a reversal, not disguised. The event-fed catalog read-model was *rejected on size, not merit*: it needs MassTransit in Catalog.API, three new contracts (breaking the 9 messages of decision 1 of `0.3`), an `OrdersDb` migration, a consumer, and a cold-start where nothing can be ordered. **The price is explicit: Orders no longer validates prices or existence** — a client can order product `999999` at `0.01` and get a `201`, and that amount is what Payments charges in `3.5`.
+
+**Those are two holes and `3.3` first claimed both were covered — corrected the same day, see decision 2b of [docs/fase_3_3.md](docs/fase_3_3.md).** *Existence* does move: Inventory finds no reservable stock in `3.4` and publishes `StockRejected`, so the order is *cancelled* rather than *rejected* — a synchronous validation became a state of the order, which is exactly what choreography relocates. **The amount moved nowhere.** Inventory holds quantities, not prices, so an order for a product that *does* exist at `0.01` clears the reservation, reaches Payments and is charged a cent, with no roadmap item ever noticing. The fix is **`4.8`/`4.9`**, created by that correction: Catalog.API gains MassTransit, consumes `OrderCreated` and answers `OrderPricingValidated`/`OrderPricingRejected`, and the saga gets a `PricingPending` **before** `StockPending` — so a rejection cancels with nothing to compensate, and Catalog is back on the critical path *asynchronously* (Catalog down means the order waits, not a `502`). **`4.9` forces a re-read of `4.2`**, whose state list predates it.
+
+**What needs validating is the snapshot's authenticity, not its equality** — comparing against Catalog's *current* price would reject a legitimate order whose price changed mid-checkout, and freezing the price the customer saw is correct behaviour, not a concession. That also demotes the read-model rejected in decision 1: a lagging copy does not restore authority over the price, it just adds a lag window, so it was rightly rejected but for the wrong reason. Signed (HMAC) snapshots were considered and dropped: key distribution and expiry semantics teach nothing about sagas. The remaining layer is *who* may send the snapshot — `6.3` (**cart in server session, not a cookie**, so `Shop133.Web` mints it) and `8.1`; neither replaces `4.8`.
+
+**`SaveChangesAsync` first, `Publish` after — and the dual-write hole is deliberate.** Publishing first would let Inventory reserve stock for an order that never persisted: leaked stock, which rule 7 exists to prevent. The cost of this order is that a crash between the COMMIT and the `Publish` leaves the order `Pending` forever with no event. That is unfixable with two systems and no distributed transaction; the fix is the transactional outbox in `4.5` (`MassTransit.EntityFrameworkCore`), and until then the hole is annotated in `OrdersController`. Related and not stylistic: **`IPublishEndpoint` is injected, never `IBus`** — 4.5's outbox hooks the former (scoped) and cannot see anything published through the latter (singleton). The `Publish` gets `CancellationToken.None`, because once the order is committed a closed browser tab must not strand it.
+
+**`Orders.Tests` went from 17 to 10, and 7 of the missing ones tested debt that no longer exists.** `CatalogUnavailableTests`, `CatalogStub` and the `WireMock.Net` package were deleted **in `3.3`, not `3.7`**: they stopped compiling the moment `OrdersApiFactory` lost its `catalogBaseUrl` parameter, and keeping them alive would have meant `Skip`ping them all phase. Two new tests carry the change: `Create_ProductThatCatalogDoesNotKnow_Returns201Anyway` (the same scenario that returned `400` in `2.4`) and `Create_InconsistentSnapshotForSameProduct_Returns400` — the new 400 branch, since two body lines for one product can now contradict each other on price, which could not happen when Catalog supplied the snapshot once per product.
+
+**`Create_OversizedSku_Returns400` changed owner without changing meaning-looking name.** The 51-char sku used to come from Catalog, so no DataAnnotation could see it: the entity guard threw and the controller's `catch (ArgumentException)` turned it into a `400` instead of a `500` — *that* was the assertion. Now the value arrives in the body and the DTO's `[MaxLength]` cuts it before the action runs. The catch stays as defence in depth but **no test exercises it any more**; do not "clean it up" as dead code.
+
+**The `ConnectionStrings:RabbitMq` `UseSetting` stopped being decorative.** In `3.1` the key merely had to exist — nothing published, and a bus without a broker just warns and retries, so the suite passed with RabbitMQ stopped. Now `Publish` on the RabbitMQ transport **waits for a connection instead of failing fast**: with the broker down the POST hangs rather than erroring. `docker compose up -d` is a prerequisite of `Orders.Tests` until `3.7` brings the in-memory harness.
+
+**Two RabbitMQ gotchas measured here.** `Invoke-RestMethod http://localhost:15672/api/exchanges` piped through the `Where-Object { $_.name -notlike 'amq.*' }` filter this file suggests for queues returns an **empty list even when the exchange exists** — precisely the result that makes you think the publish failed. The query that works carries the vhost: `/api/exchanges/%2F`. And **RabbitMQ 4.x refuses to create a transient non-exclusive queue** (`Feature 'transient_nonexcl_queues' is deprecated`), so a hand-bound spy queue must be `durable:true`.
+
+**The real envelope confirmed two decisions from `0.3` that had been written but never checked.** The published message carries its own `messageId` and `conversationId` with **`correlationId: null`** — correlation by `OrderId` is the line the saga configures in `4.1`, and `3.6`'s idempotency uses the envelope's `messageId`, neither being a contract field. Also confirmed against a real broker: `decimal` travels as a JSON **string**, and **trailing zeros are lost** — `249.00` was published and `"249"` travelled.
+
 **Endpoint prose lives in `[EndpointSummary]`/`[EndpointDescription]`, never in the XML comments.** `<GenerateDocumentationFile>` is deliberately **off**. The `<summary>` blocks all over the controllers are *design rationale* — "*Descartado* un CRUD completo…", references to roadmap items — written for whoever maintains the service; publishing them would turn the API reference into a logbook. Two audiences, two places, and the compiler flag must not merge them. Turning it on would also raise ~CS1591 across the DTOs in a build that reports `0 Warning(s)`. The cost is accepted duplication: the unknown-category `400` is now explained in the `ModelState` message, the XML comment and the attribute, with nothing keeping the three in sync. The document's `info` block is set by an inline `AddDocumentTransformer` in `Program.cs` — without Swashbuckle that is the only way to change a title that otherwise reads `Catalog.API | v1`, the assembly name.
 
 **`OpenApiInfo` is in the `Microsoft.OpenApi` namespace, not `Microsoft.OpenApi.Models`** — v2 (`2.7.5`, what `Microsoft.AspNetCore.OpenApi` 10.0.11 depends on) moved the types, so every tutorial's `using` fails to compile. Two more measured facts about the generated document: numeric fields come out as `"type": ["integer","string"]` (that is how .NET 10 expresses JSON's string-encoded numbers in OpenAPI 3.1, not something the `[Range]` attributes caused), and **`decimal` is announced as `"format": "double"`** — harmless until someone generates a client from the document, which is a Phase 6 concern.
@@ -127,7 +151,7 @@ Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed su
 | 0 | Solution scaffolding, docker-compose, Contracts, architecture tests | **Closed** — merged to `main`, tagged `fase-0` |
 | 1 | Catalog.API | **Code complete** — 1.1–1.7 done; awaiting the PRs to `develop`/`main` and the `fase-1` tag |
 | 2 | Orders.API (synchronous) | **Code complete** — 2.1–2.4 done; awaiting the PRs to `develop`/`main` and the `fase-2` tag |
-| 3 | MassTransit + RabbitMQ messaging | **In progress** — 3.1–3.2 done; 3.3–3.7 pending |
+| 3 | MassTransit + RabbitMQ messaging | **In progress** — 3.1–3.3 done; 3.4–3.7 pending |
 | 4 | Saga + compensations | Not started |
 | 5 | YARP Gateway | Not started |
 | 6 | Frontend (MVC + Bootstrap 5) | Not started |
@@ -191,7 +215,7 @@ These are the rules the project exists to teach. Breaking one silently defeats t
 
 **1. One database per service.** No service opens a connection to another service's database. Not for a "quick read", not for a join, not for a report. If a service needs another's data, it gets it through an event or an API call. `CatalogDb`, `OrdersDb`, `InventoryDb`, `PaymentsDb` each have exactly one owner. Since Phase 0.4 this is enforced by SQL Server, not by convention: each service connects with its own login (`catalog_user`, `orders_user`, …) that has `db_owner` on its own database and no access at all to the others. Reaching for a neighbour's database fails with `Msg 916`. Never "fix" that by switching a service to `sa`.
 
-**2. Services communicate through events.** From Phase 3 onward, cross-service communication goes through RabbitMQ. The synchronous `HttpClient` call from Orders → Catalog in Phase 2 is *deliberate technical debt* meant to make the coupling painful; mark it `// PHASE-2 DEBT: replaced by OrderCreated event in Phase 3` and delete it in Phase 3.
+**2. Services communicate through events.** From Phase 3 onward, cross-service communication goes through RabbitMQ. The synchronous `HttpClient` call from Orders → Catalog was *deliberate technical debt* meant to make the coupling painful — **and it was deleted in `3.3`**, along with its config key, its tests and its NuGet package; there is no longer a single `HttpClient` in Orders.API. That deletion is the reference for the next one: the debt lived in one folder so it could go in one piece. No new cross-service HTTP call may be added. This rule **cannot be enforced by the architecture tests** — `HttpClient` is in the shared framework and leaves no trace in a `.csproj`, so it rests on review.
 
 **3. The Frontend talks only to the Gateway.** `Shop133.Web` never holds a base URL of an individual service. CORS, rate limiting, and (later) auth are centralized at the Gateway.
 
@@ -250,7 +274,9 @@ Tests are not a phase. They are numbered items spread across the roadmap — `0.
 
 The reference rules read the **`.csproj` files**, not the compiled assemblies: Roslyn prunes unused references from the manifest, so with service projects still empty an assembly-level check would pass vacuously. `ProjectGraph.cs` is that reader; add new reference rules on top of it. Rules about *types* (records, immutability) use plain reflection, and `NetArchTest` covers the one namespace-dependency assertion.
 
-**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`, and since `3.2`: **14 `Fast`** (`Shop133.ArchitectureTests`) and **36 `Docker`** (19 `Catalog.Tests` + 17 `Orders.Tests`), **50 in total**.
+**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`, and since `3.3`: **14 `Fast`** (`Shop133.ArchitectureTests`) and **29 `Docker`** (19 `Catalog.Tests` + 10 `Orders.Tests`), **43 in total**. Orders dropped from 17 because `3.3` deleted the seven that tested the synchronous debt — that is the intended outcome, not lost coverage.
+
+**Since `3.3`, `Orders.Tests` needs RabbitMQ up, not just Docker.** `POST /orders` really publishes, and `Publish` on the RabbitMQ transport waits for a connection instead of failing fast — with the broker down the request hangs. `docker compose up -d` until `3.7` swaps in the in-memory harness.
 
 **5b. Test projects run on Microsoft.Testing.Platform, not VSTest.** The .NET 10 SDK dropped the VSTest bridge that `xunit.v3` used to run through, so the opt-in lives in `global.json` (`"test": { "runner": "Microsoft.Testing.Platform" }`) and every test project needs `<OutputType>Exe</OutputType>` — it launches itself. Consequences: `Microsoft.NET.Test.Sdk` and `xunit.runner.visualstudio` are VSTest infrastructure and must **not** be added, and the filter syntax changed (see "Commands").
 
@@ -317,8 +343,9 @@ Available after Phase 0 scaffolding:
 ```powershell
 dotnet build
 dotnet run --project src/Services/Catalog/Catalog.API   # 5124
-# Orders needs Catalog reachable at Services:CatalogBaseUrl (5124) since 2.3:
-# with Catalog down, POST /orders answers 502 by design.
+# Since 3.3 Orders does NOT need Catalog: it publishes OrderCreated instead of
+# calling it. With Catalog down, POST /orders answers 201 (measured: 420 ms).
+# It does need RabbitMQ — a Publish with the broker down hangs rather than fails.
 dotnet run --project src/Services/Orders/Orders.API      # 5189
 
 # Since 3.1 these three also connect to RabbitMQ on startup. A dead broker does
@@ -329,14 +356,22 @@ dotnet run --project src/Services/Orders/Orders.API      # 5189
 dotnet run --project src/Services/Inventory/Inventory.API  # 5015
 dotnet run --project src/Services/Payments/Payments.API    # 5156
 
-# Inspect the broker without the UI. NOTE: with no consumers and no publishes,
-# both lists are legitimately EMPTY — MassTransit declares topology lazily, so
-# "no queues" is not evidence the bus is disconnected. Check connections instead.
+# Inspect the broker without the UI. Since 3.3 the exchange exists; QUEUES ARE
+# STILL LEGITIMATELY EMPTY until 3.4 registers Inventory's consumer — a fanout
+# with no bindings discards what it receives, so today the message goes nowhere.
+# MassTransit declares topology lazily, so "no queues" is never evidence that the
+# bus is disconnected. Check connections for that.
 $c = New-Object System.Management.Automation.PSCredential('guest', `
        (ConvertTo-SecureString 'guest' -AsPlainText -Force))
 Invoke-RestMethod http://localhost:15672/api/connections -Credential $c |
   Select-Object @{n='client';e={$_.client_properties.connection_name}}, state
 Invoke-RestMethod http://localhost:15672/api/queues -Credential $c | Select-Object name
+
+# Exchanges: the vhost MUST be in the path. Piping /api/exchanges through a
+# Where-Object name filter returns an EMPTY list even when the exchange exists —
+# measured in 3.3, and it looks exactly like a publish that never happened.
+Invoke-RestMethod "http://localhost:15672/api/exchanges/%2F" -Credential $c |
+  ForEach-Object { "{0,-45} {1}" -f $_.name, $_.type }
 
 # Tests — see the "Testing" section for what each category covers.
 #
@@ -354,8 +389,8 @@ dotnet test tests/Shop133.ArchitectureTests        # a single test project
 tests\Shop133.ArchitectureTests\bin\Debug\net10.0\Shop133.ArchitectureTests.exe                    # 14
 tests\Shop133.ArchitectureTests\bin\Debug\net10.0\Shop133.ArchitectureTests.exe -trait "Category=Fast"
 tests\Services\Catalog\Catalog.Tests\bin\Debug\net10.0\Catalog.Tests.exe                           # 19, needs Docker, ~76 s
-tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.exe                              # 17, needs Docker, ~76 s
-tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.exe -class "Orders.Tests.CatalogUnavailableTests"
+tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.exe                              # 10, needs Docker + RabbitMQ
+tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.exe -class "Orders.Tests.CreateOrderTests"
 
 # Redirect to a file rather than reading the console tail: EF Core logs at info,
 # so a single failure's detail scrolls far out of view. That is how 2.4's one

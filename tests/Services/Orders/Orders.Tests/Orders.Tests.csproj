@@ -20,26 +20,27 @@
          compuesta e IDENTITY no existe fuera de una base relacional. -->
     <PackageReference Include="Testcontainers.MsSql" Version="4.14.0" />
     <!--
-      PHASE-2 DEBT: el stub de Catalog.API. Se va en 3.7 junto con CatalogClient
-      y los tests que lo usan; cuando Orders publique OrderCreated no habrá
-      ningún servicio al que suplantar por HTTP.
+      Aquí estaba WireMock.Net 2.15.0, el stub de Catalog.API que introdujo 2.4.
+      Lo quitó 3.3 junto con CatalogStub y CatalogUnavailableTests: al borrar la
+      llamada síncrona no queda ningún servicio al que suplantar por HTTP.
 
-      2.15.0, Apache-2.0, con lib/net8.0 (corre sin problema sobre net10.0). Es
-      un meta-paquete: arrastra WireMock.Net.Minimal —el servidor de verdad— más
-      GraphQL, ProtoBuf, MimePart, OpenTelemetry y SystemTextJsonPath.
+      El roadmap situaba ese borrado en 3.7, pero no había forma de esperar: en
+      cuanto OrdersApiFactory perdió su parámetro catalogBaseUrl, esos tests
+      dejaron de compilar, y mantenerlos vivos habría significado dejarlos en
+      Skip toda la fase. 3.7 se queda con lo suyo — los consumers de Inventory y
+      Payments y el test de idempotencia.
 
-      *Descartado* WireMock.Net.Minimal, que basta para lo que se usa aquí
-      (WireMockServer + Request/Response builders). Ahorra cinco paquetes de
-      primer nivel pero deja el proyecto fuera de lo que documenta cualquier
-      ejemplo de WireMock, y el ahorro real es pequeño: el grueso del árbol
-      (NSwag.Core, Scriban, SimMetrics, TinyMapper, JmesPath) viene de Minimal.
+      MassTransit.TestFramework 8.5.10 entra en 3.7 y NO está aquí todavía: hoy
+      estos tests publican contra el RabbitMQ real del compose (ver
+      OrdersApiFactory). Cuando entre, debe ser 8.5.10 para casar con src/ —
+      MassTransitPackages_StayOnMajorVersion8 solo escanea src/, así que ese pin
+      no lo vigila nadie.
     -->
-    <PackageReference Include="WireMock.Net" Version="2.15.0" />
   </ItemGroup>
 
   <!--
     Una sola referencia: Orders.API. Arrastra transitivamente
-    Orders.Infrastructure (OrdersDbContext, CatalogClient, Microsoft.Data.SqlClient),
+    Orders.Infrastructure (OrdersDbContext, Microsoft.Data.SqlClient),
     Orders.Domain y Shop133.Contracts. Los DTOs de Orders.API/Models se usan tal
     cual en los tests, para que un cambio de contrato rompa la compilación en vez
     de un assert.

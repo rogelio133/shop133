@@ -11,8 +11,10 @@ namespace Orders.Tests.Infrastructure;
 
 /// <summary>
 /// Levanta Orders.API en memoria contra una base de datos recién creada dentro
-/// del contenedor de <see cref="SqlServerContainerFixture"/>, apuntando su
-/// cliente de Catalog a un <see cref="CatalogStub"/>.
+/// del contenedor de <see cref="SqlServerContainerFixture"/>.
+///
+/// **Necesita el RabbitMQ del compose levantado desde 3.3**, y eso es nuevo: ver
+/// la nota sobre <c>ConnectionStrings:RabbitMq</c> más abajo.
 ///
 /// **Una instancia por test.** xUnit construye la clase de test una vez por
 /// método, y estas fábricas son campos de instancia, así que cada test estrena
@@ -31,17 +33,10 @@ public sealed class OrdersApiFactory : WebApplicationFactory<Program>, IAsyncLif
     private static int databaseCounter;
 
     private readonly SqlServerContainerFixture container;
-    private readonly string catalogBaseUrl;
 
-    /// <param name="catalogBaseUrl">
-    /// La URL del stub de Catalog. Se pasa por constructor y no se configura
-    /// después porque Program.cs la lee durante la construcción del host, y para
-    /// entonces ya tiene que estar.
-    /// </param>
-    public OrdersApiFactory(SqlServerContainerFixture container, string catalogBaseUrl)
+    public OrdersApiFactory(SqlServerContainerFixture container)
     {
         this.container = container;
-        this.catalogBaseUrl = catalogBaseUrl;
 
         DatabaseName = $"OrdersTests_{Interlocked.Increment(ref databaseCounter):D3}";
     }
@@ -57,30 +52,44 @@ public sealed class OrdersApiFactory : WebApplicationFactory<Program>, IAsyncLif
         // en la base de desarrollo sin que nada lo delatara.
         builder.UseEnvironment("Testing");
 
-        // Las TRES claves que Program.cs exige, y las tres por la misma razón: las
-        // lee y lanza InvalidOperationException *antes* de app.Build(), así que
-        // sustituir servicios en ConfigureTestServices llegaría tarde — el host
-        // ni se construiría. Dándoles valor se prueban el AddDbContext y el
-        // AddHttpClient reales del servicio, sin reregistrar nada.
+        // Las DOS claves que Program.cs exige —eran tres hasta 3.3—, y las dos por
+        // la misma razón: las lee y lanza InvalidOperationException *antes* de
+        // app.Build(), así que sustituir servicios en ConfigureTestServices
+        // llegaría tarde: el host ni se construiría. Dándoles valor se prueban el
+        // AddDbContext y el AddMassTransit reales del servicio, sin reregistrar
+        // nada.
+        //
+        // La regla que esto ilustra, y que 3.1 dejó escrita: cada guarda nueva en
+        // un Program.cs es una línea nueva en esta fábrica, y cada guarda que se
+        // va se lleva la suya. Aquí acaba de irse Services:CatalogBaseUrl con la
+        // llamada síncrona a Catalog. Nada más que esta suite detecta el desajuste.
         builder.UseSetting("ConnectionStrings:OrdersDb", container.ConnectionStringFor(DatabaseName));
-
-        // PHASE-2 DEBT: cuando 3.3 sustituya la llamada síncrona por el evento
-        // OrderCreated, esta clave desaparece de Program.cs y esta línea con ella.
-        builder.UseSetting("Services:CatalogBaseUrl", catalogBaseUrl);
 
         // Añadida en 3.1, cuando Program.cs empezó a exigir el URI del broker.
         // Sin esta línea la suite entera falla con "Falta la configuración
-        // 'ConnectionStrings:RabbitMq'" — 17 de 17, medido.
+        // 'ConnectionStrings:RabbitMq'".
         //
-        // NO es una dependencia real de RabbitMQ: ningún test de 2.4 publica ni
-        // consume nada, y el bus arranca en un hosted service que, si no encuentra
-        // broker, se limita a avisar y reintentar en segundo plano (ver
-        // docs/fase_3_1.md). Con el broker levantado se conecta y no hace nada;
-        // con el broker caído los tests pasan igual. Lo único que hace falta es
-        // que la clave EXISTA.
+        // **Ojo: en 3.1 esto NO era una dependencia real y desde 3.3 SÍ lo es.**
+        // Entonces bastaba con que la clave existiera —nadie publicaba, y un bus
+        // sin broker se limita a avisar y reintentar en segundo plano (ver
+        // docs/fase_3_1.md), así que los tests pasaban con RabbitMQ parado—.
+        // Ahora POST /orders publica OrderCreated de verdad, y un Publish sobre el
+        // transporte de RabbitMQ **espera a que haya conexión en vez de fallar
+        // rápido**: con el broker caído la petición no da error, se queda colgada
+        // hasta que el test expire. `docker compose up -d` es prerrequisito.
         //
-        // En 3.7 esto se sustituye por el harness en memoria de MassTransit, que
-        // es lo que permite probar consumers sin broker ni Docker.
+        // *Descartado* traer aquí el harness en memoria de MassTransit
+        // (MassTransit.TestFramework), que quitaría esa dependencia y además
+        // permitiría afirmar que el evento se publicó. Es el punto 3.7, y hacerlo
+        // aquí obligaría a desmontar el bus que Program.cs ya registró — bastante
+        // más que una línea. Mientras tanto lo que esta suite demuestra del
+        // Publish es lo que un broker real puede demostrar: que no lanza y que no
+        // bloquea. Que el mensaje sale se comprueba en el broker, a mano
+        // (Verificación de docs/fase_3_3.md).
+        //
+        // *Descartado* también Testcontainers.RabbitMq, que haría la suite
+        // autónoma como ya lo es con SQL Server. Es un paquete más y ~10 s de
+        // arranque por ensamblado para una dependencia que 3.7 va a eliminar.
         builder.UseSetting("ConnectionStrings:RabbitMq", "amqp://guest:guest@localhost:5672");
     }
 

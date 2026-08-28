@@ -12,29 +12,36 @@ using Xunit;
 namespace Orders.Tests;
 
 /// <summary>
-/// El camino feliz de <c>POST /orders</c> y todo lo que decide Catalog cuando
-/// Catalog sí contesta. Los caminos en los que Catalog no contesta viven en
-/// <see cref="CatalogUnavailableTests"/>.
+/// <c>POST /orders</c> y <c>GET /orders/{id}</c> después de 3.3.
 ///
-/// Lo que estos tests fijan, más allá de los códigos de estado, es **quién es
-/// dueño de cada dato**: el cuerpo de la petición solo lleva <c>productId</c> y
-/// <c>quantity</c>, y el sku, el nombre y el precio de cada línea salen del stub
-/// de Catalog. Si algún día alguien "simplifica" el DTO añadiéndole el precio,
-/// estos asserts dejan de tener sentido — que es justamente lo que se quiere.
+/// **Estos tests cambiaron de tesis, no solo de forma.** En 2.4 afirmaban quién
+/// era dueño de cada dato: el cuerpo llevaba solo <c>productId</c> y
+/// <c>quantity</c>, y el sku, el nombre y el precio salían de un stub de Catalog.
+/// Ese acoplamiento ya no existe, así que la foto la manda el cliente y lo que
+/// estos tests fijan ahora es lo contrario: que Orders **congela lo que recibe sin
+/// contrastarlo con nadie**. Junto a ellos desaparecieron los seis de
+/// <c>CatalogUnavailableTests</c> y el <c>CatalogStub</c>.
+///
+/// El caso que mejor resume el punto es
+/// <see cref="Create_ProductThatCatalogDoesNotKnow_Returns201Anyway"/>: es el mismo
+/// escenario que en 2.4 devolvía 400 y ahora devuelve 201. La comprobación no se
+/// perdió, se mudó — la hará Inventory en 3.4 con un <c>StockRejected</c>.
 ///
 /// Cada test estrena base de datos (ver <see cref="OrdersApiFactory"/>), así que
 /// no hay disciplina de datos compartidos que mantener: se puede afirmar
-/// "no hay ningún pedido" sin cualificarlo.
+/// "no hay ningún pedido" sin cualificarlo. Lo que sí comparten todos es el
+/// **RabbitMQ del compose**, que desde 3.3 tiene que estar levantado.
 /// </summary>
 [Collection(OrdersApiCollection.Name)]
 [Trait("Category", "Docker")]
-public sealed class CreateOrderTests : IAsyncLifetime
+public sealed class CreateOrderTests(SqlServerContainerFixture container) : IAsyncLifetime
 {
     private const string CustomerEmail = "cliente@shop133.test";
 
-    // Dos productos del catálogo de 1.4. Los valores no tienen que coincidir con
-    // los del seed real —aquí los sirve el stub— pero copiarlos hace los fallos
-    // más legibles cuando se comparan con lo que devuelve Catalog de verdad.
+    // Dos productos del catálogo de 1.4. Ya no los sirve ningún stub: son
+    // literalmente lo que el cuerpo manda. Se copian del seed real porque hace los
+    // fallos más legibles, no porque nada los compruebe contra él — que no se
+    // comprueben es justo lo que 3.3 acepta.
     private const int MugId = 1;
     private const string MugSku = "TAZA-001";
     private const string MugName = "Taza Talavera Puebla";
@@ -46,24 +53,12 @@ public sealed class CreateOrderTests : IAsyncLifetime
     private const decimal KeyringPrice = 89.50m;
 
     private const int UnknownProductId = 999_999;
-    private const int AnotherUnknownProductId = 888_888;
 
-    private readonly CatalogStub catalog;
-    private readonly OrdersApiFactory factory;
+    // Constructor primario otra vez, como en Catalog.Tests: en 2.4 hacía falta uno
+    // explícito porque la fábrica necesitaba la URL del stub y un inicializador de
+    // campo no puede leer otro campo de instancia. Sin stub, la restricción se fue.
+    private readonly OrdersApiFactory factory = new(container);
     private HttpClient client = null!;
-
-    /// <summary>
-    /// El stub se construye antes que la fábrica porque la fábrica necesita su
-    /// URL: Program.cs lee <c>Services:CatalogBaseUrl</c> durante la construcción
-    /// del host, no después. Por eso hay constructor explícito y no un
-    /// constructor primario como en Catalog.Tests — un inicializador de campo no
-    /// puede leer otro campo de instancia.
-    /// </summary>
-    public CreateOrderTests(SqlServerContainerFixture container)
-    {
-        catalog = new CatalogStub();
-        factory = new OrdersApiFactory(container, catalog.Url);
-    }
 
     private static CancellationToken CancellationToken => TestContext.Current.CancellationToken;
 
@@ -77,7 +72,6 @@ public sealed class CreateOrderTests : IAsyncLifetime
     public async ValueTask DisposeAsync()
     {
         client?.Dispose();
-        catalog.Dispose();
 
         await factory.DisposeAsync();
     }
@@ -85,18 +79,22 @@ public sealed class CreateOrderTests : IAsyncLifetime
     // ── Camino feliz ─────────────────────────────────────────────────────────
 
     /// <summary>
-    /// El pedido se crea con el sku, el nombre y el precio **que dijo Catalog**,
-    /// no con ninguno que haya mandado el cliente: el cuerpo no los lleva. Eso es
-    /// lo que convierte a OrderLine en una foto y no en un puntero, y lo que hace
-    /// que el pedido siga siendo legible cuando 1.3 borre el producto.
+    /// El pedido se crea con el sku, el nombre y el precio **que mandó el cliente**.
+    /// En 2.4 este mismo test afirmaba lo contrario —que los dictaba Catalog— y ese
+    /// giro es el contenido de 3.3.
+    ///
+    /// Que el 201 llegue demuestra además que el <c>Publish</c> de
+    /// <c>OrderCreated</c> no lanzó ni se quedó colgado: ocurre antes de construir
+    /// la respuesta. Que el mensaje llegue al exchange correcto no lo puede afirmar
+    /// esta suite sin el harness de 3.7; se comprueba en el broker, a mano.
     /// </summary>
     [Fact]
-    public async Task Create_ValidRequest_Returns201WithTheSnapshotCatalogDictated()
+    public async Task Create_ValidRequest_Returns201WithTheSnapshotTheClientSent()
     {
-        catalog.StubProduct(MugId, MugSku, MugName, MugPrice);
-        catalog.StubProduct(KeyringId, KeyringSku, KeyringName, KeyringPrice);
-
-        var response = await client.PostAsJsonAsync("/orders", NewOrder((MugId, 2), (KeyringId, 1)), CancellationToken);
+        var response = await client.PostAsJsonAsync(
+            "/orders",
+            NewOrder(Mug(2), Keyring(1)),
+            CancellationToken);
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
@@ -106,13 +104,14 @@ public sealed class CreateOrderTests : IAsyncLifetime
 
         // El Id lo acuña la entidad con Guid.NewGuid(), no la base: existe antes
         // del INSERT porque desde la Fase 4 es la clave de correlación de la saga.
+        // Desde 3.3 esa propiedad se cobra — es el OrderId que viaja en el evento.
         Assert.NotEqual(Guid.Empty, created.Id);
 
         // En minúsculas por el LowercaseUrls de Program.cs.
         Assert.Equal($"/orders/{created.Id}", response.Headers.Location?.AbsolutePath);
 
-        // En la Fase 2 no hay nada que mueva el estado: lo hará la máquina de
-        // estados de 4.2.
+        // Sigue siendo Pending: 3.3 publica el evento, pero nadie lo consume aún
+        // ni mueve el estado. Lo hará la máquina de estados de 4.2.
         Assert.Equal("Pending", created.Status);
         Assert.Equal(CustomerEmail, created.CustomerEmail);
 
@@ -128,8 +127,8 @@ public sealed class CreateOrderTests : IAsyncLifetime
         Assert.Equal(KeyringPrice, keyring.UnitPrice);
 
         // Total y Subtotal se calculan, no se persisten (2.1): una sola fuente de
-        // verdad. Si alguien les diera columna, este assert seguiría pasando —
-        // el que lo detectaría es la migración, no el test.
+        // verdad. Este mismo número es el que viaja como OrderCreated.Total y el
+        // que Payments acabará cobrando en 3.5 vía StockReserved.Amount.
         Assert.Equal(587.50m, created.Total);
     }
 
@@ -142,9 +141,7 @@ public sealed class CreateOrderTests : IAsyncLifetime
     [Fact]
     public async Task Create_ValidRequest_IsRetrievableByGetById()
     {
-        catalog.StubProduct(MugId, MugSku, MugName, MugPrice);
-
-        var created = await CreateOrderAsync((MugId, 3));
+        var created = await CreateOrderAsync(Mug(3));
 
         var response = await client.GetAsync($"/orders/{created.Id}", CancellationToken);
 
@@ -164,22 +161,50 @@ public sealed class CreateOrderTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Dos entradas del mismo producto salen como **una** línea con las cantidades
-    /// sumadas, y —lo que de verdad importa— cuestan **una sola** petición a
-    /// Catalog, no dos.
+    /// **El test que resume 3.3.** Un producto que no existe en el catálogo se
+    /// acepta: en 2.4 esta misma petición devolvía 400 nombrando la línea, porque
+    /// Orders preguntaba a Catalog y Catalog decía que no.
     ///
-    /// Las dos mitades del assert responden a dos motivos distintos: agrupar es un
-    /// invariante de <c>Order</c> (un ReserveStock con dos entradas del mismo
-    /// producto obligaría a Inventory a adivinar), y no repetir la petición es el
-    /// coste del acoplamiento síncrono, que 2.3 decidió dejar a la vista.
+    /// Ya no pregunta a nadie, así que no lo puede saber. Quien lo descubrirá es
+    /// Inventory en 3.4, que no encontrará stock reservable para ese ProductId y
+    /// publicará <c>StockRejected</c>: el pedido no se rechaza, se **cancela**. Eso
+    /// es lo que la coreografía mueve de sitio — una validación síncrona se
+    /// convierte en un estado del pedido, y el cliente se entera después.
+    ///
+    /// Cuando 3.4 exista, este test tiene un hermano al otro lado del broker.
     /// </summary>
     [Fact]
-    public async Task Create_RepeatedProductId_GroupsLinesAndQueriesCatalogOnce()
+    public async Task Create_ProductThatCatalogDoesNotKnow_Returns201Anyway()
     {
-        catalog.StubProduct(MugId, MugSku, MugName, MugPrice);
-        catalog.StubProduct(KeyringId, KeyringSku, KeyringName, KeyringPrice);
+        var line = new CreateOrderItemRequest
+        {
+            ProductId = UnknownProductId,
+            ProductSku = "NOPE-001",
+            ProductName = "Producto que no existe",
+            Quantity = 1,
+            UnitPrice = 1.00m,
+        };
 
-        var request = NewOrder((MugId, 2), (KeyringId, 1), (MugId, 3));
+        var response = await client.PostAsJsonAsync("/orders", NewOrder(line), CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.Equal(1, await factory.CountOrdersAsync(CancellationToken));
+    }
+
+    /// <summary>
+    /// Dos entradas del mismo producto salen como **una** línea con las cantidades
+    /// sumadas.
+    ///
+    /// En 2.4 la mitad interesante del assert era que costaba una sola petición a
+    /// Catalog —el coste del acoplamiento, que 2.3 dejó a la vista—. Esa mitad se
+    /// fue con el acoplamiento; queda la otra, que nunca dependió de él: agrupar es
+    /// un invariante de <c>Order</c>, porque un <c>ReserveStock</c> con dos entradas
+    /// del mismo producto obligaría a Inventory a adivinar si reserva la suma.
+    /// </summary>
+    [Fact]
+    public async Task Create_RepeatedProductId_GroupsLinesSummingQuantities()
+    {
+        var request = NewOrder(Mug(2), Keyring(1), Mug(3));
 
         var response = await client.PostAsJsonAsync("/orders", request, CancellationToken);
 
@@ -193,51 +218,23 @@ public sealed class CreateOrderTests : IAsyncLifetime
         var mug = Assert.Single(created.Items, item => item.ProductId == MugId);
         Assert.Equal(5, mug.Quantity);
         Assert.Equal(1245.00m, mug.Subtotal);
-
-        Assert.Equal(1, catalog.RequestCountFor(MugId));
-        Assert.Equal(2, catalog.TotalRequests);
     }
 
-    // ── Producto inexistente ─────────────────────────────────────────────────
+    // ── Validación del cuerpo ────────────────────────────────────────────────
 
     /// <summary>
-    /// 400 y no 404: lo que no existe es un valor del *cuerpo*, no el recurso de
-    /// la URL — el mismo criterio que el categoryId desconocido de 1.3. Y el error
-    /// nombra la línea concreta, no el pedido entero.
+    /// **La rama de error que 3.3 estrena**, y que ocupa el hueco del "producto
+    /// desconocido" que este punto se llevó.
+    ///
+    /// Al venir la foto en el cuerpo, dos líneas del mismo producto pueden
+    /// contradecirse. Antes no podían: la foto la ponía Catalog una sola vez por
+    /// producto. Quedarse con la primera y seguir habría hecho que el cliente
+    /// pagase un precio que no eligió sin enterarse.
     /// </summary>
     [Fact]
-    public async Task Create_UnknownProduct_Returns400NamingTheLine()
+    public async Task Create_InconsistentSnapshotForSameProduct_Returns400()
     {
-        catalog.StubProductNotFound(UnknownProductId);
-
-        var response = await client.PostAsJsonAsync("/orders", NewOrder((UnknownProductId, 1)), CancellationToken);
-
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-
-        var problem = await response.Content.ReadFromJsonAsync<HttpValidationProblemDetails>(CancellationToken);
-
-        Assert.NotNull(problem);
-
-        // La clave sale en PascalCase, como la que genera MVC para una colección:
-        // el error añadido a mano y los de las DataAnnotations son indistinguibles.
-        var error = Assert.Single(problem.Errors, entry => entry.Key == "Items[0].ProductId");
-        Assert.Contains(UnknownProductId.ToString(), string.Join(' ', error.Value));
-    }
-
-    /// <summary>
-    /// Los productos desconocidos se acumulan y salen **todos en un solo
-    /// ValidationProblemDetails**, cada uno en el índice de su primera aparición.
-    /// El bucle del controller hace <c>continue</c> en vez de cortar, y eso es lo
-    /// que evita que el cliente arregle una línea para descubrir la siguiente.
-    /// </summary>
-    [Fact]
-    public async Task Create_SeveralUnknownProducts_ReturnsThemAllInOneProblem()
-    {
-        catalog.StubProductNotFound(UnknownProductId);
-        catalog.StubProductNotFound(AnotherUnknownProductId);
-        catalog.StubProduct(MugId, MugSku, MugName, MugPrice);
-
-        var request = NewOrder((UnknownProductId, 1), (MugId, 2), (AnotherUnknownProductId, 1));
+        var request = NewOrder(Mug(1), Mug(1) with { UnitPrice = 9.99m });
 
         var response = await client.PostAsJsonAsync("/orders", request, CancellationToken);
 
@@ -246,49 +243,42 @@ public sealed class CreateOrderTests : IAsyncLifetime
         var problem = await response.Content.ReadFromJsonAsync<HttpValidationProblemDetails>(CancellationToken);
 
         Assert.NotNull(problem);
-        Assert.Equal(2, problem.Errors.Count);
-        Assert.Contains("Items[0].ProductId", problem.Errors.Keys);
-        Assert.Contains("Items[2].ProductId", problem.Errors.Keys);
-    }
 
-    /// <summary>
-    /// Un 400 no deja rastro. Se comprueba contando filas en la base y no
-    /// preguntando por un id —no hay id que preguntar— porque es la única forma
-    /// de distinguir "no se guardó" de "se guardó y no se devolvió".
-    /// </summary>
-    [Fact]
-    public async Task Create_UnknownProduct_DoesNotPersistAnything()
-    {
-        catalog.StubProductNotFound(UnknownProductId);
-        catalog.StubProduct(MugId, MugSku, MugName, MugPrice);
+        // La clave sale en PascalCase con la forma que genera MVC para una
+        // colección, heredada del error de producto desconocido de 2.3: el error
+        // añadido a mano y los de las DataAnnotations son indistinguibles. El
+        // índice es el de la primera aparición.
+        var error = Assert.Single(problem.Errors, entry => entry.Key == "Items[0].ProductId");
+        Assert.Contains(MugId.ToString(), string.Join(' ', error.Value));
 
-        var response = await client.PostAsJsonAsync(
-            "/orders",
-            NewOrder((MugId, 1), (UnknownProductId, 1)),
-            CancellationToken);
-
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(0, await factory.CountOrdersAsync(CancellationToken));
     }
 
-    // ── Validación del cuerpo ────────────────────────────────────────────────
-
     /// <summary>
-    /// Cuerpo sin <c>customerEmail</c>. Va como JSON crudo y no como DTO porque
+    /// Cuerpo sin <c>customerEmail</c>, con las líneas completas para que sea lo
+    /// único que falte. Va como JSON crudo y no como DTO porque
     /// <see cref="CreateOrderRequest"/> tiene los miembros <c>required</c>: en C#
     /// no se puede construir uno al que le falte un campo, que es justo lo que hay
     /// que enviar aquí.
     ///
-    /// El segundo assert es el que aporta: la validación del modelo cortocircuita
-    /// **antes** del controller, así que Catalog no llega a recibir ni una
-    /// petición. Un cuerpo mal formado no debe costar viajes de red.
+    /// En 2.4 el segundo assert era que Catalog no recibía ni una petición — un
+    /// cuerpo mal formado no debía costar viajes de red. Ya no hay red que gastar;
+    /// lo que queda por afirmar es que tampoco toca la base.
     /// </summary>
     [Fact]
-    public async Task Create_MissingRequiredField_Returns400WithoutCallingCatalog()
+    public async Task Create_MissingRequiredField_Returns400()
     {
         const string body = """
             {
-              "items": [ { "productId": 1, "quantity": 2 } ]
+              "items": [
+                {
+                  "productId": 1,
+                  "productSku": "TAZA-001",
+                  "productName": "Taza Talavera Puebla",
+                  "quantity": 2,
+                  "unitPrice": 249.00
+                }
+              ]
             }
             """;
 
@@ -298,7 +288,7 @@ public sealed class CreateOrderTests : IAsyncLifetime
             CancellationToken);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Equal(0, catalog.TotalRequests);
+        Assert.Equal(0, await factory.CountOrdersAsync(CancellationToken));
     }
 
     /// <summary>
@@ -310,9 +300,7 @@ public sealed class CreateOrderTests : IAsyncLifetime
     [Fact]
     public async Task Create_InvalidEmail_Returns400()
     {
-        catalog.StubProduct(MugId, MugSku, MugName, MugPrice);
-
-        var request = NewOrder((MugId, 1)) with { CustomerEmail = "esto-no-es-un-correo" };
+        var request = NewOrder(Mug(1)) with { CustomerEmail = "esto-no-es-un-correo" };
 
         var response = await client.PostAsJsonAsync("/orders", request, CancellationToken);
 
@@ -336,36 +324,39 @@ public sealed class CreateOrderTests : IAsyncLifetime
         var response = await client.PostAsJsonAsync("/orders", NewOrder(), CancellationToken);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Equal(0, catalog.TotalRequests);
+        Assert.Equal(0, await factory.CountOrdersAsync(CancellationToken));
     }
 
     /// <summary>
-    /// **El caso "los dos servicios dejaron de encajar".** Catalog devuelve un sku
-    /// de 51 caracteres, uno más de lo que admite <c>OrderItem.ProductSkuMaxLength</c>
-    /// —los dos servicios duplican esa constante a propósito, y CLAUDE.md deja
-    /// escrito que pueden divergir—. La guarda de la entidad lanza
-    /// <c>ArgumentOutOfRangeException</c> y el <c>catch (ArgumentException)</c> del
-    /// controller lo convierte en 400.
+    /// Un sku de 51 caracteres, uno más de lo que admite
+    /// <c>OrderItem.ProductSkuMaxLength</c>.
     ///
-    /// **Sin ese catch esto sería un 500**, y eso es lo que de verdad afirma el
-    /// test. Que además no se escriba nada es la otra mitad.
+    /// **Este test cambió de dueño en 3.3 y conviene saberlo.** En 2.4 el sku
+    /// largo lo devolvía Catalog, así que ninguna DataAnnotation podía verlo: lo
+    /// paraba el guard de la entidad y lo traducía a 400 el
+    /// <c>catch (ArgumentException)</c> del controller — sin ese catch habría sido
+    /// un 500, y eso era lo que el test afirmaba. Ahora el valor viene en el
+    /// cuerpo, así que lo corta el <c>[MaxLength]</c> del DTO **antes de que la
+    /// acción se ejecute**, y la clave del error ya no es el <c>ParamName</c> de la
+    /// excepción sino la ruta del modelo.
+    ///
+    /// El catch sigue en el controller como defensa en profundidad, pero este test
+    /// ya no lo ejerce. Quien lo ejerza vendrá de una invariante que el DTO no
+    /// pueda ver.
     /// </summary>
     [Fact]
-    public async Task Create_CatalogReturnsOversizedSku_Returns400AndNot500()
+    public async Task Create_OversizedSku_Returns400()
     {
-        catalog.StubProduct(MugId, new string('X', 51), MugName, MugPrice);
+        var request = NewOrder(Mug(1) with { ProductSku = new string('X', 51) });
 
-        var response = await client.PostAsJsonAsync("/orders", NewOrder((MugId, 1)), CancellationToken);
+        var response = await client.PostAsJsonAsync("/orders", request, CancellationToken);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
         var problem = await response.Content.ReadFromJsonAsync<HttpValidationProblemDetails>(CancellationToken);
 
         Assert.NotNull(problem);
-
-        // La clave es el ParamName de la excepción, que el controller usa tal cual.
-        var error = Assert.Single(problem.Errors, entry => entry.Key == "productSku");
-        Assert.Contains("50", string.Join(' ', error.Value));
+        Assert.Contains(problem.Errors.Keys, key => key.Contains(nameof(CreateOrderItemRequest.ProductSku)));
 
         Assert.Equal(0, await factory.CountOrdersAsync(CancellationToken));
     }
@@ -383,22 +374,35 @@ public sealed class CreateOrderTests : IAsyncLifetime
     // ── Ayudas ───────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// El cuerpo lleva solo productId y quantity: esa pobreza es el diseño, no una
-    /// simplificación del test. Catalog es el dueño de los precios, y "validar
-    /// precios" significa pedírselos, no comparar con un número que mandó el
-    /// cliente.
+    /// El cuerpo lleva ahora los cinco campos de cada línea. Esa abundancia es el
+    /// diseño de 3.3, igual que la pobreza lo era de 2.3: al no haber a quién
+    /// preguntar, la foto la trae quien pide y Orders la congela sin discutirla.
     /// </summary>
-    private static CreateOrderRequest NewOrder(params (int ProductId, int Quantity)[] lines) => new()
+    private static CreateOrderRequest NewOrder(params CreateOrderItemRequest[] lines) => new()
     {
         CustomerEmail = CustomerEmail,
-        Items = [.. lines.Select(line => new CreateOrderItemRequest
-        {
-            ProductId = line.ProductId,
-            Quantity = line.Quantity,
-        })],
+        Items = lines,
     };
 
-    private async Task<OrderResponse> CreateOrderAsync(params (int ProductId, int Quantity)[] lines)
+    private static CreateOrderItemRequest Mug(int quantity) => new()
+    {
+        ProductId = MugId,
+        ProductSku = MugSku,
+        ProductName = MugName,
+        Quantity = quantity,
+        UnitPrice = MugPrice,
+    };
+
+    private static CreateOrderItemRequest Keyring(int quantity) => new()
+    {
+        ProductId = KeyringId,
+        ProductSku = KeyringSku,
+        ProductName = KeyringName,
+        Quantity = quantity,
+        UnitPrice = KeyringPrice,
+    };
+
+    private async Task<OrderResponse> CreateOrderAsync(params CreateOrderItemRequest[] lines)
     {
         var response = await client.PostAsJsonAsync("/orders", NewOrder(lines), CancellationToken);
 
