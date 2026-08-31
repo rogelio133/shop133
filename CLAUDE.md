@@ -120,6 +120,32 @@ The broker URI is **one key, `ConnectionStrings:RabbitMq`**, in User Secrets (`a
 
 **The real envelope confirmed two decisions from `0.3` that had been written but never checked.** The published message carries its own `messageId` and `conversationId` with **`correlationId: null`** — correlation by `OrderId` is the line the saga configures in `4.1`, and `3.6`'s idempotency uses the envelope's `messageId`, neither being a contract field. Also confirmed against a real broker: `decimal` travels as a JSON **string**, and **trailing zeros are lost** — `249.00` was published and `"249"` travelled.
 
+**`3.4` is done — the project has its first consumer, its first queue and its first write driven by an event** — see [docs/fase_3_4.md](docs/fase_3_4.md). It created **`Inventory.Infrastructure`** (asked for and approved; the target layout above was updated with it), and deliberately **no `Inventory.Domain`** — the precedent that applies is Catalog's CRUD, not Orders' saga. `InventoryDb` now holds `StockItems`, `StockReservations` and `StockReservationLines`, seeded with **50 rows whose ids mirror Catalog's 1–50 but whose quantities deliberately do not**: `Product.Stock` is the number the catalogue *displays* and this is the reservable one, two columns with two owners and no synchronisation. Seeding both with the same value would imply a relationship nobody maintains. Two migrations, split as `1.4` split its own; the architecture suite went to **15**.
+
+**Measured, and it is the point of the item: `POST /orders` for product 999999 returns `201`, and Inventory answers `StockRejected { Reason = "el producto 999999 no existe en el inventario" }`.** In `2.3` that same request was a `400`. The synchronous validation became a *state of the order* — the customer finds out after the fact, not in the response. That closes the **existence half** of decision 2b of `3.3`; the amount half is still `4.8`/`4.9`, and a product that *does* exist ordered at `0.01` still sails through this reservation untouched.
+
+**`StockItem` has `QuantityOnHand` and `QuantityReserved`, and `Reserve()` never touches the first.** A single decremented column would have been simpler and, for the roadmap as written, arguably more correct — nothing ever "commits" a reservation. It was rejected because it makes *sold* indistinguishable from *set aside for an order that can still fall through*, which is exactly the distinction Phase 4's compensation exists to undo. **Nothing ever converts a reservation into a drop in `QuantityOnHand`**, so after a `PaymentCompleted` the units stay reserved forever; that is a real gap with no roadmap item, and the natural home would be an `OrderConfirmed` consumer in Phase 4.
+
+**The reservation is atomic and it was verified, not assumed.** An order with one servable line (product 2, 65 on hand) and one impossible one left product 2 at **`QuantityReserved = 0`** and wrote no reservation row. Reserving as it goes and bailing halfway would leak stock, which is what rule 7 exists to prevent. All failures are collected into one human-readable `Reason` — diagnostic text and material for `4.6`'s email, never a code to parse.
+
+**`StockReservations`' primary key *is* the `OrderId`, and that answers the question `3.2` left for `4.4`.** Releasing a pedido's stock is now a `SELECT` by primary key, so `ReleaseStock` can plausibly drop its `Lines` — `4.4` decides with the table in front of it. The same key buys **business-level idempotency**: a redelivered `OrderCreated` finds the row, skips the reservation and republishes `StockReserved`. That is *not* `3.6` and must not be mistaken for it — `3.6` goes by the envelope's `MessageId`, works for any consumer, and covers the rejection path, which writes nothing and so leaves no trace to detect a duplicate by. Without this check the duplicate would blow up the `INSERT` and park a perfectly good order in `order-created_error`.
+
+**The `StockLine` question is closed: `ReserveStock`/`ReleaseStock` keep `OrderLine`.** Deferred three times (`0.3` twice, `3.2` once) with the promise to decide it "with the consumer in front of you". The deciding argument turned out not to be the one being repeated (that Inventory might want the name for its logs — it does not; it logs `ProductId`). It is that **in Phase 3 Inventory consumes `OrderCreated`, not `ReserveStock`**, and that event's `Lines` was never in question. Splitting only the commands would leave Inventory with two shapes for the same arithmetic — an event consumer reading `OrderLine` and a Phase-4 command consumer reading `StockLine`. Do not reopen it in `4.4`; reopen only if `ReleaseStock` keeps `Lines` at all.
+
+**`Amount` was the trap and it held.** `StockReserved` carried `"amount": "974.5"` for a 974.50 order, forwarded verbatim from `OrderCreated.Total`. Inventory has no use for it — it stores quantities, not money — and carries it because Payments cannot ask anyone: it cannot read `OrdersDb` and there is no saga yet. Forgetting that line fails nothing visible and charges 0.
+
+**The `AddMassTransit` block still is not extracted, and `3.1`'s decision 7 has now been re-read with a diff in hand.** The only thing that diverged is `x.AddConsumer<OrderCreatedConsumer>()` — precisely the part that cannot be shared. Factoring out the identical host-and-formatter half would strand the one line that distinguishes each service outside it, which reads worse than the duplication. `3.5` looks again with Payments' copy touched.
+
+**`Configured endpoint order-created, Consumer: …` at startup is the line that proves the consumer is wired.** It appears before `Bus started`. Without it, `AddConsumer` never reached `ConfigureEndpoints` and **the message is lost in silence** — the failure `3.1` pre-empted by leaving that line in place with zero consumers. Note `order-created_error` is created lazily on the first fault, so its absence proves nothing.
+
+**Two things that cost time and will again.** `HasData` lands inside `InitialCreate` and there is no flag to stop it: comment the line out, generate the schema migration, uncomment, generate the seed one. And **User Secrets only load in `Development`** — `dotnet run --no-launch-profile` made the new `ConnectionStrings:InventoryDb` guard fire with the secret perfectly set; the guard was right, the diagnosis was not. That guard matters more here than in Orders: Inventory.API has no HTTP endpoint at all, so without it the failure would surface as a message in `order-created_error`, several hops from the cause.
+
+**A third RabbitMQ gotcha, on top of `3.3`'s two.** `Invoke-RestMethod` against the management API in PS 5.1 hands the pipeline **one item that is the whole array**, so `Select-Object source, destination` prints a blank row and `ForEach-Object` prints `System.Object[]`. Use `curl.exe -s -u guest:guest … | ConvertFrom-Json` and a `foreach`. Publishing a message by hand needs the JSON written **without a BOM** (`Out-File -Encoding utf8` adds one and RabbitMQ answers `{"error":"bad_request","reason":"not_json"}`), and a spy queue needs its exchange declared first as `fanout`/`durable` — anything else and the later real publish fails with `PRECONDITION_FAILED`.
+
+**`ConsumerFiles_LiveOnlyIn_ServiceApiConsumersFolder` makes the "consumers live in `Consumers/`" convention executable** — the suite is **15**. It earns its place because a consumer is the only code in a service that runs **without anyone making an HTTP request**, so filing it under `Controllers/` makes it disappear. It went into `ServiceBoundaryRulesTests`, not a new file, and it was **broken on purpose** to confirm the filter matches: a throwaway `*Consumer.cs` under `Controllers/` took the suite to 14/15 naming the file. Keep doing that for every new rule.
+
+**There is no `Inventory.Tests` and no `public partial class Program { }` in Inventory.API.** `3.4` shipped a consumer verified by hand against a real broker and a real database; `3.7` is what automates it with the in-memory harness, and that is when the fourth copy of `SqlServerContainerFixture` arrives and its extraction finally gets decided. Also still missing, deliberately: **optimistic concurrency on `StockItem`** — two `OrderCreated` for the same product processed concurrently both read the same `QuantityAvailable` and both pass the check, so they can over-reserve. Real gap, no owner yet.
+
 **Endpoint prose lives in `[EndpointSummary]`/`[EndpointDescription]`, never in the XML comments.** `<GenerateDocumentationFile>` is deliberately **off**. The `<summary>` blocks all over the controllers are *design rationale* — "*Descartado* un CRUD completo…", references to roadmap items — written for whoever maintains the service; publishing them would turn the API reference into a logbook. Two audiences, two places, and the compiler flag must not merge them. Turning it on would also raise ~CS1591 across the DTOs in a build that reports `0 Warning(s)`. The cost is accepted duplication: the unknown-category `400` is now explained in the `ModelState` message, the XML comment and the attribute, with nothing keeping the three in sync. The document's `info` block is set by an inline `AddDocumentTransformer` in `Program.cs` — without Swashbuckle that is the only way to change a title that otherwise reads `Catalog.API | v1`, the assembly name.
 
 **`OpenApiInfo` is in the `Microsoft.OpenApi` namespace, not `Microsoft.OpenApi.Models`** — v2 (`2.7.5`, what `Microsoft.AspNetCore.OpenApi` 10.0.11 depends on) moved the types, so every tutorial's `using` fails to compile. Two more measured facts about the generated document: numeric fields come out as `"type": ["integer","string"]` (that is how .NET 10 expresses JSON's string-encoded numbers in OpenAPI 3.1, not something the `[Range]` attributes caused), and **`decimal` is announced as `"format": "double"`** — harmless until someone generates a client from the document, which is a Phase 6 concern.
@@ -151,7 +177,7 @@ Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed su
 | 0 | Solution scaffolding, docker-compose, Contracts, architecture tests | **Closed** — merged to `main`, tagged `fase-0` |
 | 1 | Catalog.API | **Code complete** — 1.1–1.7 done; awaiting the PRs to `develop`/`main` and the `fase-1` tag |
 | 2 | Orders.API (synchronous) | **Code complete** — 2.1–2.4 done; awaiting the PRs to `develop`/`main` and the `fase-2` tag |
-| 3 | MassTransit + RabbitMQ messaging | **In progress** — 3.1–3.3 done; 3.4–3.7 pending |
+| 3 | MassTransit + RabbitMQ messaging | **In progress** — 3.1–3.4 done; 3.5–3.7 pending |
 | 4 | Saga + compensations | Not started |
 | 5 | YARP Gateway | Not started |
 | 6 | Frontend (MVC + Bootstrap 5) | Not started |
@@ -186,7 +212,7 @@ shop133/
 │   │   ├── Catalog/       Catalog.API (+ Dockerfile), Catalog.Infrastructure
 │   │   ├── Orders/        Orders.API, Orders.Domain (saga), Orders.Infrastructure
 │   │   ├── Payments/      Payments.API
-│   │   ├── Inventory/     Inventory.API
+│   │   ├── Inventory/     Inventory.API, Inventory.Infrastructure
 │   │   └── Notifications/ Notifications.API
 │   ├── Gateway/           Shop133.Gateway
 │   ├── Frontend/          Shop133.Web
@@ -274,7 +300,7 @@ Tests are not a phase. They are numbered items spread across the roadmap — `0.
 
 The reference rules read the **`.csproj` files**, not the compiled assemblies: Roslyn prunes unused references from the manifest, so with service projects still empty an assembly-level check would pass vacuously. `ProjectGraph.cs` is that reader; add new reference rules on top of it. Rules about *types* (records, immutability) use plain reflection, and `NetArchTest` covers the one namespace-dependency assertion.
 
-**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`, and since `3.3`: **14 `Fast`** (`Shop133.ArchitectureTests`) and **29 `Docker`** (19 `Catalog.Tests` + 10 `Orders.Tests`), **43 in total**. Orders dropped from 17 because `3.3` deleted the seven that tested the synchronous debt — that is the intended outcome, not lost coverage.
+**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`, and since `3.4`: **15 `Fast`** (`Shop133.ArchitectureTests`) and **29 `Docker`** (19 `Catalog.Tests` + 10 `Orders.Tests`), **44 in total**. Orders dropped from 17 to 10 because `3.3` deleted the seven that tested the synchronous debt — that is the intended outcome, not lost coverage. `Inventory.Tests` does not exist yet: `3.4` shipped its consumer verified by hand, and `3.7` is what automates it.
 
 **Since `3.3`, `Orders.Tests` needs RabbitMQ up, not just Docker.** `POST /orders` really publishes, and `Publish` on the RabbitMQ transport waits for a connection instead of failing fast — with the broker down the request hangs. `docker compose up -d` until `3.7` swaps in the in-memory harness.
 
@@ -353,25 +379,30 @@ dotnet run --project src/Services/Orders/Orders.API      # 5189
 # need ConnectionStrings:RabbitMq in User Secrets:
 #   dotnet user-secrets set "ConnectionStrings:RabbitMq" `
 #     "amqp://guest:guest@localhost:5672" --project src/Services/Orders/Orders.API
+# Since 3.4 Inventory ALSO needs ConnectionStrings:InventoryDb in User Secrets,
+# and User Secrets only load in Development — `--no-launch-profile` makes the
+# guard fire with the secret perfectly set. Use `--launch-profile http`.
 dotnet run --project src/Services/Inventory/Inventory.API  # 5015
 dotnet run --project src/Services/Payments/Payments.API    # 5156
 
-# Inspect the broker without the UI. Since 3.3 the exchange exists; QUEUES ARE
-# STILL LEGITIMATELY EMPTY until 3.4 registers Inventory's consumer — a fanout
-# with no bindings discards what it receives, so today the message goes nowhere.
-# MassTransit declares topology lazily, so "no queues" is never evidence that the
-# bus is disconnected. Check connections for that.
-$c = New-Object System.Management.Automation.PSCredential('guest', `
-       (ConvertTo-SecureString 'guest' -AsPlainText -Force))
-Invoke-RestMethod http://localhost:15672/api/connections -Credential $c |
-  Select-Object @{n='client';e={$_.client_properties.connection_name}}, state
-Invoke-RestMethod http://localhost:15672/api/queues -Credential $c | Select-Object name
-
-# Exchanges: the vhost MUST be in the path. Piping /api/exchanges through a
-# Where-Object name filter returns an EMPTY list even when the exchange exists —
-# measured in 3.3, and it looks exactly like a publish that never happened.
-Invoke-RestMethod "http://localhost:15672/api/exchanges/%2F" -Credential $c |
-  ForEach-Object { "{0,-45} {1}" -f $_.name, $_.type }
+# Inspect the broker without the UI. Since 3.4 there IS one queue, `order-created`
+# (Inventory's consumer); its `_error` sibling is created lazily on the first
+# fault, so its absence means nothing. StockReserved/StockRejected still have no
+# consumer until 3.5/4.6, so those exchanges only exist if something declared
+# them. MassTransit declares topology lazily, so "no queues" is never evidence
+# that the bus is disconnected — check connections for that.
+#
+# Invoke-RestMethod on this API is unreliable in PS 5.1: the pipeline receives ONE
+# item that is the whole array, so Select-Object prints a blank row and
+# ForEach-Object prints System.Object[]. Use curl.exe + ConvertFrom-Json instead.
+# (Related to the /api/exchanges Where-Object trap measured in 3.3; the vhost must
+# also be in the path — /api/exchanges/%2F, not /api/exchanges.)
+$q = curl.exe -s -u guest:guest "http://localhost:15672/api/queues/%2F" | ConvertFrom-Json
+foreach ($x in $q) { "{0,-30} messages={1}" -f $x.name, $x.messages }
+$e = curl.exe -s -u guest:guest "http://localhost:15672/api/exchanges/%2F" | ConvertFrom-Json
+foreach ($x in $e) { if ($x.name -notlike 'amq.*' -and $x.name -ne '') { "{0,-45} {1}" -f $x.name, $x.type } }
+$b = curl.exe -s -u guest:guest "http://localhost:15672/api/bindings/%2F" | ConvertFrom-Json
+foreach ($x in $b) { "{0,-45} -> {1}" -f $x.source, $x.destination }
 
 # Tests — see the "Testing" section for what each category covers.
 #
@@ -403,7 +434,10 @@ tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.exe -class "Or
 # Control); re-run it, do not downgrade the package.
 
 # EF Core migrations — DbContext lives in Infrastructure, host in API.
-# Two services have one since 2.2: swap Catalog for Orders in both paths.
+# Three services have one since 3.4: swap Catalog for Orders or Inventory in both
+# paths. To keep a seed OUT of InitialCreate (as 1.4 and 3.4 both did), there is no
+# flag: comment out the HasData line, generate the schema migration, uncomment it,
+# then generate the seed migration.
 dotnet ef migrations add <Name> `
   --project src/Services/Catalog/Catalog.Infrastructure `
   --startup-project src/Services/Catalog/Catalog.API

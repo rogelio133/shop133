@@ -9,10 +9,21 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
+    <!--
+      El unico paquete de EF Core que puede vivir en un proyecto .API, y solo
+      porque "dotnet ef" lo busca en el proyecto de arranque. El provider de SQL
+      Server va en Inventory.Infrastructure. Lo comprueba el test
+      EfCorePackages_LiveOnlyIn_InfrastructureProjects.
+
+      PrivateAssets="all" para que no se propague ni acabe en la imagen: es una
+      herramienta de desarrollo, no una dependencia de ejecucion.
+    -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.8" PrivateAssets="all" />
     <PackageReference Include="MassTransit.RabbitMQ" Version="8.5.10" />
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Inventory.Infrastructure\Inventory.Infrastructure.csproj" />
     <ProjectReference Include="..\..\..\Shared\Shop133.Contracts\Shop133.Contracts.csproj" />
   </ItemGroup>
 

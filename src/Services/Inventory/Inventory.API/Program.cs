@@ -1,5 +1,10 @@
 using MassTransit;
 
+using Microsoft.EntityFrameworkCore;
+
+using Inventory.API.Consumers;
+using Inventory.Infrastructure.Persistence;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
@@ -7,11 +12,35 @@ builder.Services.AddControllers();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 
-// --- Mensajería (3.1) -------------------------------------------------------
+// --- Persistencia (3.4) -----------------------------------------------------
 //
-// Este servicio todavía no tiene ni entidades ni base de datos: lo único que
-// hace de momento es conectarse al broker. Los consumers de OrderCreated y la
-// reserva de stock contra InventoryDb llegan en 3.4.
+// InventoryDb es la tercera base del sistema. La conexión va como
+// inventory_user, que tiene db_owner sobre InventoryDb y ningún permiso sobre
+// las otras tres — la regla 1 aplicada por el motor desde 0.4. Nunca sa.
+//
+// El connection string entero vive en User Secrets, no una plantilla sin
+// contraseña en appsettings.json: la decisión 3 de docs/fase_1_2.md descartó eso
+// porque deja versionado un connection string aparentemente válido que, copiado
+// a otro servicio, arrastra el Database= y rompe la regla 1 sin que nadie lo note.
+//
+// La guarda revienta antes de app.Build() y nombra la clave que falta. En un
+// servicio sin controllers como este importa más que en Orders: sin ella el
+// fallo aparecería dentro del consumer, al resolver el DbContext, o sea como un
+// mensaje en la cola order-created_error.
+var inventoryDbConnectionString = builder.Configuration.GetConnectionString("InventoryDb")
+    ?? throw new InvalidOperationException(
+        "Falta la configuración 'ConnectionStrings:InventoryDb'. En local vive en User Secrets: " +
+        "dotnet user-secrets set \"ConnectionStrings:InventoryDb\" \"Server=localhost,1433;Database=InventoryDb;" +
+        "User Id=inventory_user;Password=...;TrustServerCertificate=True\" " +
+        "--project src/Services/Inventory/Inventory.API");
+
+// Sin Database.Migrate() al arrancar: las migraciones se aplican a mano con
+// "dotnet ef database update" (ver Commands en CLAUDE.md). Migrar desde el
+// arranque esconde el paso y no sobrevive a más de una instancia del servicio.
+builder.Services.AddDbContext<InventoryDbContext>(options =>
+    options.UseSqlServer(inventoryDbConnectionString));
+
+// --- Mensajería (3.1, con su primer consumer en 3.4) ------------------------
 //
 // El URI de RabbitMQ vive en User Secrets porque lleva usuario y contraseña,
 // igual que el connection string de Catalog (1.2) y el de Orders (2.2).
@@ -30,20 +59,28 @@ var rabbitMqConnectionString = builder.Configuration.GetConnectionString("Rabbit
         "dotnet user-secrets set \"ConnectionStrings:RabbitMq\" \"amqp://guest:guest@localhost:5672\" " +
         "--project src/Services/Inventory/Inventory.API");
 
-// El bloque es una copia literal del de Orders.API y Payments.API, y eso es
-// deliberado: extraerlo a un método de extensión compartido exigiría un proyecto
-// que los tres referencien, y Shop133.Contracts tiene que quedarse en cero
-// paquetes (regla 4 de CLAUDE.md). Mismo criterio que la copia literal de
-// SqlServerContainerFixture en 2.4 — con tres copias todavía no hay evidencia
-// de qué se va a divergir. Se reevalúa cuando 3.4 y 3.5 las hayan tocado.
+// El bloque sigue siendo casi una copia literal del de Orders.API y Payments.API
+// y NO se extrae, revisada la decisión 7 de docs/fase_3_1.md ahora que 3.4 ha
+// tocado una de las tres copias: lo único que ha divergido es el AddConsumer de
+// abajo, que es precisamente la parte que no se puede compartir. Sacar a un
+// método común lo que sí es idéntico —host y formatter— dejaría la línea que
+// distingue a cada servicio suelta fuera de él, que es peor de leer que la
+// duplicación. Se vuelve a mirar en 3.5, con la copia de Payments ya tocada.
 builder.Services.AddMassTransit(x =>
 {
-    // Se fija ahora, con cero consumers, precisamente porque después no sale
+    // El primer consumer del proyecto. Registrarlo aquí es lo que crea la cola
+    // "order-created" y la liga al exchange Shop133.Contracts.Events:OrderCreated
+    // — hasta 3.3 ese fanout no tenía colas y el mensaje se publicaba al vacío.
+    x.AddConsumer<OrderCreatedConsumer>();
+
+    // Fijado en 3.1 con cero consumers, precisamente porque después no salía
     // gratis: el formatter decide el nombre de la cola de cada consumer, y
-    // cambiarlo en 3.4 dejaría colas huérfanas en el broker que nadie vacía.
+    // cambiarlo hoy dejaría colas huérfanas en el broker que nadie vacía.
     //
     // Kebab-case en minúsculas: los nombres de cola de RabbitMQ distinguen
     // mayúsculas, y "order-created" no da lugar a dudas donde "OrderCreated" sí.
+    // Se le quita el sufijo "Consumer" al tipo, así que OrderCreatedConsumer da
+    // la cola "order-created".
     x.SetKebabCaseEndpointNameFormatter();
 
     x.UsingRabbitMq((context, cfg) =>
@@ -52,10 +89,10 @@ builder.Services.AddMassTransit(x =>
         // hacen falta h.Username()/h.Password() por separado.
         cfg.Host(new Uri(rabbitMqConnectionString));
 
-        // Hoy no registra nada: no hay consumers. Se deja puesta porque es la
-        // línea que 3.4 espera encontrar — sin ella, registrar un IConsumer no
-        // crea su receive endpoint y el mensaje se pierde en silencio, que es el
-        // fallo más caro de diagnosticar de esta fase.
+        // Ahora sí registra algo. Sin esta línea, el AddConsumer de arriba no
+        // crea ningún receive endpoint y el mensaje se pierde en silencio: el
+        // fallo más caro de diagnosticar de esta fase, y el motivo por el que
+        // 3.1 la dejó puesta cuando todavía no hacía nada.
         cfg.ConfigureEndpoints(context);
     });
 });
