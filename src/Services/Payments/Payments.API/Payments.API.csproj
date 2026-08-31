@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -10,10 +10,26 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
     <PackageReference Include="MassTransit.RabbitMQ" Version="8.5.10" />
+
+    <!--
+      El unico sitio donde EF Core se permite fuera de un proyecto
+      .Infrastructure, y el test EfCorePackages_LiveOnlyIn_InfrastructureProjects
+      lo dice literalmente: la herramienta dotnet ef busca este paquete en el
+      proyecto de arranque, no en el que tiene el DbContext.
+
+      PrivateAssets="all" porque es una dependencia de tiempo de diseno: no debe
+      propagarse a quien referencie este proyecto ni acabar en una imagen. Mismo
+      criterio que en Catalog.API (1.2) y Orders.API (2.2).
+
+      Version 10.0.8, la de Payments.Infrastructure y la de la herramienta global
+      dotnet-ef.
+    -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.8" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\Shared\Shop133.Contracts\Shop133.Contracts.csproj" />
+    <ProjectReference Include="..\Payments.Infrastructure\Payments.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

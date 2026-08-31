@@ -148,7 +148,7 @@ sqlserver:
 - [x] **3.2** Definir eventos en `Shop133.Contracts`: `OrderCreated`, `StockReserved`, `StockRejected`, `PaymentCompleted`, `PaymentFailed` — [doc](docs/fase_3_2.md)
 - [x] **3.3** Orders.API publica `OrderCreated` en lugar de llamar síncronamente — [doc](docs/fase_3_3.md)
 - [x] **3.4** Inventory.API consume `OrderCreated`, valida y reserva stock contra `InventoryDb`, publica `StockReserved`/`StockRejected` — [doc](docs/fase_3_4.md)
-- [ ] **3.5** Payments.API consume `StockReserved`, simula cobro, publica `PaymentCompleted`/`PaymentFailed`
+- [x] **3.5** Payments.API consume `StockReserved`, simula cobro, publica `PaymentCompleted`/`PaymentFailed` — [doc](docs/fase_3_5.md)
 - [ ] **3.6** Implementar **idempotencia**: guardar `MessageId` procesados para evitar duplicados
 - [ ] **3.7** Tests de consumers con `MassTransit.TestFramework` (`AddMassTransitTestHarness`): Inventory y Payments publican el evento correcto ante cada entrada, más el **test de idempotencia** (mismo `MessageId` dos veces → un solo efecto). ~~Incluye borrar los tests de 2.4~~ — ya borrados en 3.3. Queda además quitarle a `Orders.Tests` la dependencia del broker real que 3.3 estrenó
 

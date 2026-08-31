@@ -25,6 +25,7 @@
   </Folder>
   <Folder Name="/src/Services/Payments/">
     <Project Path="src/Services/Payments/Payments.API/Payments.API.csproj" />
+    <Project Path="src/Services/Payments/Payments.Infrastructure/Payments.Infrastructure.csproj" />
   </Folder>
   <Folder Name="/src/Shared/">
     <Project Path="src/Shared/Shop133.Contracts/Shop133.Contracts.csproj" />

@@ -144,6 +144,30 @@ The broker URI is **one key, `ConnectionStrings:RabbitMq`**, in User Secrets (`a
 
 **`ConsumerFiles_LiveOnlyIn_ServiceApiConsumersFolder` makes the "consumers live in `Consumers/`" convention executable** — the suite is **15**. It earns its place because a consumer is the only code in a service that runs **without anyone making an HTTP request**, so filing it under `Controllers/` makes it disappear. It went into `ServiceBoundaryRulesTests`, not a new file, and it was **broken on purpose** to confirm the filter matches: a throwaway `*Consumer.cs` under `Controllers/` took the suite to 14/15 naming the file. Keep doing that for every new rule.
 
+**`3.5` is done — Payments consumes `StockReserved`, simulates the charge and closes the Phase 3 choreography chain** — see [docs/fase_3_5.md](docs/fase_3_5.md). `POST /orders` → `OrderCreated` → `StockReserved` → `PaymentCompleted`/`PaymentFailed`, four services and three hops with **no HTTP call between any of them**. It created **`Payments.Infrastructure`** (asked for and approved; the target layout below was updated with it) and deliberately **no `Payments.Domain`** — same criterion as Inventory. `PaymentsDb`, created empty in `0.4`, finally holds a table. Two packages: `Microsoft.EntityFrameworkCore.SqlServer` **10.0.8** in the `.Infrastructure` and `.Design` in the `.API`. **The architecture suite stays at 15** — every shape this item introduces was already covered, and `3.3`'s precedent (add no rule and say so) applies; inventing one to raise the counter is exactly the "filter that never matches" `3.2` warned about.
+
+**Payments gets a database, and that does *not* reverse decision 2 of `3.2`.** That decision rejected a Payments database **for obtaining the amount** — an `OrderCreated` consumer persisting `(OrderId, Total)` — and killed it on a real race (RabbitMQ does not order across queues, so `StockReserved` can arrive first). That still stands word for word: there is no `OrderCreated` consumer in Payments and the amount still travels in `StockReserved.Amount`. The table enters for a different reason — **without a row to consult the consumer cannot be idempotent at all**, and a redelivered `StockReserved` would charge twice with two different `TransactionId`s. That is the most expensive duplicate the system can produce. Inventory got this free because its PK is the `OrderId`; here it had to be written. Second reason: the `TransactionId` that `PaymentCompleted`'s `///` has claimed since `0.3` exists "to issue the refund" had nowhere to live — a promise the code did not keep.
+
+**`Payment`'s PK is the `OrderId`, and the republish must read the stored row, not a local.** On a redelivery the consumer republishes the **saved** `TransactionId`; minting a new one would give one charge two identifiers, which is the whole point of the table. Verified: one row, same `SIM-…` id, no `stock-reserved_error` queue. It is business idempotency and **still not `3.6`**.
+
+**The decline is deterministic and by amount** — `Amount > Payments:DeclineAmountAbove` (default `1000.00`, in `appsettings.json`, not User Secrets; precedent `Services:CatalogBaseUrl`). The criterion is Phase 4: the mandatory scenario 3 (stock reserved, payment declined — the compensation) must be **forceable on demand**, and with a threshold that means "order pricier". A random failure rate was rejected because it would make that scenario arrive by luck and force injecting the `Random` so `3.7` would not be flaky; a global `AlwaysDecline` switch was rejected because it cannot have one passing and one failing order in the same run, which is what `6.5` and `7.4` exist to show. The catalogue's priciest product is `399.00`, so three of them is the way to trigger it. **There is deliberately no guard on this key** — unlike every `ConnectionStrings` key, it has a sensible default and its absence does not leave the service half-built.
+
+**The second guard, `Amount <= 0`, is not the fix for the pricing hole.** It is reachable today (the client sends the price since `3.3`) and rejecting a zero charge is the minimum, but a real product ordered at `0.01` clears it, clears the threshold and **gets charged a cent** — exactly as correction 2b of `3.3` recorded. That still belongs to `4.8`/`4.9`. Measured in passing: **Payments does not verify the order exists** — a `StockReserved` with an invented `OrderId` produced a payment row. Rule 1 forbids asking, and in choreography each service believes the event it receives.
+
+**Measured, and it is the half that matters: a declined payment leaves the stock reserved.** Order for `1197.00` → `PaymentFailed`, row `Status = Failed`, and `StockItems.QuantityReserved` still `4` with the reservation row alive. Nobody consumes `PaymentFailed` until `4.3` and nobody releases until `4.4`. The five exchanges exist and **the two payment ones have zero bound queues** — published into the void, no failure and no warning. That is Phase 4 in one sentence, and why rule 7 is written down.
+
+**`Payment` is built by two static factories, `Completed(...)` and `Declined(...)`, never a public constructor.** That is what makes a `Failed` row with a `TransactionId` (or a `Completed` without one) impossible. A `CHECK` constraint was rejected: it would say the same thing a second time in another language, and the day the two diverged you would have to read both. No `Refund()`/`Retry()` — the precedent of `Product` without `Update()`, `Order` without `Confirm()` and `StockItem` without `Release()`.
+
+**The `AddMassTransit` review is closed, not deferred again.** `3.1` (decision 7) deferred it and `3.4` (decision 8) scheduled it here in writing. With all three copies now touched the answer is unchanged: the only divergence is the `AddConsumer` line, which is precisely what cannot be shared, and extracting the identical half would strand it outside. **The next re-read is `4.5`**, where the outbox puts `MassTransit.EntityFrameworkCore` and a persistence config **in Orders only** — a structural difference rather than a line.
+
+**Smart App Control blocked the repo's *own* freshly built assemblies, and the remedy is a Release build.** `dotnet ef migrations add` failed with `Could not load assembly 'Payments.Infrastructure'` — a message that blames a missing `ProjectReference` that was perfectly correct; `-v` shows the real cause, `0x800711C7`. Eight retries over ~3 minutes did not clear it and the block then spread to `Payments.API.dll`, so `dotnet run` would not start either. **`dotnet build -c Release` produces different bytes, hence a different hash, and the fresh evaluation passed first try**; `dotnet ef … --configuration Release` then worked. Two corrections to the `1.7` note: the block is **not** about restored packages (these were unsigned DLLs the repo itself wrote — what matters is that the *content* is new), and "just run it again" is not always enough. Still never turn Smart App Control off.
+
+**Reposting a message by hand needs the MassTransit envelope, not just valid JSON.** On top of the known traps (no BOM, vhost in the path), `properties` must carry `content_type: application/vnd.masstransit+json` and the body a `messageType` with the full URN (`urn:message:Shop133.Contracts.Events:StockReserved`). Without them the broker still answers `{"routed":true}` and the consumer never reacts — **`routed:true` means the message reached a queue, not that anyone could read it.**
+
+**The `decimal` loses its trailing zeros in transit and it shows in the logs.** An order of `1197.00` reaches the consumer as `1197`, so the structured log prints `por 1197` while the decline reason, formatted `:0.00`, says `1197.00`. Harmless (the column is `decimal(18,2)`) but the two forms of the same number two lines apart look like a bug.
+
+**There is no `Payments.Tests` and no `public partial class Program { }` in Payments.API**, same as Inventory — `3.7` is what automates all of the above, which `3.5` verified by hand against a real broker and a real database.
+
 **There is no `Inventory.Tests` and no `public partial class Program { }` in Inventory.API.** `3.4` shipped a consumer verified by hand against a real broker and a real database; `3.7` is what automates it with the in-memory harness, and that is when the fourth copy of `SqlServerContainerFixture` arrives and its extraction finally gets decided. Also still missing, deliberately: **optimistic concurrency on `StockItem`** — two `OrderCreated` for the same product processed concurrently both read the same `QuantityAvailable` and both pass the check, so they can over-reserve. Real gap, no owner yet.
 
 **Endpoint prose lives in `[EndpointSummary]`/`[EndpointDescription]`, never in the XML comments.** `<GenerateDocumentationFile>` is deliberately **off**. The `<summary>` blocks all over the controllers are *design rationale* — "*Descartado* un CRUD completo…", references to roadmap items — written for whoever maintains the service; publishing them would turn the API reference into a logbook. Two audiences, two places, and the compiler flag must not merge them. Turning it on would also raise ~CS1591 across the DTOs in a build that reports `0 Warning(s)`. The cost is accepted duplication: the unknown-category `400` is now explained in the `ModelState` message, the XML comment and the attribute, with nothing keeping the three in sync. The document's `info` block is set by an inline `AddDocumentTransformer` in `Program.cs` — without Swashbuckle that is the only way to change a title that otherwise reads `Catalog.API | v1`, the assembly name.
@@ -177,7 +201,7 @@ Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed su
 | 0 | Solution scaffolding, docker-compose, Contracts, architecture tests | **Closed** — merged to `main`, tagged `fase-0` |
 | 1 | Catalog.API | **Code complete** — 1.1–1.7 done; awaiting the PRs to `develop`/`main` and the `fase-1` tag |
 | 2 | Orders.API (synchronous) | **Code complete** — 2.1–2.4 done; awaiting the PRs to `develop`/`main` and the `fase-2` tag |
-| 3 | MassTransit + RabbitMQ messaging | **In progress** — 3.1–3.4 done; 3.5–3.7 pending |
+| 3 | MassTransit + RabbitMQ messaging | **In progress** — 3.1–3.5 done; 3.6–3.7 pending |
 | 4 | Saga + compensations | Not started |
 | 5 | YARP Gateway | Not started |
 | 6 | Frontend (MVC + Bootstrap 5) | Not started |
@@ -211,7 +235,7 @@ shop133/
 │   ├── Services/
 │   │   ├── Catalog/       Catalog.API (+ Dockerfile), Catalog.Infrastructure
 │   │   ├── Orders/        Orders.API, Orders.Domain (saga), Orders.Infrastructure
-│   │   ├── Payments/      Payments.API
+│   │   ├── Payments/      Payments.API, Payments.Infrastructure
 │   │   ├── Inventory/     Inventory.API, Inventory.Infrastructure
 │   │   └── Notifications/ Notifications.API
 │   ├── Gateway/           Shop133.Gateway
@@ -300,7 +324,7 @@ Tests are not a phase. They are numbered items spread across the roadmap — `0.
 
 The reference rules read the **`.csproj` files**, not the compiled assemblies: Roslyn prunes unused references from the manifest, so with service projects still empty an assembly-level check would pass vacuously. `ProjectGraph.cs` is that reader; add new reference rules on top of it. Rules about *types* (records, immutability) use plain reflection, and `NetArchTest` covers the one namespace-dependency assertion.
 
-**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`, and since `3.4`: **15 `Fast`** (`Shop133.ArchitectureTests`) and **29 `Docker`** (19 `Catalog.Tests` + 10 `Orders.Tests`), **44 in total**. Orders dropped from 17 to 10 because `3.3` deleted the seven that tested the synchronous debt — that is the intended outcome, not lost coverage. `Inventory.Tests` does not exist yet: `3.4` shipped its consumer verified by hand, and `3.7` is what automates it.
+**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`, and unchanged by `3.5`: **15 `Fast`** (`Shop133.ArchitectureTests`) and **29 `Docker`** (19 `Catalog.Tests` + 10 `Orders.Tests`), **44 in total**. Orders dropped from 17 to 10 because `3.3` deleted the seven that tested the synchronous debt — that is the intended outcome, not lost coverage. **Neither `Inventory.Tests` nor `Payments.Tests` exists yet**: `3.4` and `3.5` shipped their consumers verified by hand against a real broker and a real database, and `3.7` is what automates both.
 
 **Since `3.3`, `Orders.Tests` needs RabbitMQ up, not just Docker.** `POST /orders` really publishes, and `Publish` on the RabbitMQ transport waits for a connection instead of failing fast — with the broker down the request hangs. `docker compose up -d` until `3.7` swaps in the in-memory harness.
 
@@ -380,17 +404,27 @@ dotnet run --project src/Services/Orders/Orders.API      # 5189
 #   dotnet user-secrets set "ConnectionStrings:RabbitMq" `
 #     "amqp://guest:guest@localhost:5672" --project src/Services/Orders/Orders.API
 # Since 3.4 Inventory ALSO needs ConnectionStrings:InventoryDb in User Secrets,
-# and User Secrets only load in Development — `--no-launch-profile` makes the
-# guard fire with the secret perfectly set. Use `--launch-profile http`.
+# and since 3.5 Payments needs ConnectionStrings:PaymentsDb. User Secrets only
+# load in Development — `--no-launch-profile` makes the guard fire with the secret
+# perfectly set, and so does running bin/<cfg>/<svc>.exe directly (it skips
+# launchSettings.json). Use `--launch-profile http`, or set the variable by hand.
 dotnet run --project src/Services/Inventory/Inventory.API  # 5015
 dotnet run --project src/Services/Payments/Payments.API    # 5156
 
-# Inspect the broker without the UI. Since 3.4 there IS one queue, `order-created`
-# (Inventory's consumer); its `_error` sibling is created lazily on the first
-# fault, so its absence means nothing. StockReserved/StockRejected still have no
-# consumer until 3.5/4.6, so those exchanges only exist if something declared
-# them. MassTransit declares topology lazily, so "no queues" is never evidence
-# that the bus is disconnected — check connections for that.
+# Inspect the broker without the UI. Since 3.5 there are TWO queues,
+# `order-created` (Inventory) and `stock-reserved` (Payments); their `_error`
+# siblings are created lazily on the first fault, so their absence means nothing.
+# All five event exchanges exist once the services have published once, but
+# StockRejected/PaymentCompleted/PaymentFailed have NO bound queue until 4.3/4.6 —
+# they are published into the void, and that fails and warns about nothing.
+# MassTransit declares topology lazily, so "no queues" is never evidence that the
+# bus is disconnected — check connections for that.
+#
+# To repost a message by hand the envelope needs `content_type:
+# application/vnd.masstransit+json` in `properties` and a `messageType` with the
+# full URN (urn:message:Shop133.Contracts.Events:StockReserved). Without them the
+# broker still answers {"routed":true} and no consumer reacts — `routed:true`
+# means it reached a queue, not that anyone could read it. JSON without BOM.
 #
 # Invoke-RestMethod on this API is unreliable in PS 5.1: the pipeline receives ONE
 # item that is the whole array, so Select-Object prints a blank row and
@@ -434,10 +468,17 @@ tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.exe -class "Or
 # Control); re-run it, do not downgrade the package.
 
 # EF Core migrations — DbContext lives in Infrastructure, host in API.
-# Three services have one since 3.4: swap Catalog for Orders or Inventory in both
-# paths. To keep a seed OUT of InitialCreate (as 1.4 and 3.4 both did), there is no
-# flag: comment out the HasData line, generate the schema migration, uncomment it,
-# then generate the seed migration.
+# All four services have one since 3.5: swap Catalog for Orders, Inventory or
+# Payments in both paths. To keep a seed OUT of InitialCreate (as 1.4 and 3.4 both
+# did), there is no flag: comment out the HasData line, generate the schema
+# migration, uncomment it, then generate the seed migration.
+#
+# If either command dies with "Could not load assembly '<X>.Infrastructure'",
+# read it with -v before believing the message: in 3.5 the real cause was Smart
+# App Control (0x800711C7) on a freshly built, unsigned assembly of this repo, and
+# retrying did not clear it. The fix that worked is `dotnet build -c Release`
+# followed by the same command with `--configuration Release` — different bytes,
+# different hash, fresh evaluation.
 dotnet ef migrations add <Name> `
   --project src/Services/Catalog/Catalog.Infrastructure `
   --startup-project src/Services/Catalog/Catalog.API
