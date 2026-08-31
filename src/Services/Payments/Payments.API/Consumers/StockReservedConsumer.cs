@@ -50,24 +50,81 @@ public sealed class StockReservedConsumer(
     IOptions<PaymentSimulationOptions> options,
     ILogger<StockReservedConsumer> logger) : IConsumer<StockReserved>
 {
+    /// <summary>
+    /// La mitad de la clave con la que este consumer marca lo que ya procesó.
+    /// <c>nameof</c> y no una cadena suelta: renombrar la clase mueve la
+    /// constante con ella. Lo que **no** hace es migrar las filas ya escritas con
+    /// el nombre viejo, que pasarían a verse como no procesadas — un renombrado
+    /// de consumer es un cambio de esquema disfrazado.
+    /// </summary>
+    private const string ConsumerName = nameof(StockReservedConsumer);
+
     public async Task Consume(ConsumeContext<StockReserved> context)
     {
         var message = context.Message;
         var cancellationToken = context.CancellationToken;
 
+        // ── Idempotencia de transporte, por MessageId del sobre (3.6) ──
+        //
+        // Es la regla 6 de CLAUDE.md al pie de la letra: RabbitMQ garantiza *al
+        // menos* una entrega, así que se guarda el MessageId procesado y se
+        // descarta el repetido. El identificador sale del SOBRE de MassTransit,
+        // nunca de un campo del contrato — comprometido en 0.3, 2.1 y 3.2.
+        //
+        // Va delante de la guarda de negocio de más abajo, y las dos se quedan:
+        // ésta reconoce la misma ENTREGA, aquélla reconoce el mismo PEDIDO. Un
+        // StockReserved reacuñado con MessageId nuevo para un pedido ya cobrado
+        // pasa por aquí sin enterarse y lo para la de abajo — que es la que
+        // impide el duplicado más caro del sistema.
+        //
+        // Sin MessageId no se puede deduplicar, y un consumer que no puede
+        // cumplir la regla 6 no debe seguir: revienta y el mensaje acaba en
+        // stock-reserved_error, donde se ve. Aquí importa más que en Inventory —
+        // el trabajo que hay al otro lado es cobrar.
+        var messageId = context.MessageId
+            ?? throw new InvalidOperationException(
+                $"El mensaje StockReserved del pedido {message.OrderId} llegó sin MessageId en el sobre, " +
+                "así que no se puede deducir si es un duplicado. Todo mensaje publicado por MassTransit " +
+                "lo lleva; si esto se ve, el mensaje se inyectó a mano sin la propiedad message_id.");
+
+        var alreadyProcessed = await db.ProcessedMessages
+            .AsNoTracking()
+            .AnyAsync(
+                processed => processed.MessageId == messageId && processed.ConsumerName == ConsumerName,
+                cancellationToken);
+
+        if (alreadyProcessed)
+        {
+            // Se sale en silencio, sin volver a publicar. Es "skip repeats"
+            // literal, y tiene un precio que conviene no disimular: retira el
+            // reenvío curativo que la guarda de abajo daba gratis. Si el proceso
+            // murió entre el COMMIT y el Publish, la reentrega ya no republica el
+            // desenlace — el cobro está hecho y la saga no se entera nunca.
+            //
+            // No es un descuido de este punto: es el mismo agujero de la doble
+            // escritura anotado más abajo, que cierra el outbox transaccional de
+            // 4.5. Un inbox sin outbox se comporta exactamente así.
+            logger.LogInformation(
+                "El mensaje {MessageId} ya lo procesó {ConsumerName} (pedido {OrderId}); se descarta.",
+                messageId,
+                ConsumerName,
+                message.OrderId);
+
+            return;
+        }
+
         // ── Idempotencia de negocio, por OrderId ──
         //
-        // No es la idempotencia de 3.6, que va por el MessageId del sobre y vale
-        // para cualquier consumer. Esta es más estrecha y hace falta igual, y
-        // aquí más que en ningún otro sitio del sistema: RabbitMQ garantiza *al
-        // menos* una entrega, y un StockReserved reentregado sin esta guarda
-        // cobraría el pedido dos veces. Es el duplicado más caro que el proyecto
-        // puede producir.
+        // No es la de arriba y sigue haciendo falta, aquí más que en ningún otro
+        // sitio del sistema: la PK de Payments es el OrderId, así que un
+        // StockReserved del mismo pedido con MessageId distinto —la guarda de
+        // arriba no lo ve— cobraría el pedido dos veces sin esta comprobación, o
+        // reventaría el INSERT. Es el duplicado más caro que el proyecto puede
+        // producir.
         //
-        // Se reenvía el desenlace guardado en vez de salir en silencio, igual que
-        // hace Inventory en 3.4: si el mensaje se repite es que algo se perdió, y
-        // puede haber sido la respuesta. La saga de la Fase 4 tendrá su propia
-        // guarda al recibirla dos veces.
+        // Aquí sí se reenvía el desenlace guardado en vez de salir en silencio, y
+        // la diferencia con la rama de arriba es el motivo: un MessageId nuevo es
+        // alguien que ha vuelto a preguntar, no la misma entrega repetida.
         var existing = await db.Payments
             .AsNoTracking()
             .FirstOrDefaultAsync(payment => payment.OrderId == message.OrderId, cancellationToken);
@@ -80,6 +137,12 @@ public sealed class StockReservedConsumer(
                 message.OrderId,
                 existing.ProcessedAt,
                 existing.Status);
+
+            // Este camino no cobra nada, pero sí procesa el mensaje: se marca
+            // antes de publicar para que una reentrega de ESTA entrega ni
+            // siquiera llegue a consultar el cobro.
+            MarkProcessed(messageId);
+            await db.SaveChangesAsync(cancellationToken);
 
             await Republish(context, existing);
             return;
@@ -119,6 +182,15 @@ public sealed class StockReservedConsumer(
 
         db.Payments.Add(payment);
 
+        // La marca de 3.6 entra en el MISMO SaveChanges que el cobro, y ésa es
+        // toda la razón por la que la guarda vive aquí dentro y no en un filtro
+        // de MassTransit envolviendo al consumer. Un filtro confirmaría la marca
+        // en una transacción aparte, y entre las dos cabe un estado fatal: mensaje
+        // marcado como procesado y cobro sin hacer, que la reentrega ya no repara
+        // porque se lo salta. Así no cabe — o entran las dos cosas o no entra
+        // ninguna.
+        MarkProcessed(messageId);
+
         // ── Guardar primero, publicar después ──
         //
         // Mismo orden y mismo motivo que en OrdersController desde 3.3: publicar
@@ -150,6 +222,23 @@ public sealed class StockReservedConsumer(
 
         await Republish(context, payment);
     }
+
+    /// <summary>
+    /// Deja constancia de que este consumer procesó este mensaje.
+    ///
+    /// Solo hace <c>Add</c>: **no guarda**. Es deliberado y es lo que permite que
+    /// en el camino normal la marca viaje en el mismo <c>SaveChangesAsync</c> que
+    /// el cobro. Quien llama decide cuándo se confirma; en la rama del duplicado
+    /// de negocio, con un SaveChanges propio inmediatamente después.
+    ///
+    /// Está extraído por lo mismo que <c>Republish</c>: se llama desde los dos
+    /// caminos de salida, y dos copias de la misma línea son dos sitios donde
+    /// olvidarse de una — que aquí significa reprocesar un duplicado sin que nada
+    /// falle.
+    /// </summary>
+    private void MarkProcessed(Guid messageId) =>
+        db.ProcessedMessages.Add(
+            new ProcessedMessage(messageId, ConsumerName, typeof(StockReserved).FullName!));
 
     /// <summary>
     /// Publica el desenlace de un cobro ya persistido.

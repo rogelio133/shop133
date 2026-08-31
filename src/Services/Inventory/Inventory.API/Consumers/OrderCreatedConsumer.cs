@@ -42,23 +42,81 @@ public sealed class OrderCreatedConsumer(
     InventoryDbContext db,
     ILogger<OrderCreatedConsumer> logger) : IConsumer<OrderCreated>
 {
+    /// <summary>
+    /// La mitad de la clave con la que este consumer marca lo que ya procesó.
+    /// <c>nameof</c> y no una cadena suelta: renombrar la clase mueve la
+    /// constante con ella. Lo que **no** hace es migrar las filas ya escritas con
+    /// el nombre viejo, que pasarían a verse como no procesadas — un renombrado
+    /// de consumer es un cambio de esquema disfrazado.
+    /// </summary>
+    private const string ConsumerName = nameof(OrderCreatedConsumer);
+
     public async Task Consume(ConsumeContext<OrderCreated> context)
     {
         var message = context.Message;
         var cancellationToken = context.CancellationToken;
 
+        // ── Idempotencia de transporte, por MessageId del sobre (3.6) ──
+        //
+        // Es la regla 6 de CLAUDE.md al pie de la letra: RabbitMQ garantiza *al
+        // menos* una entrega, así que se guarda el MessageId procesado y se
+        // descarta el repetido. El identificador sale del SOBRE de MassTransit,
+        // nunca de un campo del contrato — comprometido en 0.3, 2.1 y 3.2.
+        //
+        // Va delante de la guarda de negocio de más abajo, y las dos se quedan:
+        // ésta reconoce la misma ENTREGA, aquélla reconoce el mismo PEDIDO. Un
+        // OrderCreated reacuñado con MessageId nuevo para un pedido ya reservado
+        // pasa por aquí sin enterarse y lo para la de abajo.
+        //
+        // Sin MessageId no se puede deduplicar, y un consumer que no puede
+        // cumplir la regla 6 no debe seguir: revienta y el mensaje acaba en
+        // order-created_error, donde se ve. MassTransit siempre lo rellena, así
+        // que esta rama solo la pisa un mensaje escrito a mano — y la receta de
+        // reposteo de CLAUDE.md lleva message_id justamente por esto.
+        var messageId = context.MessageId
+            ?? throw new InvalidOperationException(
+                $"El mensaje OrderCreated del pedido {message.OrderId} llegó sin MessageId en el sobre, " +
+                "así que no se puede deducir si es un duplicado. Todo mensaje publicado por MassTransit " +
+                "lo lleva; si esto se ve, el mensaje se inyectó a mano sin la propiedad message_id.");
+
+        var alreadyProcessed = await db.ProcessedMessages
+            .AsNoTracking()
+            .AnyAsync(
+                processed => processed.MessageId == messageId && processed.ConsumerName == ConsumerName,
+                cancellationToken);
+
+        if (alreadyProcessed)
+        {
+            // Se sale en silencio, sin volver a publicar. Es "skip repeats"
+            // literal, y tiene un precio que conviene no disimular: retira el
+            // reenvío curativo que la guarda de abajo daba gratis. Si el proceso
+            // murió entre el COMMIT y el Publish, la reentrega ya no republica el
+            // desenlace y ese mensaje se pierde para siempre.
+            //
+            // No es un descuido de este punto: es el agujero de la doble
+            // escritura, que no tiene arreglo con dos sistemas y sin transacción
+            // distribuida, y que cierra el outbox transaccional de 4.5. Un inbox
+            // sin outbox se comporta exactamente así.
+            logger.LogInformation(
+                "El mensaje {MessageId} ya lo procesó {ConsumerName} (pedido {OrderId}); se descarta.",
+                messageId,
+                ConsumerName,
+                message.OrderId);
+
+            return;
+        }
+
         // ── Idempotencia de negocio, por OrderId ──
         //
-        // No es la idempotencia de 3.6, que va por el MessageId del sobre y vale
-        // para cualquier consumer. Esta es más estrecha y hace falta igual: la
-        // PK de StockReservations es el OrderId, así que un OrderCreated
-        // reentregado —RabbitMQ garantiza *al menos* una entrega— reventaría el
-        // INSERT y, tras los reintentos, acabaría en la cola order-created_error.
-        // Un pedido correcto en la cola de errores no es la lección de esta fase.
+        // No es la de arriba y sigue haciendo falta: la PK de StockReservations
+        // es el OrderId, así que un OrderCreated del mismo pedido con MessageId
+        // distinto —la guarda de arriba no lo ve— reventaría el INSERT y, tras
+        // los reintentos, acabaría en la cola order-created_error. Un pedido
+        // correcto en la cola de errores no es la lección de esta fase.
         //
-        // Se vuelve a publicar StockReserved en vez de salir en silencio: si el
-        // mensaje se repite es que algo se perdió, y puede haber sido la
-        // respuesta. Republicarla es barato y Payments tendrá su propia guarda.
+        // Aquí sí se vuelve a publicar StockReserved en vez de salir en silencio,
+        // y la diferencia con la rama de arriba es el motivo: un MessageId nuevo
+        // es alguien que ha vuelto a preguntar, no la misma entrega repetida.
         var existing = await db.StockReservations
             .AsNoTracking()
             .FirstOrDefaultAsync(reservation => reservation.OrderId == message.OrderId, cancellationToken);
@@ -70,6 +128,12 @@ public sealed class OrderCreatedConsumer(
                 "no se reserva de nuevo y se reenvía StockReserved.",
                 message.OrderId,
                 existing.CreatedAt);
+
+            // Este camino tampoco reserva nada, pero sí procesa el mensaje: se
+            // marca antes de publicar para que una reentrega de ESTA entrega ni
+            // siquiera llegue a consultar la reserva.
+            MarkProcessed(messageId);
+            await db.SaveChangesAsync(cancellationToken);
 
             await PublishReserved(context, message);
             return;
@@ -134,9 +198,22 @@ public sealed class OrderCreatedConsumer(
                 message.OrderId,
                 reason);
 
-            // Nada que deshacer y nada que guardar: no se ha tocado el
-            // ChangeTracker. Si esta rama alguna vez necesitara escribir, habría
-            // que releer el orden de los pasos.
+            // ── El camino que 3.4 dejó sin cubrir ──
+            //
+            // Hasta 3.6 esta rama no escribía nada: se publicaba StockRejected y
+            // se salía sin tocar el ChangeTracker. Eso la dejaba fuera de la
+            // guarda de negocio de arriba —que solo sabe de reservas existentes—,
+            // así que un OrderCreated reentregado de un pedido sin stock volvía a
+            // validar y publicaba un SEGUNDO StockRejected. No reventaba nada
+            // porque hoy nadie lo consume; con la saga de 4.3 delante, sí.
+            //
+            // Ahora la marca es la única escritura de esta rama, y por eso lleva
+            // su propio SaveChangesAsync: no hay trabajo de negocio al que
+            // engancharla. Es exactamente el hueco que la sección Pendiente de
+            // docs/fase_3_4.md apuntó para este punto.
+            MarkProcessed(messageId);
+            await db.SaveChangesAsync(cancellationToken);
+
             await context.Publish(
                 new StockRejected
                 {
@@ -158,10 +235,20 @@ public sealed class OrderCreatedConsumer(
                 message.OrderId,
                 message.Lines.Select(line => new StockReservationLine(line.ProductId, line.Quantity))));
 
-        // Un solo SaveChanges para el incremento de los StockItem y el alta de la
-        // reserva con sus líneas: EF los mete en la misma transacción, así que no
-        // existe un estado en el que el stock esté comprometido y no haya reserva
-        // que lo justifique — que es justo lo que 4.4 necesitaría para soltarlo.
+        // La marca de 3.6 entra en el MISMO SaveChanges que la reserva, y ésa es
+        // toda la razón por la que la guarda vive aquí dentro y no en un filtro
+        // de MassTransit envolviendo al consumer. Un filtro confirmaría la marca
+        // en una transacción aparte, y entre las dos cabe un estado fatal: mensaje
+        // marcado como procesado y trabajo sin hacer, que la reentrega ya no
+        // repara porque se lo salta. Así no cabe — o entran las dos cosas o no
+        // entra ninguna.
+        MarkProcessed(messageId);
+
+        // Un solo SaveChanges para el incremento de los StockItem, el alta de la
+        // reserva con sus líneas y la marca: EF los mete en la misma transacción,
+        // así que no existe un estado en el que el stock esté comprometido y no
+        // haya reserva que lo justifique — que es justo lo que 4.4 necesitaría
+        // para soltarlo.
         await db.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation(
@@ -172,6 +259,23 @@ public sealed class OrderCreatedConsumer(
 
         await PublishReserved(context, message);
     }
+
+    /// <summary>
+    /// Deja constancia de que este consumer procesó este mensaje.
+    ///
+    /// Solo hace <c>Add</c>: **no guarda**. Es deliberado y es lo que permite que
+    /// en el camino de éxito la marca viaje en el mismo <c>SaveChangesAsync</c>
+    /// que la reserva. Quien llama decide cuándo se confirma; en las dos ramas
+    /// que no escriben nada más, con un SaveChanges propio inmediatamente después.
+    ///
+    /// Está extraído por lo mismo que <c>PublishReserved</c>: se llama desde los
+    /// tres caminos de salida, y tres copias de la misma línea son tres sitios
+    /// donde olvidarse de uno — que aquí significa reprocesar un duplicado sin
+    /// que nada falle.
+    /// </summary>
+    private void MarkProcessed(Guid messageId) =>
+        db.ProcessedMessages.Add(
+            new ProcessedMessage(messageId, ConsumerName, typeof(OrderCreated).FullName!));
 
     /// <summary>
     /// **La línea que no se puede olvidar.**

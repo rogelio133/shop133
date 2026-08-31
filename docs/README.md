@@ -41,5 +41,6 @@ Documentos de procedimiento, no ligados a un punto del roadmap. No siguen la con
 | 3.3 | Orders.API publica `OrderCreated` en lugar de llamar síncronamente | 2026-08-27 | [fase_3_3.md](fase_3_3.md) |
 | 3.4 | Inventory.API consume `OrderCreated` y reserva stock contra `InventoryDb` | 2026-08-28 | [fase_3_4.md](fase_3_4.md) |
 | 3.5 | Payments.API consume `StockReserved` y simula el cobro contra `PaymentsDb` | 2026-08-31 | [fase_3_5.md](fase_3_5.md) |
+| 3.6 | Idempotencia por `MessageId` del sobre en Inventory y Payments | 2026-08-31 | [fase_3_6.md](fase_3_6.md) |
 
 El punto **0.1** (crear solución y estructura de carpetas) se completó antes de que existiera esta convención y no se documentó retroactivamente.

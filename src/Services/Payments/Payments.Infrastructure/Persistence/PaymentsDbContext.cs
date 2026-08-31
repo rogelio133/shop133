@@ -27,6 +27,18 @@ public sealed class PaymentsDbContext(DbContextOptions<PaymentsDbContext> option
 {
     public DbSet<Payment> Payments => Set<Payment>();
 
+    /// <summary>
+    /// Los mensajes ya procesados, una fila por (MessageId, consumer). Es la
+    /// idempotencia de transporte de 3.6, la que exige la regla 6 de CLAUDE.md.
+    ///
+    /// Es la única tabla de aquí que **no es de negocio**: Payments no gestiona
+    /// mensajes, los recibe. Vive en esta base y no en una compartida porque la
+    /// regla 1 no admite una base transversal, y porque marcar el mensaje y hacer
+    /// el trabajo tienen que caber en la misma transacción — algo que dos bases
+    /// no pueden dar sin transacción distribuida.
+    /// </summary>
+    public DbSet<ProcessedMessage> ProcessedMessages => Set<ProcessedMessage>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         // ApplyConfiguration explícito y no ApplyConfigurationsFromAssembly, por
@@ -34,6 +46,7 @@ public sealed class PaymentsDbContext(DbContextOptions<PaymentsDbContext> option
         // reflexión hace que añadir una configuración sea invisible desde aquí, y
         // que renombrarla mal la deje fuera del modelo sin que nada avise.
         modelBuilder.ApplyConfiguration(new PaymentConfiguration());
+        modelBuilder.ApplyConfiguration(new ProcessedMessageConfiguration());
 
         base.OnModelCreating(modelBuilder);
     }
