@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!--
+    Sin ningun ProjectReference, y es deliberado. Copia exacta del criterio de
+    Inventory.Infrastructure (decision 1 de docs/fase_3_4.md).
+
+    Payments no tiene capa de dominio: la saga vive en Orders.Domain, y lo que
+    hay aqui es un registro de cobros, no una maquina de estados. Se parece a
+    Catalog, que es un CRUD, no a Orders.
+
+    Y tampoco referencia Shop133.Contracts: quien traduce un StockReserved en
+    un cobro es el consumer, y el consumer vive en la API. Si algun dia una
+    entidad de aqui necesita un tipo de Contracts, eso es la senal de que la
+    traduccion se ha colado en la capa equivocada.
+  -->
+
+  <!--
+    Primer paquete NuGet del proyecto. El provider de SQL Server arrastra
+    Microsoft.EntityFrameworkCore y .Relational, asi que no hace falta
+    declararlos aparte.
+
+    Version 10.0.8, la misma que Catalog.Infrastructure, Orders.Infrastructure
+    e Inventory.Infrastructure: es la que tiene instalada la herramienta global
+    dotnet-ef. Va por detras del 10.0.11 de Microsoft.AspNetCore.OpenApi a
+    proposito, no es un descuido.
+
+    Aqui y no en Payments.API: lo comprueba el test de arquitectura
+    EfCorePackages_LiveOnlyIn_InfrastructureProjects, que solo le permite a un
+    proyecto .API declarar Microsoft.EntityFrameworkCore.Design.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.8" />
+  </ItemGroup>
+
+</Project>

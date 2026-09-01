@@ -1,7 +1,8 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using MassTransit;
+
+using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi;
 
-using Orders.Infrastructure.Catalog;
 using Orders.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -29,10 +30,13 @@ builder.Services.AddOpenApi(options => options.AddDocumentTransformer((document,
         Title = "shop133 — Orders API",
         Version = "v1",
         Description =
-            "Pedidos. En la Fase 2 el alta llama a Catalog.API de forma síncrona para " +
-            "congelar sku, nombre y precio de cada línea: es deuda deliberada, y por eso " +
-            "un Catalog caído devuelve 502 y el pedido no se crea. En la Fase 3 esa " +
-            "llamada desaparece y Orders publica OrderCreated en RabbitMQ.",
+            "Pedidos. El alta persiste el pedido y publica OrderCreated en RabbitMQ: no " +
+            "llama a ningún otro servicio, así que Catalog puede estar caído y el pedido " +
+            "se crea igual. Ese es el cambio de 3.3 — en la Fase 2 esa misma petición " +
+            "devolvía 502 cuando Catalog no contestaba.\n\n" +
+            "El precio de haber quitado la llamada es que el sku, el nombre y el precio de " +
+            "cada línea los manda el cliente: Orders congela lo que recibe y no lo " +
+            "contrasta con nadie.",
     };
 
     return Task.CompletedTask;
@@ -61,34 +65,59 @@ var connectionString = builder.Configuration.GetConnectionString("OrdersDb")
 builder.Services.AddDbContext<OrdersDbContext>(options =>
     options.UseSqlServer(connectionString));
 
-// PHASE-2 DEBT: replaced by OrderCreated event in Phase 3.
+// Aquí vivía el AddHttpClient<CatalogClient> de 2.3, con su guarda de
+// Services:CatalogBaseUrl y su timeout de 5 segundos. Lo borró 3.3: era la deuda
+// deliberada de la regla 2 de CLAUDE.md, y su sustituto es el Publish de
+// OrderCreated que hace OrdersController. No queda ni un HttpClient en el
+// servicio, que es la comprobación más simple de que la llamada síncrona se fue
+// de verdad y no se quedó escondida detrás de otro nombre.
 //
-// La dirección de Catalog NO es un secreto, así que vive en appsettings.json y no
-// en User Secrets — al contrario que el connection string, que lleva contraseña.
-// Se sobreescribe con la variable de entorno Services__CatalogBaseUrl el día que
-// Orders tenga contenedor (allí sería http://catalog-api:8080).
+// La clave Services:CatalogBaseUrl salió también de appsettings.json y de la
+// fábrica de Orders.Tests: las guardas de este archivo y los UseSetting de esa
+// fábrica cambian siempre juntos.
+
+// --- Mensajería (3.1) -------------------------------------------------------
 //
-// La guarda existe por el mismo motivo que la del connection string: sin ella,
-// new Uri(null) revienta con un mensaje que no dice qué falta.
-var catalogBaseUrl = builder.Configuration["Services:CatalogBaseUrl"]
+// El URI de RabbitMQ vive en User Secrets porque lleva usuario y contraseña:
+// misma decisión que el connection string de arriba.
+//
+// La guarda no es decorativa. Sin ella la clave ausente no falla aquí: falla al
+// arrancar el bus, dentro de un hosted service, con un mensaje que no menciona
+// la configuración. Aquí revienta antes de app.Build(), diciendo qué falta.
+//
+// En contenedor se sobreescribe con ConnectionStrings__RabbitMq, construido a
+// partir de ${RABBITMQ_DEFAULT_USER}/${RABBITMQ_DEFAULT_PASS} como hace
+// catalog-api con ${CATALOG_DB_PASSWORD}. Allí el host es "rabbitmq" —el nombre
+// del servicio dentro de shop133-net—, no "localhost".
+var rabbitMqConnectionString = builder.Configuration.GetConnectionString("RabbitMq")
     ?? throw new InvalidOperationException(
-        "Falta la configuración 'Services:CatalogBaseUrl'. Es la dirección de Catalog.API " +
-        "(en local, http://localhost:5124) y vive en appsettings.json, no en User Secrets: " +
-        "no es un secreto.");
+        "Falta la configuración 'ConnectionStrings:RabbitMq'. En local vive en User Secrets: " +
+        "dotnet user-secrets set \"ConnectionStrings:RabbitMq\" \"amqp://guest:guest@localhost:5672\" " +
+        "--project src/Services/Orders/Orders.API");
 
-builder.Services.AddHttpClient<CatalogClient>(client =>
+builder.Services.AddMassTransit(x =>
 {
-    // La barra final es obligatoria. Uri combina base + relativa descartando el
-    // último segmento de la base si no acaba en "/", así que sin ella una base
-    // como "http://gateway/api/catalog" perdería el "/catalog" al pedir
-    // "products/1". Hoy la base es la raíz y no se notaría; en la Fase 5, con el
-    // Gateway delante, sí.
-    client.BaseAddress = new Uri(catalogBaseUrl.TrimEnd('/') + '/');
+    // Se fijó en 3.1 con cero consumers, precisamente porque después no sale
+    // gratis: el formatter decide el nombre de la cola de cada consumer, y
+    // cambiarlo dejaría colas huérfanas en el broker que nadie vacía. 3.3 publica
+    // el primer mensaje del proyecto y no lo tocó; 3.4 y 3.5 tampoco deben.
+    //
+    // Kebab-case en minúsculas: los nombres de cola de RabbitMQ distinguen
+    // mayúsculas, y "order-created" no da lugar a dudas donde "OrderCreated" sí.
+    x.SetKebabCaseEndpointNameFormatter();
 
-    // 5 segundos en vez de los 100 de fábrica. Con el valor por defecto, "Catalog
-    // caído" tardaría minuto y medio por línea en devolver el 502 — el test de
-    // 2.4 sería inviable y el fallo parecería un cuelgue en vez de un error.
-    client.Timeout = TimeSpan.FromSeconds(5);
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        // Host(Uri) saca usuario y contraseña del userinfo del URI, así que no
+        // hacen falta h.Username()/h.Password() por separado.
+        cfg.Host(new Uri(rabbitMqConnectionString));
+
+        // Hoy no registra nada: no hay consumers. Se deja puesta porque es la
+        // línea que 3.4 y 3.5 esperan encontrar — sin ella, registrar un
+        // IConsumer no crea su receive endpoint y el mensaje se pierde en
+        // silencio, que es el fallo más caro de diagnosticar de esta fase.
+        cfg.ConfigureEndpoints(context);
+    });
 });
 
 var app = builder.Build();

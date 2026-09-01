@@ -67,8 +67,8 @@ public sealed class LayeringRulesTests
         var offenders = ProjectGraph.Projects.Values
             .Where(project => !project.IsInfrastructure)
             .SelectMany(
-                project => project.PackageReferences.Where(packageId => IsForbiddenEfCorePackage(project, packageId)),
-                (project, packageId) => $"{project.Name} → {packageId}")
+                project => project.PackageReferences.Where(package => IsForbiddenEfCorePackage(project, package.Id)),
+                (project, package) => $"{project.Name} → {package.Id}")
             .ToList();
 
         Assert.True(

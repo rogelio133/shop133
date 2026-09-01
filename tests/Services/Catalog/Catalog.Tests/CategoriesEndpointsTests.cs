@@ -4,6 +4,8 @@ using System.Net.Http.Json;
 using Catalog.API.Models;
 using Catalog.Tests.Infrastructure;
 
+using Shop133.TestUtilities;
+
 using Xunit;
 
 namespace Catalog.Tests;

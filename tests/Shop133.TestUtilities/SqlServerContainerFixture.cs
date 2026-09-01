@@ -4,21 +4,38 @@ using Testcontainers.MsSql;
 
 using Xunit;
 
-namespace Catalog.Tests.Infrastructure;
+namespace Shop133.TestUtilities;
 
 /// <summary>
-/// El contenedor de SQL Server que comparte todo el ensamblado de tests.
+/// El contenedor de SQL Server que comparte todo un ensamblado de tests.
 ///
-/// Arrancarlo cuesta segundos, así que hay exactamente uno: lo sostiene
-/// <see cref="CatalogApiCollection"/> como collection fixture y vive desde el
-/// primer test hasta el último. Lo que sí es de usar y tirar es la *base de
-/// datos*: cada clase de test crea la suya con <see cref="CreateDatabaseAsync"/>
-/// y la borra al terminar (ver <see cref="CatalogApiFactory"/>).
+/// Arrancarlo cuesta segundos, así que hay exactamente uno por suite: lo sostiene
+/// el <c>[CollectionDefinition]</c> de cada proyecto como collection fixture y
+/// vive desde el primer test hasta el último. Lo que sí es de usar y tirar es la
+/// *base de datos*: cada test crea la suya con <see cref="CreateDatabaseAsync"/>
+/// y la borra al terminar.
+///
+/// **Vive aquí desde 3.7, y esa es la única decisión de este fichero.** Nació
+/// duplicada: 1.7 la escribió para Catalog.Tests, 2.4 la copió a Orders.Tests y
+/// dejó anotado que "dos ocurrencias no son un patrón", y 3.4, 3.5 y 3.6
+/// aplazaron la extracción hasta tener cuatro copias delante. Cuando llegó ese
+/// momento, la evidencia fue concluyente: las dos copias eran **byte a byte
+/// idénticas** salvo el namespace y la prosa de los comentarios — ni una línea
+/// de código había divergido en cinco puntos del roadmap.
+///
+/// *Descartado* seguir copiando. Era defendible con dos y ya no lo es con cuatro:
+/// un arreglo aquí (el error 3702 del DROP, la etiqueta de la imagen) habría que
+/// aplicarlo cuatro veces y nada avisaría si se olvidase una.
+///
+/// *Descartado* subir también las factories a este proyecto. Esas sí divergen
+/// —una base por clase frente a una por test, WebApplicationFactory frente a un
+/// ServiceCollection desnudo— y compartir lo que diverge es cómo un proyecto de
+/// utilidades acaba siendo un cajón de sastre.
 ///
 /// *Descartado* reutilizar el `sqlserver` de docker-compose. Los tests dejarían
-/// de ser reproducibles fuera de una máquina con el stack levantado, tendrían
-/// que compartir CatalogDb con el trabajo manual del día, y 8.3 no podría
-/// correrlos en CI sin montar el compose entero.
+/// de ser reproducibles fuera de una máquina con el stack levantado, tendrían que
+/// compartir la base con el trabajo manual del día, y 8.3 no podría correrlos en
+/// CI sin montar el compose entero.
 /// </summary>
 public sealed class SqlServerContainerFixture : IAsyncLifetime
 {
