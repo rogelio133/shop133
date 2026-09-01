@@ -1,9 +1,15 @@
+using MassTransit;
+using MassTransit.Testing;
+
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 using Orders.Infrastructure.Persistence;
+
+using Shop133.TestUtilities;
 
 using Xunit;
 
@@ -69,29 +75,75 @@ public sealed class OrdersApiFactory : WebApplicationFactory<Program>, IAsyncLif
         // Sin esta línea la suite entera falla con "Falta la configuración
         // 'ConnectionStrings:RabbitMq'".
         //
-        // **Ojo: en 3.1 esto NO era una dependencia real y desde 3.3 SÍ lo es.**
-        // Entonces bastaba con que la clave existiera —nadie publicaba, y un bus
-        // sin broker se limita a avisar y reintentar en segundo plano (ver
-        // docs/fase_3_1.md), así que los tests pasaban con RabbitMQ parado—.
-        // Ahora POST /orders publica OrderCreated de verdad, y un Publish sobre el
-        // transporte de RabbitMQ **espera a que haya conexión en vez de fallar
-        // rápido**: con el broker caído la petición no da error, se queda colgada
-        // hasta que el test expire. `docker compose up -d` es prerrequisito.
+        // **El valor es falso a propósito desde 3.7.** El bus de RabbitMQ que
+        // registra Program.cs se desmonta unas líneas más abajo y se sustituye por
+        // el harness en memoria, así que aquí no hay ningún broker al que
+        // conectarse: la clave solo tiene que existir para que la guarda pase.
+        // Poner un URI verosímil sería peor — si algún día el desmontaje se
+        // rompiera, la suite se conectaría al RabbitMQ de desarrollo sin que nada
+        // lo delatara. Con este host inventado, se cuelga y se investiga.
         //
-        // *Descartado* traer aquí el harness en memoria de MassTransit
-        // (MassTransit.TestFramework), que quitaría esa dependencia y además
-        // permitiría afirmar que el evento se publicó. Es el punto 3.7, y hacerlo
-        // aquí obligaría a desmontar el bus que Program.cs ya registró — bastante
-        // más que una línea. Mientras tanto lo que esta suite demuestra del
-        // Publish es lo que un broker real puede demostrar: que no lanza y que no
-        // bloquea. Que el mensaje sale se comprueba en el broker, a mano
-        // (Verificación de docs/fase_3_3.md).
+        // Nótese el viaje de esta clave: en 3.1 era decorativa (nadie publicaba),
+        // en 3.3 pasó a ser una dependencia real (un Publish sobre RabbitMQ espera
+        // a que haya conexión en vez de fallar rápido, así que con el broker caído
+        // la petición se colgaba), y en 3.7 vuelve a ser decorativa. La regla que
+        // ilustra sigue en pie: cada guarda de Program.cs es una línea de esta
+        // fábrica.
+        builder.UseSetting("ConnectionStrings:RabbitMq", "amqp://el-harness-sustituye-esto:5672");
+
+        // ── El bus de RabbitMQ, fuera; el harness en memoria, dentro (3.7) ──
         //
-        // *Descartado* también Testcontainers.RabbitMq, que haría la suite
-        // autónoma como ya lo es con SQL Server. Es un paquete más y ~10 s de
-        // arranque por ensamblado para una dependencia que 3.7 va a eliminar.
-        builder.UseSetting("ConnectionStrings:RabbitMq", "amqp://guest:guest@localhost:5672");
+        // Esto es lo que le quita a la suite la dependencia del broker real que
+        // estrenó 3.3, y de paso lo que permite por fin **afirmar en un test que
+        // OrderCreated se publicó** — la deuda que docs/fase_3_3.md dejó apuntada
+        // aquí en un comentario.
+        //
+        // Hay que desmontar en vez de sustituir porque no se llega antes:
+        // Program.cs lee su guarda y registra AddMassTransit *antes* de
+        // app.Build(), y ConfigureTestServices corre después. Así que se quitan los
+        // ServiceDescriptor que puso MassTransit y se registra el harness encima.
+        //
+        // *Descartado* un interruptor de transporte en Program.cs (elegir
+        // UsingInMemory o UsingRabbitMq según configuración). Sería más robusto que
+        // este filtro, pero mete código de producción que existe solo para los
+        // tests y, peor, deja al servicio poder arrancar sin hablar con el broker
+        // sin que nada avise. El precio de la alternativa elegida es que el filtro
+        // es frágil por naturaleza; lo que lo hace aceptable es que su rotura no es
+        // silenciosa: sin bus registrado el host no arranca, y con el de RabbitMQ
+        // todavía puesto los tests se cuelgan contra el URI inventado de arriba.
+        //
+        // *Descartado* Testcontainers.RabbitMq: haría la suite autónoma, sí, pero
+        // a cambio de un paquete más y ~10 s de arranque por ensamblado para
+        // seguir sin poder afirmar nada sobre el mensaje publicado.
+        builder.ConfigureTestServices(services =>
+        {
+            foreach (var descriptor in services.Where(IsMassTransit).ToList())
+            {
+                services.Remove(descriptor);
+            }
+
+            services.AddMassTransitTestHarness();
+        });
     }
+
+    /// <summary>
+    /// Un registro puesto por MassTransit, reconocido por el ensamblado en el que
+    /// vive su tipo de servicio o su implementación.
+    ///
+    /// Se filtra por ensamblado y no por una lista de tipos concretos porque
+    /// <c>AddMassTransit</c> registra decenas y la lista quedaría desfasada en la
+    /// siguiente versión menor. Lo que queda detrás son cosas como
+    /// <c>IConfigureOptions&lt;MassTransitHostOptions&gt;</c>, cuyo tipo vive en
+    /// Microsoft.Extensions.Options: inofensivas, porque
+    /// <c>AddMassTransitTestHarness</c> vuelve a registrar las suyas.
+    /// </summary>
+    private static bool IsMassTransit(ServiceDescriptor descriptor) =>
+        BelongsToMassTransit(descriptor.ServiceType)
+        || BelongsToMassTransit(descriptor.ImplementationType)
+        || BelongsToMassTransit(descriptor.ImplementationInstance?.GetType());
+
+    private static bool BelongsToMassTransit(Type? type) =>
+        type?.Assembly.GetName().Name?.StartsWith("MassTransit", StringComparison.Ordinal) is true;
 
     /// <summary>
     /// Crea la base y le aplica la migración de 2.2. No hay seed: los pedidos los
@@ -101,6 +153,15 @@ public sealed class OrdersApiFactory : WebApplicationFactory<Program>, IAsyncLif
     /// <see cref="WebApplicationFactory{TEntryPoint}.Services"/>, porque esa
     /// propiedad es la que construye el host.
     /// </summary>
+    /// <summary>
+    /// El harness en memoria que sustituye al bus de RabbitMQ, ya arrancado.
+    ///
+    /// Lo arranca el propio host —el harness se registra como hosted service—, así
+    /// que aquí solo hay que resolverlo. Tocar <c>Services</c> es lo que construye
+    /// el host, de ahí que se haga después del MigrateAsync.
+    /// </summary>
+    public ITestHarness Harness => Services.GetRequiredService<ITestHarness>();
+
     public async ValueTask InitializeAsync()
     {
         await container.CreateDatabaseAsync(DatabaseName);

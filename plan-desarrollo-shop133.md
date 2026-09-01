@@ -150,9 +150,11 @@ sqlserver:
 - [x] **3.4** Inventory.API consume `OrderCreated`, valida y reserva stock contra `InventoryDb`, publica `StockReserved`/`StockRejected` — [doc](docs/fase_3_4.md)
 - [x] **3.5** Payments.API consume `StockReserved`, simula cobro, publica `PaymentCompleted`/`PaymentFailed` — [doc](docs/fase_3_5.md)
 - [x] **3.6** Implementar **idempotencia**: guardar `MessageId` procesados para evitar duplicados — [doc](docs/fase_3_6.md)
-- [ ] **3.7** Tests de consumers con `MassTransit.TestFramework` (`AddMassTransitTestHarness`): Inventory y Payments publican el evento correcto ante cada entrada, más el **test de idempotencia** (mismo `MessageId` dos veces → un solo efecto). ~~Incluye borrar los tests de 2.4~~ — ya borrados en 3.3. Queda además quitarle a `Orders.Tests` la dependencia del broker real que 3.3 estrenó
+- [x] **3.7** Tests de consumers con `MassTransit.TestFramework` (`AddMassTransitTestHarness`): Inventory y Payments publican el evento correcto ante cada entrada, más el **test de idempotencia** (mismo `MessageId` dos veces → un solo efecto). ~~Incluye borrar los tests de 2.4~~ — ya borrados en 3.3. Queda además quitarle a `Orders.Tests` la dependencia del broker real que 3.3 estrenó — [doc](docs/fase_3_7.md)
 
 **Sobre 3.7:** el harness usa transporte en memoria — sin Docker, sin RabbitMQ, milisegundos por test. RabbitMQ real se prueba en 8.2, y solo para lo que el harness no puede cubrir (topología de exchanges). El test de idempotencia es la única verificación fiable de 3.6: a mano habría que republicar el mismo mensaje y comparar estado de base de datos.
+
+*Lo de "sin Docker, milisegundos por test" era cierto cuando se escribió y dejó de serlo con `3.4`, `3.5` y `3.6`: los consumers que había que probar acabaron teniendo **base de datos**. El harness quita el **broker**, no el SQL Server, y la regla 1 de la estrategia de tests prohíbe el provider InMemory — así que `Inventory.Tests` y `Payments.Tests` son `Category=Docker` como las otras dos. Lo que sí se cumplió es lo de RabbitMQ: ninguna de las cuatro suites lo necesita ya, y `Orders.Tests` pasa en verde con el broker parado. Ver [fase_3_7.md](docs/fase_3_7.md).*
 
 ---
 

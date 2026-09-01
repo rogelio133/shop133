@@ -32,12 +32,19 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Shop133.ArchitectureTests/Shop133.ArchitectureTests.csproj" />
+    <Project Path="tests/Shop133.TestUtilities/Shop133.TestUtilities.csproj" />
   </Folder>
   <Folder Name="/tests/Services/" />
   <Folder Name="/tests/Services/Catalog/">
     <Project Path="tests/Services/Catalog/Catalog.Tests/Catalog.Tests.csproj" />
   </Folder>
+  <Folder Name="/tests/Services/Inventory/">
+    <Project Path="tests/Services/Inventory/Inventory.Tests/Inventory.Tests.csproj" />
+  </Folder>
   <Folder Name="/tests/Services/Orders/">
     <Project Path="tests/Services/Orders/Orders.Tests/Orders.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tests/Services/Payments/">
+    <Project Path="tests/Services/Payments/Payments.Tests/Payments.Tests.csproj" />
   </Folder>
 </Solution>

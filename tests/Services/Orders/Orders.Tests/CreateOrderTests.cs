@@ -4,8 +4,13 @@ using System.Text;
 
 using Microsoft.AspNetCore.Http;
 
+using MassTransit.Testing;
+
 using Orders.API.Models;
 using Orders.Tests.Infrastructure;
+
+using Shop133.Contracts.Events;
+using Shop133.TestUtilities;
 
 using Xunit;
 
@@ -218,6 +223,64 @@ public sealed class CreateOrderTests(SqlServerContainerFixture container) : IAsy
         var mug = Assert.Single(created.Items, item => item.ProductId == MugId);
         Assert.Equal(5, mug.Quantity);
         Assert.Equal(1245.00m, mug.Subtotal);
+    }
+
+    // ── El mensaje publicado (3.7) ───────────────────────────────────────────
+
+    /// <summary>
+    /// **La deuda que 3.3 dejó apuntada y que este punto salda.** Hasta 3.7 esta
+    /// suite podía demostrar del <c>Publish</c> lo que un broker real demuestra
+    /// —que no lanza y que no bloquea—, pero no que el mensaje saliera ni con qué
+    /// forma; eso había que mirarlo a mano en la UI de RabbitMQ.
+    ///
+    /// Lo que se afirma es la foto entera, porque es la que viaja a Inventory y de
+    /// ahí a Payments: si <c>Total</c> se perdiera por el camino, el pedido se
+    /// cobraría 0 y no fallaría nada (ver el test gemelo en Inventory.Tests).
+    /// </summary>
+    [Fact]
+    public async Task Create_ValidRequest_PublishesOrderCreatedWithTheSnapshotAndTheTotal()
+    {
+        var created = await CreateOrderAsync(Mug(2), Keyring(1));
+
+        await factory.Harness.InactivityTask;
+
+        var published = Assert.Single(
+            factory.Harness.Published.Select<OrderCreated>()
+                .Select(message => message.Context.Message));
+
+        // El OrderId del evento es el que devolvió el 201: es la clave de
+        // correlación con la que la saga de 4.1 atará todo lo demás.
+        Assert.Equal(created.Id, published.OrderId);
+        Assert.Equal(CustomerEmail, published.CustomerEmail);
+        Assert.Equal(created.Total, published.Total);
+
+        var mug = Assert.Single(published.Lines, line => line.ProductId == MugId);
+        Assert.Equal(MugSku, mug.ProductSku);
+        Assert.Equal(MugName, mug.ProductName);
+        Assert.Equal(MugPrice, mug.UnitPrice);
+        Assert.Equal(2, mug.Quantity);
+    }
+
+    /// <summary>
+    /// La otra mitad, y la que protege el orden de las operaciones: primero
+    /// <c>SaveChangesAsync</c> y después <c>Publish</c>.
+    ///
+    /// Publicar antes de guardar dejaría a Inventory reservando stock para un
+    /// pedido que no llegó a existir — stock filtrado, que es lo que la regla 7
+    /// existe para impedir. Aquí el cuerpo ni siquiera pasa la validación, así que
+    /// no debe salir nada al bus.
+    /// </summary>
+    [Fact]
+    public async Task Create_InvalidBody_PublishesNothing()
+    {
+        var response = await client.PostAsJsonAsync("/orders", NewOrder(), CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        await factory.Harness.InactivityTask;
+
+        Assert.Empty(factory.Harness.Published.Select<OrderCreated>());
+        Assert.Equal(0, await factory.CountOrdersAsync(CancellationToken));
     }
 
     // ── Validación del cuerpo ────────────────────────────────────────────────

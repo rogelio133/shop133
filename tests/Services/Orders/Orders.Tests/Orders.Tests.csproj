@@ -30,27 +30,42 @@
       Skip toda la fase. 3.7 se queda con lo suyo — los consumers de Inventory y
       Payments y el test de idempotencia.
 
-      MassTransit.TestFramework 8.5.10 entra en 3.7 y NO está aquí todavía: hoy
-      estos tests publican contra el RabbitMQ real del compose (ver
-      OrdersApiFactory). Cuando entre, debe ser 8.5.10 para casar con src/ —
-      MassTransitPackages_StayOnMajorVersion8 solo escanea src/, así que ese pin
-      no lo vigila nadie.
+      Aquí se esperaba MassTransit.TestFramework en 3.7, y NO hizo falta: el
+      harness en memoria —AddMassTransitTestHarness e ITestHarness— vive en el
+      paquete MassTransit de siempre, en MassTransit.DependencyInjectionTesting-
+      Extensions, y este proyecto lo ve por la vía transitiva de
+      Orders.API -> MassTransit.RabbitMQ -> MassTransit.
+
+      Eso desactiva de paso el aviso que había escrito aquí: no queda ningún
+      PackageReference de MassTransit bajo tests/ cuya versión nadie vigile
+      (MassTransitPackages_StayOnMajorVersion8 solo escanea src/). Al llegar por
+      transitividad, la versión es por construcción la misma que usa el servicio.
     -->
   </ItemGroup>
 
   <!--
-    Una sola referencia: Orders.API. Arrastra transitivamente
-    Orders.Infrastructure (OrdersDbContext, Microsoft.Data.SqlClient),
-    Orders.Domain y Shop133.Contracts. Los DTOs de Orders.API/Models se usan tal
-    cual en los tests, para que un cambio de contrato rompa la compilación en vez
-    de un assert.
+    Orders.API arrastra transitivamente Orders.Infrastructure (OrdersDbContext,
+    Microsoft.Data.SqlClient), Orders.Domain y Shop133.Contracts. Los DTOs de
+    Orders.API/Models se usan tal cual en los tests, para que un cambio de
+    contrato rompa la compilación en vez de un assert.
 
     Como en Catalog.Tests, este proyecto ve EF Core por la vía transitiva sin
     incumplir EfCorePackages_LiveOnlyIn_InfrastructureProjects: ProjectGraph solo
-    enumera <repo>/src, así que tests/ es invisible para las 12 reglas de 0.6.
+    enumera <repo>/src, así que tests/ es invisible para las 15 reglas de 0.6.
   -->
   <ItemGroup>
     <ProjectReference Include="..\..\..\..\src\Services\Orders\Orders.API\Orders.API.csproj" />
+    <!--
+      SqlServerContainerFixture vivía aquí, en Infrastructure/, desde 2.4, donde
+      entró como copia literal de la de Catalog.Tests con la nota de que "dos
+      ocurrencias no son un patrón" y de que 3.7 decidiría con cuatro delante.
+      Decidido: se extrajo a Shop133.TestUtilities. Ver docs/fase_3_7.md.
+
+      Lo que NO se fue: OrdersApiFactory. Hace una base por test (no por clase
+      como la de Catalog) y desmonta el bus de RabbitMQ para poner el harness en
+      memoria — nada de eso es compartible.
+    -->
+    <ProjectReference Include="..\..\..\Shop133.TestUtilities\Shop133.TestUtilities.csproj" />
   </ItemGroup>
 
 </Project>

@@ -2,7 +2,7 @@ using Shop133.TestUtilities;
 
 using Xunit;
 
-namespace Catalog.Tests.Infrastructure;
+namespace Payments.Tests.Infrastructure;
 
 /// <summary>
 /// Reúne todas las clases de test bajo un único
@@ -15,7 +15,7 @@ namespace Catalog.Tests.Infrastructure;
 /// timeouts en una imagen con la memoria por defecto.
 /// </summary>
 [CollectionDefinition(Name)]
-public sealed class CatalogApiCollection : ICollectionFixture<SqlServerContainerFixture>
+public sealed class PaymentsConsumerCollection : ICollectionFixture<SqlServerContainerFixture>
 {
-    public const string Name = "catalog-api";
+    public const string Name = "payments-consumers";
 }
