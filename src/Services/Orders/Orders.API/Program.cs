@@ -3,6 +3,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi;
 
+using Orders.Domain.Sagas;
 using Orders.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -106,16 +107,43 @@ builder.Services.AddMassTransit(x =>
     // mayúsculas, y "order-created" no da lugar a dudas donde "OrderCreated" sí.
     x.SetKebabCaseEndpointNameFormatter();
 
+    // --- La saga (4.1) ------------------------------------------------------
+    //
+    // Aquí es donde el bloque AddMassTransit deja de ser tres copias idénticas.
+    // 3.1 aplazó su extracción, 3.4 y 3.5 la releyeron con el diff delante y la
+    // dejaron: lo único que divergía era la línea AddConsumer, que es justo lo que
+    // no se puede compartir. 3.5 dejó escrito que la próxima relectura sería 4.5,
+    // con el outbox. Llega un punto antes: este AddSagaStateMachine no lo va a
+    // tener nunca ni Inventory ni Payments. La conclusión no cambia — extraer la
+    // mitad idéntica dejaría fuera precisamente lo que distingue cada servicio.
+    //
+    // El formatter de arriba nombra la cola a partir del tipo de la *instancia*,
+    // no de la máquina de estados: OrderState → "order-state". Y quien la crea de
+    // verdad es el ConfigureEndpoints de abajo; sin esa llamada, esto se registra
+    // y no escucha nada, en silencio.
+    //
+    // InMemoryRepository() y no SQL Server: persistir el estado de la saga en
+    // OrdersDb es 4.5, y son otra tabla, otro token de concurrencia optimista y la
+    // pregunta de si comparte OrdersDbContext. Hasta entonces el estado vive en
+    // memoria y **se pierde al reiniciar el servicio** — un pedido que estaba
+    // esperando su StockReserved se queda sin saga que lo mueva y nadie se entera.
+    // Está medido en la verificación de docs/fase_4_1.md, y es el argumento de 4.5.
+    x.AddSagaStateMachine<OrderStateMachine, OrderState>()
+        .InMemoryRepository();
+
     x.UsingRabbitMq((context, cfg) =>
     {
         // Host(Uri) saca usuario y contraseña del userinfo del URI, así que no
         // hacen falta h.Username()/h.Password() por separado.
         cfg.Host(new Uri(rabbitMqConnectionString));
 
-        // Hoy no registra nada: no hay consumers. Se deja puesta porque es la
-        // línea que 3.4 y 3.5 esperan encontrar — sin ella, registrar un
-        // IConsumer no crea su receive endpoint y el mensaje se pierde en
-        // silencio, que es el fallo más caro de diagnosticar de esta fase.
+        // Puesta en 3.1 con cero consumers, por si acaso. Desde 4.1 ya no es
+        // "por si acaso": es la línea que convierte el AddSagaStateMachine de
+        // arriba en la cola order-state. Sin ella, registrar un IConsumer o una
+        // saga no crea su receive endpoint y el mensaje se pierde en silencio,
+        // que es el fallo más caro de diagnosticar de esta fase. La prueba de
+        // que enganchó es la traza "Configured endpoint order-state, Saga: ..."
+        // en el arranque.
         cfg.ConfigureEndpoints(context);
     });
 });

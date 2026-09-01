@@ -94,6 +94,20 @@ Three things the test host needs that are not obvious. **Two `UseSetting` calls,
 
 **`3.7` is done and Phase 3 is code complete** — see [docs/fase_3_7.md](docs/fase_3_7.md). `tests/Shop133.TestUtilities` (new project, approved), `Inventory.Tests` (9) and `Payments.Tests` (9) exist; `Orders.Tests` went 10 → 12 and **stopped needing RabbitMQ**. The suite is **64**. The details worth not rediscovering — the fixture extraction, why `MassTransit.TestFramework` was not needed, why the consumer suites skip `WebApplicationFactory`, and the three harness traps that produce green tests proving nothing — are in the Testing section above, where they belong. **`src/` has not one line of change**, which was the point of both host decisions; the two consumers were broken on purpose to prove the tests catch it, then restored.
 
+**Phase 4 is in progress. `4.1` is done — the saga exists and correlates** — see [docs/fase_4_1.md](docs/fase_4_1.md). `Orders.Domain/Sagas/` holds `OrderState` (the saga instance) and `OrderStateMachine`, and `Orders.Domain` gained its **first `PackageReference` ever**: `MassTransit` **8.5.10** — the core package and not `MassTransit.Abstractions`, because `SagaStateMachineInstance` is in the abstractions but `MassTransitStateMachine<T>` is not, so referencing only the abstractions does not compile. That does not break rule 5, it fulfils it: the exception letting `Orders.Domain` reference `Shop133.Contracts` exists *because* saga state machines live there, and `OrdersDomain_ProjectReferences_ContainOnlyContracts` only inspects `ProjectReference`. The architecture suite went to **16**: `StateMachineFiles_LiveOnlyIn_OrdersDomain` scans `src/**/*StateMachine.cs` and demands `Orders.Domain`, and it was broken on purpose before being trusted.
+
+**The line `0.3` promised and never ran is now live**: `Event(() => OrderCreated, e => e.CorrelateById(m => m.Message.OrderId))`. No contract carries a `CorrelationId` — that was decided against so the correlation key would not be duplicated next to an `OrderId` that always equals it — and `3.3`/`3.4` confirmed the envelope travels with `correlationId: null`. **Scope is deliberately "skeleton + first transition"**: one event, one state (`StockPending`), one `Initially`. The rest of the happy path is `4.2`, the error paths `4.3`. `Order.Status` is still `Pending` and nothing moves it — measured: the `201` response says `"status":"Pending"` while the saga starts alongside it.
+
+**The saga observes the choreography; it does not orchestrate it.** It consumes the events already flying since Phase 3 and will only *emit* the compensation command (`4.4`) and the terminal events (`4.3`/`4.6`). Inventory keeps consuming `OrderCreated` and Payments `StockReserved` — measured, `Shop133.Contracts.Events:OrderCreated` now has **two bindings**, `order-created` and `order-state`, and the same `POST` still produces `StockReserved` and `PaymentCompleted`. Pure orchestration was rejected: it would change another service's consumer, which Phase 4 does not contemplate, and contradicts `3.2`'s decision 2 and `3.4`'s decision 6. **The price, said aloud: `ReserveStock` is now unused**, and `ReleaseStock.Lines` may join it depending on `4.4`.
+
+**The saga's idempotency guard is its own state, and it must be explicit.** `3.6`'s `ProcessedMessages` table does not apply — the saga has no `DbContext` until `4.5`, and that table's whole virtue is riding the same `SaveChangesAsync` as the work. The guard is `During(StockPending, Ignore(OrderCreated))`. **Without that line MassTransit faults** (`NotAcceptedStateMachineException` → `order-state_error`), and a consumer that blows up on a duplicate is not idempotent — verified by deleting it and watching the error queue appear. It recognises the same *order*, not the same *delivery*; here they coincide because a redelivery keeps its `OrderId`, and `4.2` must re-read that when it adds events reachable by more than one path.
+
+**`InMemoryRepository()`, and what it loses is measured rather than noted.** Persistence is `4.5` with three open questions (the table, the optimistic-concurrency token, whether it shares `OrdersDbContext`). Measured: restart Orders.API and repost the same `OrderCreated`, and the saga **starts from scratch** — it does not recognise the order that was waiting. An order mid-saga when the process dies is left with nobody to move it and no trace. That is `4.5`'s argument, now with a number behind it.
+
+**The first real divergence of the `AddMassTransit` block arrived one item earlier than booked.** `3.5` wrote that the next re-read was `4.5` with the outbox; `x.AddSagaStateMachine<OrderStateMachine, OrderState>().InMemoryRepository()` is a structural difference Inventory and Payments will never have. **The conclusion is unchanged** — extracting the identical half would strand exactly what distinguishes each service.
+
+Three things that cost time. **`Ignore` takes the event, not a lambda** — `Event(() => OrderCreated, …)` and `Ignore(OrderCreated)` sit in the same constructor with different shapes. **The queue name comes from the *instance* type**, so `OrderState` → `order-state`, not `order-state-machine`. And the line proving the saga is wired is **not** the consumer one: `Configured endpoint order-state, Saga: …, State Machine: …`. Without it the registration never reached `ConfigureEndpoints` and the message is lost in silence.
+
 **Phase 3 was in progress on `feature/fase-3-messaging`. `3.1` is done** — see [docs/fase_3_1.md](docs/fase_3_1.md). `MassTransit.RabbitMQ` **8.5.10** (Apache-2.0) lives in `Orders.API`, `Inventory.API` and `Payments.API`, and **only the transport is declared** — it drags the core, same reasoning as the SQL Server provider. **The v9 trap is live, not theoretical**: 9.2.0 is published, so `dotnet add package MassTransit.RabbitMQ` without a version installs the commercial one. That warning is now executable — `PackageRulesTests.MassTransitPackages_StayOnMajorVersion8` reads the `Version` attribute out of every `src/` `.csproj` and fails on anything not `8.`, so the suite went to **13 tests** (14 since `3.2`). It lives in its own file and not in `LayeringRulesTests`, whose `EfCorePackages_LiveOnlyIn_InfrastructureProjects` also inspects packages but does so to assert rule 5; a licence rule is not a layering rule. `ProjectGraph.PackageReferences` therefore changed type from `IReadOnlyList<string>` to `IReadOnlyList<PackageReferenceInfo>` (id + version), and an **empty version counts as a violation** — it would mean the version was left to somewhere else. Nothing under `Shop133.Contracts` or `Orders.Domain` was touched: the `OrderStateMachine`'s dependency arrives with the state machine in `4.1`, not before.
 
 The broker URI is **one key, `ConnectionStrings:RabbitMq`**, in User Secrets (`amqp://guest:guest@localhost:5672`), guarded in `Program.cs` exactly like `ConnectionStrings:OrdersDb`; `cfg.Host(new Uri(...))` reads the credentials from the URI's userinfo, so no `h.Username()`/`h.Password()`. `Inventory.API` and `Payments.API` had no `UserSecretsId` and got one from `dotnet user-secrets init`. The guard matters more here than in `2.2`: without it a missing key does not fail at registration but when the **hosted service starts the bus**, in a message that never mentions configuration. `SetKebabCaseEndpointNameFormatter()` and `cfg.ConfigureEndpoints(context)` are both set **now, with zero consumers** — the first because the formatter names every consumer's queue and changing it in `3.4` would strand orphan queues in the broker, the second because without it registering an `IConsumer` creates no receive endpoint and the message is lost **silently**. The `AddMassTransit` block is a **literal copy in all three services**, deliberately: extracting it needs a project all three reference, and `Shop133.Contracts` must stay at zero packages. Same precedent as `SqlServerContainerFixture` in `2.4` — `3.4`/`3.5` will touch two of the copies, and that is when extraction gets decided with a diff in hand.
@@ -220,7 +234,7 @@ Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed su
 | 1 | Catalog.API | **Code complete** — 1.1–1.7 done; awaiting the PRs to `develop`/`main` and the `fase-1` tag |
 | 2 | Orders.API (synchronous) | **Code complete** — 2.1–2.4 done; awaiting the PRs to `develop`/`main` and the `fase-2` tag |
 | 3 | MassTransit + RabbitMQ messaging | **Code complete** — 3.1–3.7 done; awaiting the PRs to `develop`/`main` and the `fase-3` tag |
-| 4 | Saga + compensations | Not started |
+| 4 | Saga + compensations | **In progress** on `feature/fase-4-saga` — 4.1 done |
 | 5 | YARP Gateway | Not started |
 | 6 | Frontend (MVC + Bootstrap 5) | Not started |
 | 7 | Observability | Not started |
@@ -343,7 +357,7 @@ Tests are not a phase. They are numbered items spread across the roadmap — `0.
 
 The reference rules read the **`.csproj` files**, not the compiled assemblies: Roslyn prunes unused references from the manifest, so with service projects still empty an assembly-level check would pass vacuously. `ProjectGraph.cs` is that reader; add new reference rules on top of it. Rules about *types* (records, immutability) use plain reflection, and `NetArchTest` covers the one namespace-dependency assertion.
 
-**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`. Since `3.7`: **15 `Fast`** (`Shop133.ArchitectureTests`) and **49 `Docker`** (19 `Catalog.Tests` + 12 `Orders.Tests` + 9 `Inventory.Tests` + 9 `Payments.Tests`), **64 in total**. Orders went 17 → 10 in `3.3` (the seven that tested the synchronous debt) and 10 → 12 in `3.7` (it can finally assert the publish).
+**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`. Since `4.1`: **16 `Fast`** (`Shop133.ArchitectureTests`) and **49 `Docker`** (19 `Catalog.Tests` + 12 `Orders.Tests` + 9 `Inventory.Tests` + 9 `Payments.Tests`), **65 in total**. Orders went 17 → 10 in `3.3` (the seven that tested the synchronous debt) and 10 → 12 in `3.7` (it can finally assert the publish).
 
 **Since `3.7` no test needs RabbitMQ — measured with the broker stopped, `Orders.Tests` passes 12/12.** `OrdersApiFactory` strips the RabbitMQ bus MassTransit registered and puts the in-memory harness in its place; the two consumer suites never used a broker. Docker is still required for SQL Server: the harness replaces the **broker**, not the database, and rule 1 above bars the InMemory provider. This reverses the `3.3`–`3.6` state where `docker compose up -d` was a prerequisite.
 
@@ -442,9 +456,14 @@ dotnet run --project src/Services/Orders/Orders.API      # 5189
 dotnet run --project src/Services/Inventory/Inventory.API  # 5015
 dotnet run --project src/Services/Payments/Payments.API    # 5156
 
-# Inspect the broker without the UI. Since 3.5 there are TWO queues,
-# `order-created` (Inventory) and `stock-reserved` (Payments); their `_error`
-# siblings are created lazily on the first fault, so their absence means nothing.
+# Inspect the broker without the UI. Since 4.1 there are THREE queues:
+# `order-created` (Inventory), `stock-reserved` (Payments) and `order-state` (the
+# saga — the name comes from the INSTANCE type, OrderState, not from the state
+# machine). `OrderCreated`'s fanout therefore has TWO bindings: Inventory and the
+# saga observe the same event, which is 4.1's decision 2 made visible. Their
+# `_error` siblings are created lazily on the first fault, so absence means nothing
+# — except right after 4.1's deliberate break, where `order-state_error` exists and
+# is empty.
 # All five event exchanges exist once the services have published once, but
 # StockRejected/PaymentCompleted/PaymentFailed have NO bound queue until 4.3/4.6 —
 # they are published into the void, and that fails and warns about nothing.
@@ -498,7 +517,7 @@ dotnet test tests/Shop133.ArchitectureTests        # a single test project
 # from it sidesteps the evaluation entirely. Since 3.7 NO suite needs RabbitMQ.
 # The filter option here is `-trait`/`-class`, NOT `--filter-trait`/`--filter-class`
 # — those belong to `dotnet test`; the runner answers "unknown option" or exit 3.
-dotnet tests\Shop133.ArchitectureTests\bin\Debug\net10.0\Shop133.ArchitectureTests.dll   # 15, no Docker
+dotnet tests\Shop133.ArchitectureTests\bin\Debug\net10.0\Shop133.ArchitectureTests.dll   # 16, no Docker
 dotnet tests\Shop133.ArchitectureTests\bin\Debug\net10.0\Shop133.ArchitectureTests.dll -trait "Category=Fast"
 dotnet tests\Services\Catalog\Catalog.Tests\bin\Debug\net10.0\Catalog.Tests.dll          # 19, Docker, ~75 s
 dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll             # 12, Docker, ~53 s
@@ -556,7 +575,7 @@ Local UIs: Catalog API reference (Scalar) — `http://localhost:5124/scalar` fro
 - **OpenAPI on .NET 10**: the built-in `Microsoft.AspNetCore.OpenApi` package (`AddOpenApi()` / `MapOpenApi()`) with Scalar for the UI — live in `Catalog.API` since `1.5`. Swashbuckle was dropped from the templates in .NET 9 — do not reintroduce it out of habit; it would generate a second document competing with the built-in one.
 - **Jaeger all-in-one** needs `COLLECTOR_OTLP_ENABLED=true` to accept OTLP directly from the OpenTelemetry SDK.
 - **Connection strings**: container-to-container uses the compose service name (`Server=sqlserver`), host-to-container uses `localhost,1433`. Mixing these up is the most common Phase 0 failure. Both need `TrustServerCertificate=True` (self-signed cert — same reason `sqlcmd` needs `-C`), and both use the service's own login, never `sa`.
-- **MassTransit 8.x** ships `net8.0`/`net9.0` targets; that is fine on a `net10.0` host. Do not "fix" this by upgrading to v9.
+- **MassTransit 8.5.10 ships a `net10.0` target** (`lib/` carries `net10.0`, `net9.0`, `net8.0`, `net472`, `netstandard2.0`) — checked in the NuGet cache in `4.1`, correcting the note this file used to carry about 8.x being `net8.0`/`net9.0` only. Either way, never "fix" a target-framework worry by upgrading to v9.
 
 ## Working agreements
 
