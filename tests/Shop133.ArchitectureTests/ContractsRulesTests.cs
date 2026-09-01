@@ -41,6 +41,28 @@ public sealed class ContractsRulesTests
         "System.ComponentModel.DataAnnotations",
     ];
 
+    /// <summary>
+    /// Los dos namespaces en los que puede vivir un mensaje. La separación no es
+    /// cosmética: un evento anuncia un hecho consumado, un comando va dirigido a
+    /// un destinatario concreto.
+    /// </summary>
+    private static readonly string[] MessageNamespaces =
+    [
+        "Shop133.Contracts.Events",
+        "Shop133.Contracts.Commands",
+    ];
+
+    /// <summary>
+    /// La única excepción, declarada a mano. OrderLine está en la raíz porque lo
+    /// usan los dos lados y no viaja solo por el broker: no es un mensaje, es un
+    /// DTO que va dentro de otros. Al estar los namespaces de mensaje anidados
+    /// dentro del suyo, se resuelve sin 'using' adicional.
+    /// </summary>
+    private static readonly string[] AllowedRootTypes =
+    [
+        "Shop133.Contracts.OrderLine",
+    ];
+
     [Fact]
     public void Contracts_Csproj_DeclaresNoProjectOrPackageReferences()
     {
@@ -54,7 +76,7 @@ public sealed class ContractsRulesTests
         Assert.True(
             contracts.PackageReferences.Count == 0,
             $"{contracts.Name} no debe referenciar ningún paquete NuGet, pero referencia: " +
-            string.Join(", ", contracts.PackageReferences));
+            string.Join(", ", contracts.PackageReferences.Select(package => package.Id)));
     }
 
     [Fact]
@@ -124,6 +146,32 @@ public sealed class ContractsRulesTests
         Assert.True(
             offenders.Count == 0,
             "Los mensajes viajan entre servicios: sus miembros deben ser 'init' o de solo lectura. Incumplen: " +
+            string.Join(", ", offenders));
+    }
+
+    /// <summary>
+    /// Regla añadida en 3.2, y la que más caro sale romper de todo este archivo.
+    ///
+    /// MassTransit deriva el nombre del exchange de RabbitMQ del nombre completo
+    /// del tipo: Shop133.Contracts.Events:OrderCreated. Mover un tipo de
+    /// namespace **no es un refactor** — renombra un exchange y deja huérfanos
+    /// los mensajes que estuvieran en vuelo, sin que nada falle al compilar.
+    ///
+    /// Es la decisión 2 de docs/fase_0_3.md, que hasta 3.2 solo vivía en prosa.
+    /// </summary>
+    [Fact]
+    public void Contracts_PublicTypes_LiveInEventsOrCommandsNamespace()
+    {
+        var offenders = ContractsAssembly.GetExportedTypes()
+            .Where(type => !AllowedRootTypes.Contains(type.FullName))
+            .Where(type => !MessageNamespaces.Contains(type.Namespace))
+            .Select(type => $"{type.FullName} (namespace: {type.Namespace ?? "<ninguno>"})")
+            .ToList();
+
+        Assert.True(
+            offenders.Count == 0,
+            "El namespace de un mensaje es el nombre de su exchange en RabbitMQ: todo tipo " +
+            "de Contracts vive en " + string.Join(" o ", MessageNamespaces) + ". Incumplen: " +
             string.Join(", ", offenders));
     }
 

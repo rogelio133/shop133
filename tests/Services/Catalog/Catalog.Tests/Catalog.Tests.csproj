@@ -49,6 +49,19 @@
   -->
   <ItemGroup>
     <ProjectReference Include="..\..\..\..\src\Services\Catalog\Catalog.API\Catalog.API.csproj" />
+    <!--
+      SqlServerContainerFixture vivía aquí, en Infrastructure/, desde 1.7. Se fue
+      a Shop133.TestUtilities en 3.7: cuando Inventory.Tests y Payments.Tests
+      pidieron lo mismo quedaron cuatro copias sobre la mesa, y las dos que ya
+      existían eran byte a byte idénticas salvo el namespace y los comentarios.
+      Ver docs/fase_3_7.md.
+
+      Lo que NO se fue: CatalogApiFactory. Las factories divergen de verdad —esta
+      hace una base por clase de test y se apoya en el seed de 1.4— y compartir lo
+      que diverge es cómo un proyecto de utilidades acaba siendo un cajón de
+      sastre.
+    -->
+    <ProjectReference Include="..\..\..\Shop133.TestUtilities\Shop133.TestUtilities.csproj" />
   </ItemGroup>
 
 </Project>

@@ -13,6 +13,7 @@
   </Folder>
   <Folder Name="/src/Services/Inventory/">
     <Project Path="src/Services/Inventory/Inventory.API/Inventory.API.csproj" />
+    <Project Path="src/Services/Inventory/Inventory.Infrastructure/Inventory.Infrastructure.csproj" />
   </Folder>
   <Folder Name="/src/Services/Notifications/">
     <Project Path="src/Services/Notifications/Notifications.API/Notifications.API.csproj" />
@@ -24,18 +25,26 @@
   </Folder>
   <Folder Name="/src/Services/Payments/">
     <Project Path="src/Services/Payments/Payments.API/Payments.API.csproj" />
+    <Project Path="src/Services/Payments/Payments.Infrastructure/Payments.Infrastructure.csproj" />
   </Folder>
   <Folder Name="/src/Shared/">
     <Project Path="src/Shared/Shop133.Contracts/Shop133.Contracts.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Shop133.ArchitectureTests/Shop133.ArchitectureTests.csproj" />
+    <Project Path="tests/Shop133.TestUtilities/Shop133.TestUtilities.csproj" />
   </Folder>
   <Folder Name="/tests/Services/" />
   <Folder Name="/tests/Services/Catalog/">
     <Project Path="tests/Services/Catalog/Catalog.Tests/Catalog.Tests.csproj" />
   </Folder>
+  <Folder Name="/tests/Services/Inventory/">
+    <Project Path="tests/Services/Inventory/Inventory.Tests/Inventory.Tests.csproj" />
+  </Folder>
   <Folder Name="/tests/Services/Orders/">
     <Project Path="tests/Services/Orders/Orders.Tests/Orders.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tests/Services/Payments/">
+    <Project Path="tests/Services/Payments/Payments.Tests/Payments.Tests.csproj" />
   </Folder>
 </Solution>

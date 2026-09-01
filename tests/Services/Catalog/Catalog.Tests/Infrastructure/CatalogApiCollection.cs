@@ -1,3 +1,5 @@
+using Shop133.TestUtilities;
+
 using Xunit;
 
 namespace Catalog.Tests.Infrastructure;

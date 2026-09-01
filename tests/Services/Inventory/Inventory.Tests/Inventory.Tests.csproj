@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- Igual que las otras tres suites: xunit.v3 corre sobre
+         Microsoft.Testing.Platform, así que el proyecto de test es un ejecutable
+         que se lanza a sí mismo. Ver la regla 5b de CLAUDE.md. -->
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.0" />
+    <!--
+      El SQL Server real. Regla 1 de "Testing" en CLAUDE.md: nada de provider
+      InMemory, y aquí se nota más que en ningún otro sitio — StockReservation
+      mapea sus líneas con OwnsMany, o sea clave compuesta (OrderId, Id) con un
+      IDENTITY que no existe en C#. Eso no se puede modelar fuera de una base
+      relacional, así que el InMemory no probaría el alta de una reserva: la
+      dejaría pasar en verde sin ejecutarla.
+    -->
+    <PackageReference Include="Testcontainers.MsSql" Version="4.14.0" />
+    <!--
+      NO hay Microsoft.AspNetCore.Mvc.Testing, al contrario que en Catalog.Tests
+      y Orders.Tests. Estos tests no levantan Inventory.API: montan un
+      ServiceCollection con el consumer y el harness en memoria. Inventory.API no
+      tiene un solo endpoint HTTP, así que un WebApplicationFactory sería arrancar
+      un servidor web para no pedirle nada — y obligaría además a añadirle un
+      "public partial class Program { }" que hoy no necesita.
+
+      NO hay MassTransit.TestFramework, que es lo que el roadmap anticipaba para
+      este punto: AddMassTransitTestHarness e ITestHarness viven en el paquete
+      MassTransit de siempre (MassTransit.DependencyInjectionTestingExtensions), y
+      llegan aquí por la vía transitiva de Inventory.API -> MassTransit.RabbitMQ.
+      Ventaja secundaria: al no declararse, la versión del harness no puede
+      desalinearse de la del servicio, y no queda un pin de MassTransit bajo
+      tests/ que MassTransitPackages_StayOnMajorVersion8 (solo escanea src/) no
+      vigile.
+    -->
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Inventory.API por el consumer, que es el sujeto de estos tests, y arrastra
+      transitivamente Inventory.Infrastructure (InventoryDbContext, las entidades)
+      y Shop133.Contracts (los eventos que se publican y se afirman).
+
+      Como en las otras suites, este proyecto ve EF Core por la vía transitiva sin
+      incumplir EfCorePackages_LiveOnlyIn_InfrastructureProjects: ProjectGraph
+      solo enumera <repo>/src, así que tests/ es invisible para las 15 reglas.
+    -->
+    <ProjectReference Include="..\..\..\..\src\Services\Inventory\Inventory.API\Inventory.API.csproj" />
+    <ProjectReference Include="..\..\..\Shop133.TestUtilities\Shop133.TestUtilities.csproj" />
+  </ItemGroup>
+
+</Project>

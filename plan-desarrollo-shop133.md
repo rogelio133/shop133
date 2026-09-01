@@ -138,21 +138,23 @@ sqlserver:
 
 **Objetivo de la fase:** aquí **sentirás el acoplamiento** — si Catalog.API está caído, Orders falla. Este dolor es intencional; es el que resuelves en la Fase 3. No es una tarea entregable, por eso no lleva número.
 
-**Sobre 2.4:** estos tests son deuda igual que el código que prueban — márcalos `// PHASE-2 DEBT` y bórralos en 3.7. El objetivo no es cobertura, es hacer el fallo **reproducible**: un test que afirma "Catalog caído ⇒ el pedido no se crea" y que en la Fase 3 deja de tener sentido. El diff que lo elimina documenta el cambio de arquitectura mejor que un párrafo.
+**Sobre 2.4:** estos tests son deuda igual que el código que prueban — márcalos `// PHASE-2 DEBT` y bórralos en 3.7. *(Se borraron antes, en **3.3**: dejaron de compilar en cuanto `OrdersApiFactory` perdió su parámetro `catalogBaseUrl`, y mantenerlos vivos habría sido dejarlos en `Skip` toda la fase. Ver la decisión 8 de [fase_3_3.md](docs/fase_3_3.md).)* El objetivo no es cobertura, es hacer el fallo **reproducible**: un test que afirma "Catalog caído ⇒ el pedido no se crea" y que en la Fase 3 deja de tener sentido. El diff que lo elimina documenta el cambio de arquitectura mejor que un párrafo.
 
 ---
 
 ## Fase 3 — Mensajería con MassTransit + RabbitMQ (1-1.5 semanas)
 
-- [ ] **3.1** Instalar MassTransit + RabbitMQ transport en Orders, Inventory, Payments
-- [ ] **3.2** Definir eventos en `Shop133.Contracts`: `OrderCreated`, `StockReserved`, `StockRejected`, `PaymentCompleted`, `PaymentFailed`
-- [ ] **3.3** Orders.API publica `OrderCreated` en lugar de llamar síncronamente
-- [ ] **3.4** Inventory.API consume `OrderCreated`, valida y reserva stock contra `InventoryDb`, publica `StockReserved`/`StockRejected`
-- [ ] **3.5** Payments.API consume `StockReserved`, simula cobro, publica `PaymentCompleted`/`PaymentFailed`
-- [ ] **3.6** Implementar **idempotencia**: guardar `MessageId` procesados para evitar duplicados
-- [ ] **3.7** Tests de consumers con `MassTransit.TestFramework` (`AddMassTransitTestHarness`): Inventory y Payments publican el evento correcto ante cada entrada, más el **test de idempotencia** (mismo `MessageId` dos veces → un solo efecto). Incluye borrar los tests de 2.4
+- [x] **3.1** Instalar MassTransit + RabbitMQ transport en Orders, Inventory, Payments — [doc](docs/fase_3_1.md)
+- [x] **3.2** Definir eventos en `Shop133.Contracts`: `OrderCreated`, `StockReserved`, `StockRejected`, `PaymentCompleted`, `PaymentFailed` — [doc](docs/fase_3_2.md)
+- [x] **3.3** Orders.API publica `OrderCreated` en lugar de llamar síncronamente — [doc](docs/fase_3_3.md)
+- [x] **3.4** Inventory.API consume `OrderCreated`, valida y reserva stock contra `InventoryDb`, publica `StockReserved`/`StockRejected` — [doc](docs/fase_3_4.md)
+- [x] **3.5** Payments.API consume `StockReserved`, simula cobro, publica `PaymentCompleted`/`PaymentFailed` — [doc](docs/fase_3_5.md)
+- [x] **3.6** Implementar **idempotencia**: guardar `MessageId` procesados para evitar duplicados — [doc](docs/fase_3_6.md)
+- [x] **3.7** Tests de consumers con `MassTransit.TestFramework` (`AddMassTransitTestHarness`): Inventory y Payments publican el evento correcto ante cada entrada, más el **test de idempotencia** (mismo `MessageId` dos veces → un solo efecto). ~~Incluye borrar los tests de 2.4~~ — ya borrados en 3.3. Queda además quitarle a `Orders.Tests` la dependencia del broker real que 3.3 estrenó — [doc](docs/fase_3_7.md)
 
 **Sobre 3.7:** el harness usa transporte en memoria — sin Docker, sin RabbitMQ, milisegundos por test. RabbitMQ real se prueba en 8.2, y solo para lo que el harness no puede cubrir (topología de exchanges). El test de idempotencia es la única verificación fiable de 3.6: a mano habría que republicar el mismo mensaje y comparar estado de base de datos.
+
+*Lo de "sin Docker, milisegundos por test" era cierto cuando se escribió y dejó de serlo con `3.4`, `3.5` y `3.6`: los consumers que había que probar acabaron teniendo **base de datos**. El harness quita el **broker**, no el SQL Server, y la regla 1 de la estrategia de tests prohíbe el provider InMemory — así que `Inventory.Tests` y `Payments.Tests` son `Category=Docker` como las otras dos. Lo que sí se cumplió es lo de RabbitMQ: ninguna de las cuatro suites lo necesita ya, y `Orders.Tests` pasa en verde con el broker parado. Ver [fase_3_7.md](docs/fase_3_7.md).*
 
 ---
 
@@ -167,6 +169,8 @@ Este es el núcleo del aprendizaje.
 - [ ] **4.5** Persistir el estado de la Saga en `OrdersDb` (SQL Server como Saga repository)
 - [ ] **4.6** Notifications.API consume `OrderConfirmed`/`OrderCancelled` y "envía" notificación (log o mock de email)
 - [ ] **4.7** Automatizar los 4 escenarios obligatorios contra `OrderStateMachine` con el harness de MassTransit
+- [ ] **4.8** Catalog.API estrena MassTransit: consume `OrderCreated` y valida la foto de precios contra `CatalogDb`, publicando `OrderPricingValidated` / `OrderPricingRejected`
+- [ ] **4.9** La saga gana `PricingPending` **antes** de `StockPending`: `OrderPricingRejected → Cancelled` sin nada que compensar, con su caso en el harness
 
 **Escenarios de prueba obligatorios:**
 1. Compra exitosa (feliz)
@@ -175,6 +179,12 @@ Este es el núcleo del aprendizaje.
 4. Evento duplicado (verificar idempotencia)
 
 Esta lista es la **especificación del punto 4.7**. Escribir esos tests *antes* que la máquina de estados te obliga a decidir los estados finales y qué mensajes salen en cada camino, que es el diseño de la saga. El caso 3 en concreto afirma que se publica **exactamente un** `ReleaseStock` y que el estado final es `Cancelled` — la regla de que el stock reservado nunca se filtra, en forma ejecutable.
+
+**Sobre 4.8 y 4.9 — añadidos el 2026-08-27, después de releer la decisión 2 de [fase_3_3.md](docs/fase_3_3.md).** `3.3` dejó que el cuerpo del `POST` traiga el precio y dio por hecho que la comprobación "se mudaba a Inventory". Solo se mudó la de **existencia**: Inventory guarda cantidades, no importes, así que un pedido de un producto que existe a `0.01` atraviesa toda la saga y **se cobra un céntimo**. El importe se había quedado sin dueño.
+
+Lo que hay que validar **no es la igualdad, es la autenticidad de la foto**: comparar contra el precio actual rechazaría un pedido legítimo cuyo precio cambió a mitad del checkout, y congelar el precio que el cliente vio es el comportamiento correcto, no una concesión. Por eso la validación vive en el único servicio que puede firmar ese dato —Catalog— y lo hace **asíncronamente**: con Catalog caído el `POST` sigue devolviendo `201` y el pedido espera en `PricingPending`. Un retraso, no un `502`; lo que la Fase 3 ganó no se devuelve.
+
+Van numerados al final porque los números son la clave entre commit, roadmap y `docs/` y **no se renumeran**, pero en orden de ejecución `4.8`/`4.9` caen junto a `4.2`/`4.3`: **`4.9` obliga a releer la lista de estados de 4.2**, que no contempla el nuevo. Añaden además dos contratos a los nueve que fijó `0.3` — con el precedente de `3.2`: un contrato se revisa cuando aparece el consumidor que lo necesita.
 
 ---
 
@@ -193,13 +203,15 @@ Proyecto `Shop133.Web` (ASP.NET Core MVC), consumiendo **únicamente el Gateway*
 
 - [ ] **6.1** Layout base con Bootstrap 5 (navbar, footer, `_Layout.cshtml`)
 - [ ] **6.2** Vista de catálogo: grid de productos con `card` de Bootstrap
-- [ ] **6.3** Carrito de compras (puede vivir en sesión o cookie mientras no hay auth)
+- [ ] **6.3** Carrito de compras **en sesión de servidor**, no en cookie — ver la nota de abajo
 - [ ] **6.4** Formulario de checkout (Bootstrap forms + validación client-side)
 - [ ] **6.5** Página de estado del pedido — aquí es interesante mostrar el estado en tiempo real:
   - Opción simple: polling cada 2-3s a `GET /orders/{id}/status`
   - Opción avanzada: SignalR para push en tiempo real cuando la Saga cambia de estado
 - [ ] **6.6** Uso de `IHttpClientFactory` con Polly para resiliencia al llamar al Gateway (retry, circuit breaker)
 - [ ] **6.7** Toasts de Bootstrap para feedback de éxito/error
+
+**Sobre 6.3 — sesión, no cookie, y el motivo es de arquitectura.** El punto decía "sesión o cookie mientras no hay auth". Desde `3.3` el cuerpo de `POST /orders` lleva el precio, así que **quien guarda el carrito es quien acuña la foto del pedido**: en sesión de servidor la acuña `Shop133.Web` leyendo Catalog por el Gateway —lo que la regla 3 permite—, y en cookie la acuña el navegador. Con cookie, el cliente vuelve a dictar el importe y `4.8` se queda como única defensa. Es la tercera capa de la decisión 2b de [fase_3_3.md](docs/fase_3_3.md): `6.3` y `8.1` deciden **quién** puede mandar la foto, `4.8` decide si la foto es cierta. Hacen falta las dos.
 
 **Sugerencia de UX que refuerza el aprendizaje de arquitectura:** muestra visualmente el estado del pedido avanzando por las etapas (Reservando stock → Procesando pago → Confirmado), para que el frontend refleje la naturaleza asíncrona del backend en vez de ocultarla.
 

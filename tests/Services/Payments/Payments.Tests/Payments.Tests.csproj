@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- Igual que las otras tres suites: xunit.v3 corre sobre
+         Microsoft.Testing.Platform, así que el proyecto de test es un ejecutable
+         que se lanza a sí mismo. Ver la regla 5b de CLAUDE.md. -->
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.0" />
+    <!--
+      El SQL Server real. Regla 1 de "Testing" en CLAUDE.md: nada de provider
+      InMemory. Aquí lo que se juega es la PK de Payments —el OrderId— que es lo
+      que hace idempotente al consumer: con un provider que no impone claves, un
+      cobro duplicado entraría dos veces y el test pasaría en verde.
+    -->
+    <PackageReference Include="Testcontainers.MsSql" Version="4.14.0" />
+    <!--
+      Ni Microsoft.AspNetCore.Mvc.Testing ni MassTransit.TestFramework, por los
+      mismos motivos que en Inventory.Tests: estos tests no levantan Payments.API
+      (que no tiene endpoints y no lleva "public partial class Program { }"), y el
+      harness en memoria vive en el paquete MassTransit de siempre, que llega por
+      la vía transitiva de Payments.API -> MassTransit.RabbitMQ.
+    -->
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Payments.API por el consumer y por PaymentSimulationOptions, que estos tests
+      configuran a mano para fijar el umbral de rechazo. Arrastra transitivamente
+      Payments.Infrastructure (PaymentsDbContext, Payment, PaymentStatus) y
+      Shop133.Contracts.
+    -->
+    <ProjectReference Include="..\..\..\..\src\Services\Payments\Payments.API\Payments.API.csproj" />
+    <ProjectReference Include="..\..\..\Shop133.TestUtilities\Shop133.TestUtilities.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -3,6 +3,25 @@ using System.Xml.Linq;
 namespace Shop133.ArchitectureTests;
 
 /// <summary>
+/// Un &lt;PackageReference&gt; tal y como está declarado en el .csproj.
+///
+/// La versión se conserva —y no solo el id— desde 3.1, porque hay reglas que
+/// dependen de ella: MassTransit 8.x es Apache-2.0 y la v9 es comercial, así que
+/// "qué paquete" no basta para saber si la referencia es legítima.
+///
+/// <paramref name="Version"/> puede venir vacía: un PackageReference sin
+/// atributo Version es válido cuando la versión la fija Central Package
+/// Management. Hoy el repositorio no lo usa, pero una regla que asuma que el
+/// atributo existe fallaría con un NullReferenceException el día que se adopte,
+/// en vez de decir lo que pasa.
+/// </summary>
+internal readonly record struct PackageReferenceInfo(string Id, string Version)
+{
+    public override string ToString() =>
+        Version.Length == 0 ? Id : $"{Id} {Version}";
+}
+
+/// <summary>
 /// Un proyecto de la solución, leído de su .csproj.
 /// </summary>
 internal sealed class ProjectInfo
@@ -22,8 +41,8 @@ internal sealed class ProjectInfo
     /// <summary>Nombres de los proyectos referenciados directamente.</summary>
     public required IReadOnlyList<string> ProjectReferences { get; init; }
 
-    /// <summary>Ids de los paquetes NuGet referenciados directamente.</summary>
-    public required IReadOnlyList<string> PackageReferences { get; init; }
+    /// <summary>Paquetes NuGet referenciados directamente, con su versión.</summary>
+    public required IReadOnlyList<PackageReferenceInfo> PackageReferences { get; init; }
 
     public bool IsApi => Name.EndsWith(".API", StringComparison.Ordinal);
 
@@ -139,10 +158,11 @@ internal static class ProjectGraph
                     .OrderBy(referenceName => referenceName, StringComparer.Ordinal)
                     .ToList(),
                 PackageReferences = document.Descendants("PackageReference")
-                    .Select(element => (string?)element.Attribute("Include"))
-                    .Where(include => !string.IsNullOrWhiteSpace(include))
-                    .Select(include => include!)
-                    .OrderBy(packageId => packageId, StringComparer.Ordinal)
+                    .Where(element => !string.IsNullOrWhiteSpace((string?)element.Attribute("Include")))
+                    .Select(element => new PackageReferenceInfo(
+                        ((string?)element.Attribute("Include"))!,
+                        (string?)element.Attribute("Version") ?? string.Empty))
+                    .OrderBy(package => package.Id, StringComparer.Ordinal)
                     .ToList(),
             });
         }

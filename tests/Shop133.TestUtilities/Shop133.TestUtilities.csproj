@@ -1,0 +1,61 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!--
+      SIN <OutputType>Exe</OutputType>, al contrario que los cuatro proyectos de
+      test. Esto no es un proyecto de test: no tiene un solo [Fact] y nadie lo
+      ejecuta. Es una biblioteca que las suites referencian, así que no debe
+      generar el punto de entrada que xunit.v3 inyecta en un Exe.
+    -->
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Solo por IAsyncLifetime, que es lo que ICollectionFixture<T> necesita para
+      arrancar y parar el contenedor de forma asíncrona.
+
+      xunit.v3.extensibility.core y no el metapaquete xunit.v3: este proyecto
+      extiende xUnit, no se ejecuta bajo él. El metapaquete arrastra el runner de
+      Microsoft.Testing.Platform y genera un Main, que aquí no pinta nada. Es un
+      subpaquete del mismo árbol que ya restaura xunit.v3 4.0.0, misma versión y
+      misma licencia (Apache-2.0).
+    -->
+    <PackageReference Include="xunit.v3.extensibility.core" Version="4.0.0" />
+    <!-- El SQL Server real. Misma versión que en las cuatro suites desde 1.7. -->
+    <PackageReference Include="Testcontainers.MsSql" Version="4.14.0" />
+    <!--
+      Declarado explícitamente y esto es nuevo: en Catalog.Tests y Orders.Tests
+      Microsoft.Data.SqlClient llegaba gratis por la vía transitiva de
+      Microsoft.EntityFrameworkCore.SqlServer (a través de <Svc>.Infrastructure).
+      Este proyecto no referencia ningún servicio —a propósito, ver el bloque de
+      abajo— y Testcontainers.MsSql NO trae el cliente: solo sabe levantar el
+      contenedor. 6.1.1 es exactamente lo que EF Core 10.0.8 resuelve hoy, así que
+      no introduce una versión nueva en el grafo, solo la hace visible.
+    -->
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.1" />
+  </ItemGroup>
+
+  <!--
+    CERO ProjectReference, y es la regla que mantiene honesto a este proyecto.
+
+    Qué entra aquí: lo que las CUATRO suites usan igual. Hoy eso es exactamente
+    un fichero, SqlServerContainerFixture, cuyas dos copias (Catalog.Tests y
+    Orders.Tests) eran byte a byte idénticas salvo el namespace y los comentarios.
+
+    Qué NO entra: las factories y los hosts de test. CatalogApiFactory,
+    OrdersApiFactory, InventoryConsumerHost y PaymentsConsumerHost divergen de
+    verdad —una base por clase frente a una por test, WebApplicationFactory frente
+    a un ServiceCollection desnudo, claves de configuración distintas— y unificar
+    lo que diverge es cómo un proyecto de utilidades se convierte en un cajón de
+    sastre del que ya nadie puede quitar nada.
+
+    El precedente que esto cierra: 1.7 dejó la pregunta abierta, 2.4 la aplazó por
+    escrito ("dos ocurrencias no son un patrón") y 3.4, 3.5 y 3.6 la citaron para
+    3.7. Con cuatro copias delante, la respuesta es extraer.
+  -->
+
+</Project>

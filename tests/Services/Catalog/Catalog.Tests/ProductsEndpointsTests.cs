@@ -8,6 +8,8 @@ using Catalog.Tests.Infrastructure;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
+using Shop133.TestUtilities;
+
 using Xunit;
 
 namespace Catalog.Tests;

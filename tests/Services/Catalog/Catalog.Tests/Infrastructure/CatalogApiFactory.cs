@@ -5,6 +5,8 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
+using Shop133.TestUtilities;
+
 using Xunit;
 
 namespace Catalog.Tests.Infrastructure;

@@ -12,10 +12,11 @@ namespace Orders.API.Models;
 /// proyecto para los mensajes que viajan por RabbitMQ y le prohíbe las
 /// validation attributes. Esto no es un mensaje, es la forma de una petición HTTP.
 ///
-/// Tampoco es <see cref="Order"/>: la entidad acuña su propio <c>Id</c>, fija el
-/// estado y el sello de tiempo, y sus líneas llevan tres campos congelados que el
-/// cliente no manda. El parecido entre ambos tipos es mucho menor que en Catalog
-/// — aquí el DTO es de verdad una vista recortada.
+/// Tampoco es <see cref="Order"/>: la entidad acuña su propio <c>Id</c>, y fija el
+/// estado y el sello de tiempo, que el cliente no manda ni puede. Desde 3.3 el
+/// parecido es mayor que en 2.3 —las líneas ya traen los tres campos congelados—
+/// pero sigue sin ser el mismo tipo, y esa distancia es la que deja al controller
+/// rechazar un cuerpo sin llegar a construir un pedido inválido.
 /// </summary>
 public sealed record CreateOrderRequest
 {
@@ -50,12 +51,18 @@ public sealed record CreateOrderRequest
     /// una línea": la misma invariante, comprobada dos veces a propósito, porque
     /// la entidad tiene que sostenerla venga de donde venga la llamada.
     ///
-    /// **El tope de 50 sí tiene un motivo concreto en este punto**: cada línea
-    /// distinta cuesta una ida y vuelta HTTP a Catalog. El tamaño del cuerpo es,
-    /// literalmente, el coste del acoplamiento síncrono — un pedido de 200 líneas
-    /// serían 200 peticiones secuenciales antes de poder responder. En la Fase 3
-    /// ese número deja de importar, porque publicar <c>OrderCreated</c> cuesta lo
-    /// mismo con 1 línea que con 200; cuando llegue, este tope se puede releer.
+    /// **El 50 se releyó en 3.3, como 2.3 dejó escrito, y se queda — pero su
+    /// motivo es otro.** Era el coste visible del acoplamiento síncrono: cada línea
+    /// distinta costaba una ida y vuelta HTTP a Catalog, así que el tamaño del
+    /// cuerpo *era* literalmente el precio de la deuda. Publicar
+    /// <c>OrderCreated</c> cuesta lo mismo con 1 línea que con 200, de modo que ese
+    /// argumento ya no sostiene nada.
+    ///
+    /// Lo que lo sostiene ahora es que el cuerpo se convierte en un mensaje de
+    /// RabbitMQ, y desde 3.3 cada línea lleva además sku y nombre: un pedido de 200
+    /// líneas es un payload notablemente mayor que antes, no menor. El número
+    /// sobrevive; lo que cambió es la razón, y por eso está escrito en vez de
+    /// heredado en silencio.
     ///
     /// Las líneas repetidas **no** son un error de validación: el controller las
     /// agrupa sumando cantidades antes de construir el pedido.
