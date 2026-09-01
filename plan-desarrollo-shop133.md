@@ -163,7 +163,7 @@ sqlserver:
 Este es el núcleo del aprendizaje.
 
 - [x] **4.1** Crear `OrderStateMachine` en Orders.Domain con MassTransit Saga — [doc](docs/fase_4_1.md)
-- [ ] **4.2** Estados: `Submitted → StockPending → StockReserved → PaymentPending → Confirmed`
+- [x] **4.2** Estados: `Submitted → StockPending → StockReserved → PaymentPending → Confirmed` — [doc](docs/fase_4_2.md)
 - [ ] **4.3** Camino de error: `StockRejected → Cancelled` / `PaymentFailed → CompensatingStock → Cancelled`
 - [ ] **4.4** Implementar evento de compensación `ReleaseStock` cuando el pago falla después de reservar
 - [ ] **4.5** Persistir el estado de la Saga en `OrdersDb` (SQL Server como Saga repository)
@@ -181,6 +181,8 @@ Este es el núcleo del aprendizaje.
 Esta lista es la **especificación del punto 4.7**. Escribir esos tests *antes* que la máquina de estados te obliga a decidir los estados finales y qué mensajes salen en cada camino, que es el diseño de la saga. El caso 3 en concreto afirma que se publica **exactamente un** `ReleaseStock` y que el estado final es `Cancelled` — la regla de que el stock reservado nunca se filtra, en forma ejecutable.
 
 **Sobre 4.1 — la saga observa la coreografía, no la orquesta (decidido el 2026-09-01).** La lista de arriba no dice quién manda `ReserveStock`, y la respuesta condiciona 4.2 y 4.4: la saga consume los mismos eventos que ya vuelan desde la Fase 3 y solo **emite** el comando de compensación (4.4) y los eventos terminales (4.3/4.6). Inventory sigue consumiendo `OrderCreated` por su cuenta y Payments `StockReserved` — dos consumidores del mismo exchange fanout, no un relevo. La orquestación pura obligaría a cambiar el consumer de Inventory, que esta fase no contempla tocar, y contradiría la decisión 2 de [fase_3_2.md](docs/fase_3_2.md) y la 6 de [fase_3_4.md](docs/fase_3_4.md). **El precio, dicho en voz alta: `ReserveStock` se queda sin usar**, y puede acompañarlo el `Lines` de `ReleaseStock` según lo que decida 4.4. Ver la decisión 2 de [fase_4_1.md](docs/fase_4_1.md).
+
+**Sobre 4.2 — se entregaron tres estados de los cinco del título (decidido el 2026-09-01).** `Submitted` y `StockReserved` no llegaron a existir, y no es un recorte: son consecuencia directa de la decisión de arriba. Un estado tiene sentido cuando la saga **espera** una respuesta, y lo que crea esa espera es haber mandado un comando; aquí no se manda ninguno, así que los dos se entrarían y se saldrían en la misma transición. La regla que queda: *en una saga que observa, hay un estado por cada respuesta que se espera, no por cada hecho que ocurre.* `4.9` encaja sin discusión —`PricingPending` **sí** es una espera real, la de Catalog— y no resucita a `Submitted`. Lo que sí se entregó y el título no menciona es el `OrderConfirmed`: es **el primer mensaje que emite la saga** en todo el proyecto. `Order.Status` sigue en `Pending` a propósito y se mueve en `4.3`. Ver las decisiones 1 y 2 de [fase_4_2.md](docs/fase_4_2.md).
 
 **Sobre 4.8 y 4.9 — añadidos el 2026-08-27, después de releer la decisión 2 de [fase_3_3.md](docs/fase_3_3.md).** `3.3` dejó que el cuerpo del `POST` traiga el precio y dio por hecho que la comprobación "se mudaba a Inventory". Solo se mudó la de **existencia**: Inventory guarda cantidades, no importes, así que un pedido de un producto que existe a `0.01` atraviesa toda la saga y **se cobra un céntimo**. El importe se había quedado sin dueño.
 

@@ -94,6 +94,20 @@ Three things the test host needs that are not obvious. **Two `UseSetting` calls,
 
 **`3.7` is done and Phase 3 is code complete** — see [docs/fase_3_7.md](docs/fase_3_7.md). `tests/Shop133.TestUtilities` (new project, approved), `Inventory.Tests` (9) and `Payments.Tests` (9) exist; `Orders.Tests` went 10 → 12 and **stopped needing RabbitMQ**. The suite is **64**. The details worth not rediscovering — the fixture extraction, why `MassTransit.TestFramework` was not needed, why the consumer suites skip `WebApplicationFactory`, and the three harness traps that produce green tests proving nothing — are in the Testing section above, where they belong. **`src/` has not one line of change**, which was the point of both host decisions; the two consumers were broken on purpose to prove the tests catch it, then restored.
 
+**`4.2` is done — the happy path is closed end to end and the saga emits its first message** — see [docs/fase_4_2.md](docs/fase_4_2.md). `OrderCreated → StockPending → PaymentPending → Confirmed`, and on the last step `Publish(OrderConfirmed)`. **One file of `src/` changed** — `OrderStateMachine.cs` — no contract, no `.csproj`, no package, no migration, so the architecture suite stays at **16** (precedent of `3.3`/`3.5`: say so rather than invent a rule).
+
+**Three states, not the five in the roadmap's title, and that is the lesson of the item.** `Submitted` and `StockReserved` never come into existence: a state earns its place when the saga *waits* for a reply, and what creates that wait is having sent a command — which this saga never does (decision 2 of `4.1`). Both would be entered and left in the same transition. The rule to carry into `4.9`: **in a saga that observes, there is one state per reply awaited, not one per fact that happens.** `PricingPending` fits because Catalog's answer is a real wait; `Submitted` does not come back.
+
+**`Order.Status` is deliberately still `Pending`, and the gap is measured**: the saga reaches `Confirmed` while `GET /orders/{id}` answers `"status":"Pending"`. Moving it is not a method on the entity — the saga is in `Orders.Domain` and **cannot touch `OrdersDbContext`** (rule 5), so it needs the **first consumer of Orders.API** and, with it, `3.6`'s `ProcessedMessages` table in `OrdersDb` (entity + configuration + migration). That whole piece lands in `4.3` together with `Cancel()`. Rejected: a port interface (`IOrderWriter` in `Orders.Domain`, implemented in `Orders.Infrastructure`) — one interface with one method and one implementation, to avoid the mechanism the project already runs everywhere and that `4.6` will use on this very event.
+
+**`OnMissingInstance(m => m.Fault())` is two explicit lines, and the plan for this item assumed wrongly that it was the default.** Measured: when a correlated (non-`Initially`) event arrives and no instance is alive, **MassTransit 8 discards it in silence** — no exception, no error queue, not one log line. A `PaymentCompleted` reposted after restarting Orders.API simply vanished. That matters because `InMemoryRepository()` loses every instance on restart, so without those lines an order stranded mid-saga disappears without trace — exactly the hole `4.5` exists to close, made invisible. With them it lands in `order-state_error` as `SagaException … An existing saga instance was not found`. Same lesson as `4.1`'s `Ignore`, in the other direction: **what has to be written down is what the default does not do.** `4.5` must re-read it — once the saga persists, it stops firing on restarts and starts meaning "an event for an order that never existed".
+
+**The idempotency guards go per state, and the terminal one is the one that gets forgotten.** `4.1`'s single `Ignore` becomes six across three `During`s. The rule: *in each state, ignore the events already handled **before** reaching it.* `During(Confirmed, …)` contains no transition and therefore looks like dead code — it is not: without it a late redelivery sends a perfectly finished order to the error queue. Verified by breaking it. **And what is deliberately not ignored**: there is no `Ignore(PaymentCompleted)` in `StockPending`. Adding it "for symmetry" would be wrong — a payment accepted before the reservation was seen is not a duplicate, it is an out-of-order delivery, and ignoring it would leave the order waiting forever for a message that already passed.
+
+**`Confirmed` is a plain state, not `Finalize()`.** With an in-memory repository there is no row to delete, so finalizing saves nothing and costs the ability to inspect the outcome — which is what makes the item verifiable. `4.5` decides with the table in front of it.
+
+**Two things that cost time.** `.Publish(context => new T{...})` **exists** on a saga's `BehaviorContext` — nearly every example uses the long `.PublishAsync(context => context.Init<T>(...))` form and it is easy to assume the short one does not compile; `Init<T>` is only needed to touch the envelope. And **breaking the terminal guard produces two faults, not one**: a hand-reposted `StockReserved` also reaches Payments, whose business guard from `3.5` republishes the stored `PaymentCompleted`, so one repost hits the saga twice with two different events.
+
 **Phase 4 is in progress. `4.1` is done — the saga exists and correlates** — see [docs/fase_4_1.md](docs/fase_4_1.md). `Orders.Domain/Sagas/` holds `OrderState` (the saga instance) and `OrderStateMachine`, and `Orders.Domain` gained its **first `PackageReference` ever**: `MassTransit` **8.5.10** — the core package and not `MassTransit.Abstractions`, because `SagaStateMachineInstance` is in the abstractions but `MassTransitStateMachine<T>` is not, so referencing only the abstractions does not compile. That does not break rule 5, it fulfils it: the exception letting `Orders.Domain` reference `Shop133.Contracts` exists *because* saga state machines live there, and `OrdersDomain_ProjectReferences_ContainOnlyContracts` only inspects `ProjectReference`. The architecture suite went to **16**: `StateMachineFiles_LiveOnlyIn_OrdersDomain` scans `src/**/*StateMachine.cs` and demands `Orders.Domain`, and it was broken on purpose before being trusted.
 
 **The line `0.3` promised and never ran is now live**: `Event(() => OrderCreated, e => e.CorrelateById(m => m.Message.OrderId))`. No contract carries a `CorrelationId` — that was decided against so the correlation key would not be duplicated next to an `OrderId` that always equals it — and `3.3`/`3.4` confirmed the envelope travels with `correlationId: null`. **Scope is deliberately "skeleton + first transition"**: one event, one state (`StockPending`), one `Initially`. The rest of the happy path is `4.2`, the error paths `4.3`. `Order.Status` is still `Pending` and nothing moves it — measured: the `201` response says `"status":"Pending"` while the saga starts alongside it.
@@ -234,7 +248,7 @@ Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed su
 | 1 | Catalog.API | **Code complete** — 1.1–1.7 done; awaiting the PRs to `develop`/`main` and the `fase-1` tag |
 | 2 | Orders.API (synchronous) | **Code complete** — 2.1–2.4 done; awaiting the PRs to `develop`/`main` and the `fase-2` tag |
 | 3 | MassTransit + RabbitMQ messaging | **Code complete** — 3.1–3.7 done; awaiting the PRs to `develop`/`main` and the `fase-3` tag |
-| 4 | Saga + compensations | **In progress** on `feature/fase-4-saga` — 4.1 done |
+| 4 | Saga + compensations | **In progress** on `feature/fase-4-saga` — 4.1–4.2 done |
 | 5 | YARP Gateway | Not started |
 | 6 | Frontend (MVC + Bootstrap 5) | Not started |
 | 7 | Observability | Not started |
@@ -464,9 +478,12 @@ dotnet run --project src/Services/Payments/Payments.API    # 5156
 # `_error` siblings are created lazily on the first fault, so absence means nothing
 # — except right after 4.1's deliberate break, where `order-state_error` exists and
 # is empty.
-# All five event exchanges exist once the services have published once, but
-# StockRejected/PaymentCompleted/PaymentFailed have NO bound queue until 4.3/4.6 —
-# they are published into the void, and that fails and warns about nothing.
+# Since 4.2, `StockReserved`'s fanout ALSO has two bindings (stock-reserved and
+# order-state) and `PaymentCompleted` has its first one — it stopped being
+# published into the void. A SIXTH exchange now exists, Shop133.Contracts.Events:
+# OrderConfirmed, created by the saga's first Publish; StockRejected, PaymentFailed
+# and OrderConfirmed still have NO bound queue until 4.3/4.6 — published into the
+# void, and that fails and warns about nothing.
 # MassTransit declares topology lazily, so "no queues" is never evidence that the
 # bus is disconnected — check connections for that.
 #
