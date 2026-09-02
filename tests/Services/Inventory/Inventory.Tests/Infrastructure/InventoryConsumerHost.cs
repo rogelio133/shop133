@@ -1,4 +1,5 @@
 using Inventory.API.Consumers;
+using Inventory.Infrastructure.Entities;
 using Inventory.Infrastructure.Persistence;
 
 using MassTransit;
@@ -95,6 +96,23 @@ public sealed class InventoryConsumerHost : IAsyncLifetime
         services.AddMassTransitTestHarness(configure =>
         {
             configure.AddConsumer<OrderCreatedConsumer>();
+
+            // El de 4.4, que a diferencia del otro consume un COMANDO: no se le
+            // publica, se le envía a una dirección.
+            configure.AddConsumer<ReleaseStockConsumer>();
+
+            // El mismo formatter que Program.cs, y aquí no es cosmético como podría
+            // parecer: es lo que hace que el endpoint de ReleaseStockConsumer se
+            // llame "release-stock" también dentro del harness, así que los tests
+            // pueden mandar el comando a **queue:release-stock**, que es la URI
+            // literal que escribe la OrderStateMachine.
+            //
+            // Sin esta línea el harness usaría su formatter por defecto, los tests
+            // tendrían que descubrir la dirección de otra forma, y el acuerdo entre
+            // el Send de la saga y el nombre de esta cola —que no lo vigila el
+            // compilador y cuyo desacuerdo no produce ningún error— se quedaría sin
+            // ninguna prueba que lo tocase.
+            configure.SetKebabCaseEndpointNameFormatter();
 
             // ── ConcurrentMessageLimit = 1, y no es cosmético ──
             //
@@ -205,6 +223,82 @@ public sealed class InventoryConsumerHost : IAsyncLifetime
             : new StockReservationSnapshot(
                 reservation.OrderId,
                 reservation.Lines.Select(line => (line.ProductId, line.Quantity)).ToList());
+    }
+
+    /// <summary>
+    /// Deja un pedido con stock reservado, **sin pasar por el bus** (4.4).
+    ///
+    /// ── Por qué no se reserva publicando un OrderCreated, que sería más realista ──
+    ///
+    /// Porque haría que cada test de la compensación tuviera **dos etapas de bus**,
+    /// y con dos etapas <c>InactivityTask</c> deja de servir: es UNA SOLA tarea que
+    /// se completa la primera vez que el bus queda inactivo, así que si el bus se
+    /// vacía mientras se prepara el segundo envío, el await del final vuelve al
+    /// instante y los asserts corren antes de que el consumer haya trabajado.
+    ///
+    /// **No es teórico: se midió.** La primera versión de estos tests reservaba
+    /// publicando OrderCreated y luego enviaba el comando; dos de los cuatro tests
+    /// susceptibles fallaron con cero <c>StockReleased</c> mientras los otros dos
+    /// pasaban, en la misma ejecución. El hueco lo abre el <c>await
+    /// GetSendEndpoint(...)</c> que hay entre las dos etapas. Es el trampa 1 de las
+    /// tres que 3.7 dejó anotadas, esta vez estrellándose de verdad.
+    ///
+    /// Hay además una segunda carrera que esto elimina: los dos consumers tienen
+    /// endpoints distintos, y <c>ConcurrentMessageLimit = 1</c> es **por endpoint**,
+    /// así que nada garantiza que el OrderCreated se consuma antes que el
+    /// ReleaseStock que se manda a continuación.
+    ///
+    /// *Descartado* esperar con <c>Published.Any&lt;StockReserved&gt;()</c> entre las
+    /// dos etapas, que ordenaría bien: no arregla el <c>InactivityTask</c> gastado,
+    /// y sin él no se puede afirmar "exactamente uno" — solo "al menos uno".
+    ///
+    /// **El precio, dicho en voz alta:** la fila que estos tests liberan no la
+    /// escribió <c>OrderCreatedConsumer</c>, así que si las dos formas de crearla
+    /// divergieran, aquí no se notaría. Lo que lo hace aceptable es que se usan las
+    /// **mismas entidades y los mismos métodos** que el consumer —
+    /// <c>StockItem.Reserve</c> y el constructor de <c>StockReservation</c>, con sus
+    /// invariantes—, y que la forma de la fila la afirma
+    /// <c>OrderCreatedConsumerTests</c> por su cuenta.
+    /// </summary>
+    public async Task SeedReservationAsync(
+        Guid orderId,
+        IReadOnlyList<(int ProductId, int Quantity)> lines,
+        CancellationToken cancellationToken)
+    {
+        using var scope = provider.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<InventoryDbContext>();
+
+        foreach (var (productId, quantity) in lines)
+        {
+            var item = await db.StockItems
+                .SingleAsync(stockItem => stockItem.ProductId == productId, cancellationToken);
+
+            item.Reserve(quantity);
+        }
+
+        db.StockReservations.Add(
+            new StockReservation(
+                orderId,
+                lines.Select(line => new StockReservationLine(line.ProductId, line.Quantity))));
+
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Cuándo se liberó la reserva de un pedido, o <c>null</c> si sigue viva (4.4).
+    /// Devuelve <c>null</c> también si la reserva no existe — los tests que
+    /// distinguen los dos casos usan además <see cref="ReservationAsync"/>.
+    /// </summary>
+    public async Task<DateTimeOffset?> ReleasedAtAsync(Guid orderId, CancellationToken cancellationToken)
+    {
+        using var scope = provider.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<InventoryDbContext>();
+
+        var reservation = await db.StockReservations
+            .AsNoTracking()
+            .SingleOrDefaultAsync(candidate => candidate.OrderId == orderId, cancellationToken);
+
+        return reservation?.ReleasedAt;
     }
 
     public async Task<int> CountProcessedAsync(CancellationToken cancellationToken)

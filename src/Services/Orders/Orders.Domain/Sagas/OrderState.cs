@@ -68,17 +68,42 @@ public sealed class OrderState : SagaStateMachineInstance
     /// </summary>
     public DateTimeOffset CreatedAt { get; set; }
 
+    /// <summary>
+    /// Por qué se canceló el pedido, guardado para poder publicarlo más tarde.
+    ///
+    /// **Es la consecuencia no obvia del estado intermedio que estrena 4.4.** El
+    /// camino corto —<c>StockRejected</c>— publica <c>OrderCancelled</c> en la
+    /// misma transición en la que recibe el motivo, así que lo lee del mensaje que
+    /// está entrando y no necesita nada de aquí; su comentario en la máquina de
+    /// estados dice justamente eso. El camino largo ya no puede: el motivo llega
+    /// en <c>PaymentFailed</c>, pero <c>OrderCancelled</c> no sale hasta que
+    /// Inventory contesta <c>StockReleased</c> —una transición después— y ese
+    /// evento no lleva ningún texto. Entre los dos mensajes hay que recordarlo.
+    ///
+    /// Que solo lo escriba un camino de los dos es deliberado y no una asimetría
+    /// que haya que "arreglar": guardar también el de <c>StockRejected</c> sería
+    /// un campo escrito para no leerse nunca.
+    ///
+    /// Inicializado a cadena vacía y no a <c>null!</c> como los dos de arriba:
+    /// aquí sí existe un camino que llega a publicar sin haber pasado por el
+    /// <c>.Then</c> que lo rellena (una instancia que alguien lleve a
+    /// <c>CompensatingStock</c> por otra vía), y un email de 4.6 con un motivo
+    /// vacío se lee mejor que una NullReferenceException.
+    /// </summary>
+    public string CancellationReason { get; set; } = string.Empty;
+
     // Fuera a propósito:
     //
     // - El importe. PaymentCompleted ya trae su Amount, así que guardarlo aquí
     //   sería un segundo sitio con el mismo número — el argumento por el que
     //   Order.Total se calcula y no se persiste (2.1).
     //
-    // - Las líneas del pedido. Las necesitaría ReleaseStock... si conserva su
-    //   Lines. La decisión 6 de docs/fase_3_4.md dejó eso abierto a 4.4 al
-    //   observar que la PK de StockReservations *es* el OrderId, así que soltar
-    //   el stock puede plausiblemente no necesitar más que el id. Guardarlas hoy
-    //   sería decidir 4.4 desde aquí, sin el consumer delante.
+    // - Las líneas del pedido, y **4.4 lo dejó cerrado**: ReleaseStock perdió su
+    //   Lines. La decisión 6 de docs/fase_3_4.md había dejado la pregunta abierta
+    //   observando que la PK de StockReservations *es* el OrderId; con el consumer
+    //   delante, eso resultó bastar. Guardarlas aquí habría significado que 4.5
+    //   tuviera que persistir una colección en la fila de la saga (columna JSON o
+    //   tipo owned) solo para devolverle a Inventory lo que Inventory ya tiene.
     //
     // - Un token de concurrencia optimista (rowversion / int Version). No tiene
     //   sentido sin repositorio persistente: es 4.5.
