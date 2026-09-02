@@ -3,6 +3,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi;
 
+using Orders.API.Consumers;
 using Orders.Domain.Sagas;
 using Orders.Infrastructure.Persistence;
 
@@ -130,6 +131,27 @@ builder.Services.AddMassTransit(x =>
     // Está medido en la verificación de docs/fase_4_1.md, y es el argumento de 4.5.
     x.AddSagaStateMachine<OrderStateMachine, OrderState>()
         .InMemoryRepository();
+
+    // --- Los dos primeros consumers del servicio (4.3) ----------------------
+    //
+    // Orders.API pasa a ser lo que hasta hoy solo eran Inventory y Payments: un
+    // consumidor de mensajes, además de un API HTTP. Escuchan lo que publica la
+    // saga de arriba —OrderConfirmed y OrderCancelled— y mueven el Order.Status
+    // en OrdersDb, que es lo que la saga no puede hacer por sí misma: vive en
+    // Orders.Domain y no ve OrdersDbContext (regla 5).
+    //
+    // Que el propio servicio consuma un mensaje que él mismo publica parece un
+    // rodeo, y es exactamente el precio de esa regla — hecho visible en vez de
+    // escondido detrás de una interfaz. Ver el /// de OrderConfirmedConsumer.
+    //
+    // Dos AddConsumer y no uno con dos interfaces: dos colas, order-confirmed y
+    // order-cancelled. El motivo está en el /// de OrderCancelledConsumer.
+    //
+    // Con estas dos líneas, Orders es el primer servicio del proyecto con más de
+    // un consumer, o sea el primero donde la clave compuesta (MessageId,
+    // ConsumerName) de ProcessedMessages tiene un caso real.
+    x.AddConsumer<OrderConfirmedConsumer>();
+    x.AddConsumer<OrderCancelledConsumer>();
 
     x.UsingRabbitMq((context, cfg) =>
     {

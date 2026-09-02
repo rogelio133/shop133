@@ -45,5 +45,6 @@ Documentos de procedimiento, no ligados a un punto del roadmap. No siguen la con
 | 3.7 | Tests de consumers con el harness en memoria de MassTransit | 2026-08-31 | [fase_3_7.md](fase_3_7.md) |
 | 4.1 | `OrderStateMachine` en Orders.Domain con MassTransit Saga | 2026-09-01 | [fase_4_1.md](fase_4_1.md) |
 | 4.2 | Estados de la saga: la cadena feliz completa y `OrderConfirmed` | 2026-09-01 | [fase_4_2.md](fase_4_2.md) |
+| 4.3 | Caminos de error de la saga y los dos primeros consumers de Orders.API | 2026-09-02 | [fase_4_3.md](fase_4_3.md) |
 
 El punto **0.1** (crear solución y estructura de carpetas) se completó antes de que existiera esta convención y no se documentó retroactivamente.

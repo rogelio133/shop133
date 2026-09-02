@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 
 using Orders.Domain.Entities;
+using Orders.Infrastructure.Entities;
 using Orders.Infrastructure.Persistence.Configurations;
 
 namespace Orders.Infrastructure.Persistence;
@@ -36,15 +37,30 @@ public sealed class OrdersDbContext(DbContextOptions<OrdersDbContext> options) :
     // siquiera lo permitiría — un owned type solo se alcanza desde su dueño, que
     // es exactamente la garantía que se buscaba al elegir OwnsMany.
 
+    /// <summary>
+    /// Los mensajes ya procesados, una fila por (MessageId, consumer). Es la
+    /// idempotencia de transporte de 3.6, que llega a Orders en 4.3 con los dos
+    /// primeros consumers del servicio.
+    ///
+    /// Es la única tabla de aquí que **no es de negocio**: Orders gestiona
+    /// pedidos, no mensajes. Vive en esta base y no en una compartida porque la
+    /// regla 1 no admite una base transversal, y —lo que de verdad decide— porque
+    /// marcar el mensaje y mover el <c>Order.Status</c> tienen que caber en la
+    /// misma transacción, algo que dos bases no pueden dar sin transacción
+    /// distribuida.
+    /// </summary>
+    public DbSet<ProcessedMessage> ProcessedMessages => Set<ProcessedMessage>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         // ApplyConfiguration explícito, no ApplyConfigurationsFromAssembly:
         // mismo criterio que Catalog (decisión 2 de docs/fase_1_2.md). Una línea
         // por entidad, y este método es la lista de lo que hay.
         //
-        // Solo hay una: OrderItem se configura dentro de OrderConfiguration, que
-        // es como se configuran los tipos owned — desde el builder de su dueño.
+        // OrderItem no aparece: se configura dentro de OrderConfiguration, que es
+        // como se configuran los tipos owned — desde el builder de su dueño.
         modelBuilder.ApplyConfiguration(new OrderConfiguration());
+        modelBuilder.ApplyConfiguration(new ProcessedMessageConfiguration());
 
         base.OnModelCreating(modelBuilder);
     }

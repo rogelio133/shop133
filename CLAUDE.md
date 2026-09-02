@@ -98,7 +98,7 @@ Three things the test host needs that are not obvious. **Two `UseSetting` calls,
 
 **Three states, not the five in the roadmap's title, and that is the lesson of the item.** `Submitted` and `StockReserved` never come into existence: a state earns its place when the saga *waits* for a reply, and what creates that wait is having sent a command — which this saga never does (decision 2 of `4.1`). Both would be entered and left in the same transition. The rule to carry into `4.9`: **in a saga that observes, there is one state per reply awaited, not one per fact that happens.** `PricingPending` fits because Catalog's answer is a real wait; `Submitted` does not come back.
 
-**`Order.Status` is deliberately still `Pending`, and the gap is measured**: the saga reaches `Confirmed` while `GET /orders/{id}` answers `"status":"Pending"`. Moving it is not a method on the entity — the saga is in `Orders.Domain` and **cannot touch `OrdersDbContext`** (rule 5), so it needs the **first consumer of Orders.API** and, with it, `3.6`'s `ProcessedMessages` table in `OrdersDb` (entity + configuration + migration). That whole piece lands in `4.3` together with `Cancel()`. Rejected: a port interface (`IOrderWriter` in `Orders.Domain`, implemented in `Orders.Infrastructure`) — one interface with one method and one implementation, to avoid the mechanism the project already runs everywhere and that `4.6` will use on this very event.
+**`Order.Status` was deliberately left at `Pending` by `4.2`, and the gap was measured**: the saga reached `Confirmed` while `GET /orders/{id}` answered `"status":"Pending"`. **`4.3` closed it** with the two consumers and the `ProcessedMessages` table described above; the reasoning for why it took consumers rather than a method call is in that section, and the port interface (`IOrderWriter`) was rejected there for the second time.
 
 **`OnMissingInstance(m => m.Fault())` is two explicit lines, and the plan for this item assumed wrongly that it was the default.** Measured: when a correlated (non-`Initially`) event arrives and no instance is alive, **MassTransit 8 discards it in silence** — no exception, no error queue, not one log line. A `PaymentCompleted` reposted after restarting Orders.API simply vanished. That matters because `InMemoryRepository()` loses every instance on restart, so without those lines an order stranded mid-saga disappears without trace — exactly the hole `4.5` exists to close, made invisible. With them it lands in `order-state_error` as `SagaException … An existing saga instance was not found`. Same lesson as `4.1`'s `Ignore`, in the other direction: **what has to be written down is what the default does not do.** `4.5` must re-read it — once the saga persists, it stops firing on restarts and starts meaning "an event for an order that never existed".
 
@@ -107,6 +107,22 @@ Three things the test host needs that are not obvious. **Two `UseSetting` calls,
 **`Confirmed` is a plain state, not `Finalize()`.** With an in-memory repository there is no row to delete, so finalizing saves nothing and costs the ability to inspect the outcome — which is what makes the item verifiable. `4.5` decides with the table in front of it.
 
 **Two things that cost time.** `.Publish(context => new T{...})` **exists** on a saga's `BehaviorContext` — nearly every example uses the long `.PublishAsync(context => context.Init<T>(...))` form and it is easy to assume the short one does not compile; `Init<T>` is only needed to touch the envelope. And **breaking the terminal guard produces two faults, not one**: a hand-reposted `StockReserved` also reaches Payments, whose business guard from `3.5` republishes the stored `PaymentCompleted`, so one repost hits the saga twice with two different events.
+
+**`4.3` is done — the saga has three outcomes instead of one, and `Order.Status` finally moves** — see [docs/fase_4_3.md](docs/fase_4_3.md). `StockPending --StockRejected--> Cancelled` and `PaymentPending --PaymentFailed--> Cancelled`, both publishing `OrderCancelled`; Orders.API gains **its first two consumers** (`OrderConfirmedConsumer`, `OrderCancelledConsumer`) and, with them, `3.6`'s `ProcessedMessages` table in `OrdersDb`; `Order` gains `Confirm()`/`Cancel()`. **No package, no project, no `.csproj` and not one line of `Shop133.Contracts`** — the three events have existed since `0.3` — so the architecture suite stays at **16** (precedent of `3.3`/`3.5`: say so rather than invent a rule).
+
+**Measured, and it is the point of the item: `GET /orders/{id}` now answers `Confirmed` or `Cancelled` instead of `Pending` forever.** An order for product 999999 returns `201` and cancels itself seconds later — the same request that was a `400` in `2.3`, with the synchronous validation now a *state of the order*. And the seven events of `Shop133.Contracts` all have a bound queue at last: `StockRejected` and `PaymentFailed` had been publishing into the void since `3.4`/`3.5`.
+
+**`CompensatingStock` does not exist, and it is `4.2`'s rule applied a second time.** *One state per reply awaited, not per fact that happens* — the saga sends no `ReleaseStock` until `4.4` and, even then, **there is no `StockReleased` in `Shop133.Contracts`** for Inventory to answer with, so the state would be entered and left in the same transition. Rejected: declaring it as a pass-through placeholder (inventing the shape before the use case, which `1.1`/`2.1` both refused), and adding a tenth contract (that is `4.4`'s call, with the consumer in front of it — precedent of `3.2`). **What actually separates the two error paths is not the state but what is left to undo**, and that is measured: a payment-declined order reaches `Cancelled` with its 3 units still reserved and its reservation row alive. `4.4` re-reads this decision.
+
+**The saga cannot touch `OrdersDbContext` — that is why moving `Order.Status` needed consumers.** `OrderStateMachine` lives in `Orders.Domain` and the arrow runs `.API → .Infrastructure → .Domain` (rule 5), so between "the saga finished" and "the row changed" there is necessarily a message and a queue. A service consuming a message it published itself looks like a detour and *is* the price of the rule, made visible. Rejected again (as in `4.2`): a port interface. **Two consumers, not one class with two interfaces**: the project names a consumer after the message it consumes, and two queues keep a failure on cancellations from blocking confirmations. The price is the transport guard duplicated almost line for line — *two copies are not a pattern* (precedent of `2.4`); a third consumer in Orders decides the extraction.
+
+**`ProcessedMessage` goes in `Orders.Infrastructure/Entities/`, not `Orders.Domain/Entities/`** where `2.1` put `Order` and `OrderItem`. It is not business — an order exists whether or not anyone uses RabbitMQ; this row only exists because delivery is at-least-once. It is the **third literal copy** of the entity + configuration pair and still not extracted, for the same reason as the `AddMassTransit` block: the other two `.Infrastructure` projects have zero `ProjectReference` and there is no common infrastructure project. **And here the composite PK stops being hypothetical**: Orders is the first service with two consumers, so it is the first table with two distinct `ConsumerName` values in it.
+
+**`Order.Confirm()`/`Cancel()` only leave `Pending`, and a transition to the state you are already in also throws.** That looks hostile and is the point: recognising a duplicate is the *consumer's* job (it checks the status and returns before touching the entity), so if the exception fires, either that guard failed or the saga and `OrdersDb` disagree. Letting the self-transition pass would blend the legitimate duplicate with the real fault. `Cancel()` deliberately takes **no reason** — the order does not distinguish why it was cancelled (`2.1`), and the text already travels in `OrderCancelled` toward Notifications. Likewise, an outcome for an order **missing from `OrdersDb` throws** into the error queue: Orders owns that table and its own saga published the event, so a miss is a real incoherence.
+
+**The idempotency guards go from 6 to 15, and what is *not* ignored is the part worth reading.** `StockPending` still ignores only `OrderCreated` — no `Ignore(PaymentFailed)`, because a payment resolved before the reservation was seen is an out-of-order delivery, not a duplicate. `PaymentPending` does not ignore `StockRejected`: reaching it implies `StockReserved` arrived, and Inventory publishes one or the other, never both — so that message would be Inventory contradicting itself. Both terminal states ignore **all five** events, and `During(Cancelled, …)` is the easiest of the four to forget because two paths lead into it and neither passes through it while writing. Verified rather than assumed: one hand-reposted `StockReserved` exercised **two** of those guards at once (directly, and via the `PaymentFailed` that Payments' `3.5` business guard republishes) with `order-state_error` staying at 0.
+
+**Two environment findings.** After `dotnet ef migrations add`, **anything that loads the assembly is stale until you rebuild** — `Orders.Tests` went 12/12 red in `MigrateAsync` with `The model for context 'OrdersDbContext' has pending changes`, an error that accuses you of not creating the migration you just created; `migrations add` compiles *before* writing its files. It is the other half of `1.2`'s `--no-build` note. And Smart App Control blocked the freshly built `Orders.API.dll` during that same command, where **the first retry cleared it** — a third distinct behaviour of the same block (`1.7` retry, `3.5` eight retries then Release, `3.7` neither): retry first, escalate after.
 
 **Phase 4 is in progress. `4.1` is done — the saga exists and correlates** — see [docs/fase_4_1.md](docs/fase_4_1.md). `Orders.Domain/Sagas/` holds `OrderState` (the saga instance) and `OrderStateMachine`, and `Orders.Domain` gained its **first `PackageReference` ever**: `MassTransit` **8.5.10** — the core package and not `MassTransit.Abstractions`, because `SagaStateMachineInstance` is in the abstractions but `MassTransitStateMachine<T>` is not, so referencing only the abstractions does not compile. That does not break rule 5, it fulfils it: the exception letting `Orders.Domain` reference `Shop133.Contracts` exists *because* saga state machines live there, and `OrdersDomain_ProjectReferences_ContainOnlyContracts` only inspects `ProjectReference`. The architecture suite went to **16**: `StateMachineFiles_LiveOnlyIn_OrdersDomain` scans `src/**/*StateMachine.cs` and demands `Orders.Domain`, and it was broken on purpose before being trusted.
 
@@ -248,7 +264,7 @@ Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed su
 | 1 | Catalog.API | **Code complete** — 1.1–1.7 done; awaiting the PRs to `develop`/`main` and the `fase-1` tag |
 | 2 | Orders.API (synchronous) | **Code complete** — 2.1–2.4 done; awaiting the PRs to `develop`/`main` and the `fase-2` tag |
 | 3 | MassTransit + RabbitMQ messaging | **Code complete** — 3.1–3.7 done; awaiting the PRs to `develop`/`main` and the `fase-3` tag |
-| 4 | Saga + compensations | **In progress** on `feature/fase-4-saga` — 4.1–4.2 done |
+| 4 | Saga + compensations | **In progress** on `feature/fase-4-saga` — 4.1–4.3 done |
 | 5 | YARP Gateway | Not started |
 | 6 | Frontend (MVC + Bootstrap 5) | Not started |
 | 7 | Observability | Not started |
@@ -470,20 +486,18 @@ dotnet run --project src/Services/Orders/Orders.API      # 5189
 dotnet run --project src/Services/Inventory/Inventory.API  # 5015
 dotnet run --project src/Services/Payments/Payments.API    # 5156
 
-# Inspect the broker without the UI. Since 4.1 there are THREE queues:
-# `order-created` (Inventory), `stock-reserved` (Payments) and `order-state` (the
+# Inspect the broker without the UI. Since 4.3 there are FIVE queues:
+# `order-created` (Inventory), `stock-reserved` (Payments), `order-state` (the
 # saga — the name comes from the INSTANCE type, OrderState, not from the state
-# machine). `OrderCreated`'s fanout therefore has TWO bindings: Inventory and the
-# saga observe the same event, which is 4.1's decision 2 made visible. Their
-# `_error` siblings are created lazily on the first fault, so absence means nothing
-# — except right after 4.1's deliberate break, where `order-state_error` exists and
-# is empty.
-# Since 4.2, `StockReserved`'s fanout ALSO has two bindings (stock-reserved and
-# order-state) and `PaymentCompleted` has its first one — it stopped being
-# published into the void. A SIXTH exchange now exists, Shop133.Contracts.Events:
-# OrderConfirmed, created by the saga's first Publish; StockRejected, PaymentFailed
-# and OrderConfirmed still have NO bound queue until 4.3/4.6 — published into the
-# void, and that fails and warns about nothing.
+# machine) and `order-confirmed`/`order-cancelled` (Orders' own two consumers).
+# `OrderCreated` and `StockReserved` each have TWO bindings — a service consumer
+# and the saga observing the same fanout, not a relay: 4.1's decision 2 made
+# visible. Their `_error` siblings are created lazily on the first fault, so
+# absence means nothing.
+# Since 4.3 **all seven events have at least one bound queue**: StockRejected and
+# PaymentFailed had been publishing into the void since 3.4/3.5, and OrderCancelled
+# exists as an exchange for the first time. Nothing publishes into the void any
+# more until 4.4 adds ReleaseStock.
 # MassTransit declares topology lazily, so "no queues" is never evidence that the
 # bus is disconnected — check connections for that.
 #
@@ -575,6 +589,11 @@ dotnet ef database update `
 # - Never `--no-build` right after `migrations add`: that command compiles BEFORE writing the
 #   migration files, so the assembly in bin/ has no migration and `migrations script --no-build`
 #   silently emits only the __EFMigrationsHistory table. No error, no warning.
+#   Same cause, louder symptom (measured in 4.3): a test suite compiled before the migration
+#   fails EVERY test in MigrateAsync with "The model for context 'X' has pending changes. Add a
+#   new migration before updating the database" — an error accusing you of not creating the
+#   migration you just created. Rebuild and rerun; nothing that loads the assembly is trustworthy
+#   until you do.
 # - `dotnet ef` sets ASPNETCORE_ENVIRONMENT=Development on its own, which is what makes User
 #   Secrets load. If something else forces another environment, the connection string vanishes;
 #   pass `--environment Development`.

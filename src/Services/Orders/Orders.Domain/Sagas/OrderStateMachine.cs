@@ -14,15 +14,28 @@ namespace Orders.Domain.Sagas;
 /// **Qué entrega 4.2 y qué no.** La cadena feliz entera, de punta a punta:
 /// <c>OrderCreated → StockPending → PaymentPending → Confirmed</c>, y al llegar al
 /// final la saga publica <c>OrderConfirmed</c> — el primer mensaje que emite en
-/// todo el proyecto. Lo que sigue fuera: los caminos de error son 4.3, la
-/// compensación <c>ReleaseStock</c> 4.4 y la persistencia 4.5.
+/// todo el proyecto.
 ///
-/// **El pedido sigue naciendo <c>Pending</c> y nada lo mueve.** <c>Order.Status</c>
-/// no se toca aquí: hacerlo necesita un consumer en Orders.API —el primero del
-/// servicio— y, con él, la tabla <c>ProcessedMessages</c> de 3.6 en <c>OrdersDb</c>,
-/// que es una migración entera. Va junto en 4.3, con los dos desenlaces. Mientras
-/// tanto hay una inconsistencia temporal real y medible: la saga puede estar en
-/// <c>Confirmed</c> mientras <c>GET /orders/{id}</c> contesta <c>"Pending"</c>.
+/// **Qué añade 4.3.** Los dos caminos de error, con los que la saga pasa a tener
+/// tres desenlaces posibles en vez de uno: <c>StockPending → Cancelled</c> al
+/// recibir <c>StockRejected</c>, y <c>PaymentPending → Cancelled</c> al recibir
+/// <c>PaymentFailed</c>. Los dos publican <c>OrderCancelled</c> arrastrando el
+/// motivo. Con eso, <c>StockRejected</c> y <c>PaymentFailed</c> dejan de publicarse
+/// al vacío —sus exchanges tenían cero colas ligadas desde 3.4 y 3.5— y un pedido
+/// sin stock o con el cobro rechazado por fin termina en vez de quedarse esperando
+/// para siempre. Lo que sigue fuera: la compensación <c>ReleaseStock</c> es 4.4 y
+/// la persistencia 4.5.
+///
+/// **Y el pedido por fin se mueve.** Hasta 4.2 <c>Order.Status</c> se quedaba en
+/// <c>Pending</c> aunque la saga llegara a <c>Confirmed</c>: la saga vive en
+/// Orders.Domain y no puede tocar <c>OrdersDbContext</c> (regla 5), así que mover
+/// el estado del pedido necesitaba un consumer en Orders.API —los dos primeros del
+/// servicio— y, con ellos, la tabla <c>ProcessedMessages</c> de 3.6 en
+/// <c>OrdersDb</c>. Ese bloque entra en 4.3 con estos dos caminos:
+/// <c>OrderConfirmedConsumer</c> y <c>OrderCancelledConsumer</c> escuchan lo que
+/// esta máquina publica y llaman a <c>Order.Confirm()</c>/<c>Order.Cancel()</c>.
+/// La inconsistencia temporal no desaparece —sigue habiendo una ventana entre el
+/// <c>TransitionTo</c> y el <c>UPDATE</c>—, pero deja de ser permanente.
 ///
 /// **La saga observa la coreografía; no la orquesta.** Consume los mismos eventos
 /// que ya vuelan desde la Fase 3 y solo emite lo que nadie más puede saber: desde
@@ -45,7 +58,8 @@ namespace Orders.Domain.Sagas;
 /// </summary>
 public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
 {
-    // ── Los estados: tres, no los cinco que enumera el roadmap ──
+    // ── Los estados: cuatro, y ni el título de 4.2 ni el de 4.3 se cumplen al pie
+    //    de la letra. Es la misma regla en los dos casos ──
     //
     // El punto 4.2 se titula "Submitted → StockPending → StockReserved →
     // PaymentPending → Confirmed", y dos de esos cinco no llegan a existir. No es
@@ -64,6 +78,28 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
     // 4.9 mete PricingPending DELANTE de StockPending sin que Submitted reaparezca:
     // será otro sitio donde la saga espera de verdad, esta vez la respuesta de
     // Catalog.
+    //
+    // ── Y por lo mismo, CompensatingStock tampoco existe (4.3) ──
+    //
+    // El punto 4.3 se titula "StockRejected → Cancelled / PaymentFailed →
+    // CompensatingStock → Cancelled", y de esos tres estados solo entra Cancelled.
+    // La regla es la que dejó escrita 4.2 —hay un estado por cada RESPUESTA que se
+    // espera, no por cada hecho que ocurre— y aquí no hay ninguna respuesta que
+    // esperar: la saga todavía no manda ReleaseStock (eso es 4.4) y, aunque lo
+    // mandara hoy, Shop133.Contracts no tiene ningún StockReleased con el que
+    // Inventory pudiera contestar. CompensatingStock se entraría y se saldría en la
+    // misma transición: un estado que ninguna instancia puede tener al consultarla.
+    //
+    // Descartado declararlo igualmente como estado de paso, dejando el hueco listo
+    // para el Publish de 4.4: sería un estado inventado antes de que exista lo que
+    // le da sentido, que es justo lo que 4.2 se negó a hacer con Submitted. Y
+    // descartado añadir StockReleased a los contratos para convertir la espera en
+    // real: es una decisión de 4.4 —con el consumer de la compensación delante— y
+    // rompería los 9 mensajes que fijó 0.3 sin que este punto lo necesite.
+    //
+    // 4.4 lo relee con ReleaseStock escrito. Si decide que Inventory conteste, el
+    // estado aparece ahí, con su espera de verdad; si decide que no, esta nota
+    // explica por qué la transición sigue siendo directa.
 
     /// <summary>
     /// El stock está pedido y todavía no hay respuesta. Destino de la primera
@@ -98,17 +134,33 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
     public State Confirmed { get; private set; } = null!;
 
     /// <summary>
+    /// Final infeliz, y **el mismo para los dos caminos de error**: no había stock,
+    /// o el cobro se rechazó. Es donde se publica <c>OrderCancelled</c>.
+    ///
+    /// Un solo estado para las dos causas y no un <c>StockRejected</c>/
+    /// <c>PaymentDeclined</c> por separado: el desenlace del pedido es el mismo
+    /// —terminó sin completarse— y quien quiera saber por qué lo lee en el
+    /// <c>Reason</c> que viaja dentro del evento. Es la misma decisión que ya tomó
+    /// 2.1 con <c>OrderStatus</c>, que tiene un único <c>Cancelled</c>. Dos estados
+    /// obligarían a duplicar todas las guardas de idempotencia de abajo para no
+    /// ganar ninguna transición distinta.
+    ///
+    /// **Lo que sí distingue a los dos caminos es lo que queda por deshacer**, y
+    /// eso es 4.4: desde <c>StockPending</c> no hay nada reservado que soltar,
+    /// desde <c>PaymentPending</c> sí. Hoy los dos llegan aquí igual y **el stock
+    /// del segundo se queda reservado** — el agujero de la regla 7, medido en la
+    /// verificación de docs/fase_3_5.md y que 4.4 cierra.
+    ///
+    /// Estado plano y no <c>Finalize()</c>, por lo mismo que <c>Confirmed</c>.
+    /// </summary>
+    public State Cancelled { get; private set; } = null!;
+
+    /// <summary>
     /// El evento que arranca la saga. Es el mismo <c>OrderCreated</c> que
     /// <c>OrdersController</c> publica desde 3.3 e Inventory consume desde 3.4 —
     /// el contrato no cambia, que era el objetivo de la decisión 1 de
     /// docs/fase_0_3.md al fijar los 9 mensajes: "la saga de la Fase 4 no tendrá
     /// que tocar Contracts para existir".
-    ///
-    /// <c>StockRejected</c> y <c>PaymentFailed</c> siguen sin declararse, por lo
-    /// mismo que 4.1 no declaraba ninguno: declarar un <c>Event&lt;T&gt;</c> hace
-    /// que <c>ConfigureEndpoints</c> enlace su exchange a la cola de la saga, y sin
-    /// un <c>During(...)</c> que lo atienda cada mensaje acabaría en
-    /// <c>order-state_error</c>. Entran en 4.3, con el estado que los recibe.
     /// </summary>
     public Event<OrderCreated> OrderCreated { get; private set; } = null!;
 
@@ -133,6 +185,37 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
     /// el lado feliz; el de <c>PaymentFailed</c> lo pone 4.3.
     /// </summary>
     public Event<PaymentCompleted> PaymentCompleted { get; private set; } = null!;
+
+    /// <summary>
+    /// El rechazo de la reserva, publicado por Inventory.API desde 3.4 cuando
+    /// alguna línea no tiene unidades suficientes o el producto no existe en
+    /// <c>InventoryDb</c>.
+    ///
+    /// **Aquí no hay nada que compensar** y por eso este camino es el corto: la
+    /// reserva de Inventory es atómica —entra entera o no entra nada, verificado en
+    /// la verificación 5 de docs/fase_3_4.md—, así que un <c>StockRejected</c>
+    /// significa que ninguna unidad se movió. Se cancela y se acabó.
+    ///
+    /// Su <c>Reason</c> es el texto que Inventory compone con todas las líneas que
+    /// fallaron, y viaja tal cual dentro de <c>OrderCancelled</c>: diagnóstico y
+    /// material para el email de 4.6, nunca un código que nadie deba parsear.
+    /// </summary>
+    public Event<StockRejected> StockRejected { get; private set; } = null!;
+
+    /// <summary>
+    /// El rechazo del cobro, publicado por Payments.API desde 3.5.
+    ///
+    /// **Es el evento que justifica el proyecto entero**: llega cuando el stock ya
+    /// está reservado, así que es el único de los cinco que deja estado ajeno que
+    /// deshacer. Hoy la saga lo atiende y cancela, pero **no suelta el stock** —
+    /// eso es 4.4, y hasta entonces las unidades se quedan reservadas para un
+    /// pedido que ya está cancelado. Ese hueco es la regla 7 sin cumplir, y está
+    /// medido, no supuesto.
+    ///
+    /// Igual que su hermano, hasta hoy se publicaba a un exchange sin colas
+    /// ligadas.
+    /// </summary>
+    public Event<PaymentFailed> PaymentFailed { get; private set; } = null!;
 
     /// <summary>
     /// El logger llega por constructor: MassTransit resuelve la máquina de estados
@@ -204,6 +287,27 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
             e.OnMissingInstance(missing => missing.Fault());
         });
 
+        // Los dos de 4.3, con exactamente la misma configuración: los cinco
+        // contratos que consume esta saga llevan OrderId y ninguno lleva
+        // CorrelationId, así que el par de líneas se repite tal cual por quinta vez.
+        //
+        // Declararlos es lo que enlaza sus exchanges a la cola order-state, o sea
+        // lo que hace que StockRejected y PaymentFailed dejen de publicarse al
+        // vacío. Por eso 4.1 y 4.2 no los declararon: un Event<T> declarado sin un
+        // During que lo atienda enlaza la cola igual y manda cada mensaje a
+        // order-state_error. Ahora tienen quien los atienda.
+        Event(() => StockRejected, e =>
+        {
+            e.CorrelateById(message => message.Message.OrderId);
+            e.OnMissingInstance(missing => missing.Fault());
+        });
+
+        Event(() => PaymentFailed, e =>
+        {
+            e.CorrelateById(message => message.Message.OrderId);
+            e.OnMissingInstance(missing => missing.Fault());
+        });
+
         Initially(
             When(OrderCreated)
                 .Then(context =>
@@ -253,17 +357,46 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
                     context.Message.Amount))
                 .TransitionTo(PaymentPending),
 
+            // ── El camino de error corto (4.3) ──
+            //
+            // Sin nada que compensar: la reserva de Inventory es atómica, así que
+            // un rechazo significa que ninguna unidad se movió. De StockPending a
+            // Cancelled directo.
+            When(StockRejected)
+                .Then(context => logger.LogInformation(
+                    "Pedido {OrderId}: stock rechazado ({Reason}); pasa a Cancelled " +
+                    "y se publica OrderCancelled. No hay nada que compensar.",
+                    context.Saga.CorrelationId,
+                    context.Message.Reason))
+                .TransitionTo(Cancelled)
+
+                // El Reason se arrastra tal cual del evento que originó la
+                // cancelación. La saga no lo reescribe ni lo traduce a un código:
+                // el /// de OrderCancelled dice que es texto de diagnóstico y
+                // material para el email de 4.6, y quien mejor sabe por qué falló
+                // es quien falló.
+                //
+                // Nótese que no se guarda en OrderState: se lee del mensaje que
+                // está entrando, dentro de la misma transición. Guardarlo sería un
+                // campo más en la instancia para un dato que solo se usa aquí.
+                .Publish(context => new OrderCancelled
+                {
+                    OrderId = context.Saga.CorrelationId,
+                    CustomerEmail = context.Saga.CustomerEmail,
+                    Reason = context.Message.Reason,
+                }),
+
             // Duplicado de OrderCreated (la guarda que estrenó 4.1).
             Ignore(OrderCreated));
 
-        // Nótese lo que **no** hay aquí: un Ignore(PaymentCompleted) en
-        // StockPending. Sería fácil añadirlo "por simetría" y estaría mal: un cobro
-        // aceptado sin haber visto la reserva no es un duplicado, es una entrega
-        // fuera de orden, y RabbitMQ no ordena entre colas ni garantiza el orden con
-        // entrega concurrente. Ignorarlo dejaría el pedido esperando para siempre un
-        // PaymentCompleted que ya pasó; faultear lo pone en order-state_error, donde
-        // se ve. Mismo criterio que el de OnMissingInstance de arriba: los agujeros
-        // se miden, no se tapan.
+        // Nótese lo que **no** hay aquí: ni Ignore(PaymentCompleted) ni
+        // Ignore(PaymentFailed) en StockPending. Sería fácil añadirlos "por
+        // simetría" y estaría mal: un cobro resuelto sin haber visto la reserva no
+        // es un duplicado, es una entrega fuera de orden, y RabbitMQ no ordena
+        // entre colas ni garantiza el orden con entrega concurrente. Ignorarlo
+        // dejaría el pedido esperando para siempre una respuesta que ya pasó;
+        // faultear lo pone en order-state_error, donde se ve. Mismo criterio que el
+        // de OnMissingInstance de arriba: los agujeros se miden, no se tapan.
 
         During(PaymentPending,
             When(PaymentCompleted)
@@ -304,17 +437,67 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
                     CustomerEmail = context.Saga.CustomerEmail,
                 }),
 
+            // ── El camino de error largo (4.3), y el que da nombre a la fase ──
+            //
+            // Aquí sí hay estado ajeno que deshacer: el stock lleva reservado desde
+            // que se entró en este estado. La transición de hoy cancela y avisa,
+            // pero **no suelta nada** — el Publish(ReleaseStock) es 4.4, y hasta
+            // entonces las unidades se quedan reservadas para un pedido cancelado.
+            //
+            // Se deja así a propósito en vez de adelantar media compensación: el
+            // punto siguiente existe justamente para eso, y un agujero anotado se
+            // arregla; uno tapado a medias, no. Es la regla 7 de CLAUDE.md sin
+            // cumplir todavía, con fecha de caducidad.
+            When(PaymentFailed)
+                .Then(context => logger.LogWarning(
+                    "Pedido {OrderId}: cobro rechazado ({Reason}); pasa a Cancelled y se " +
+                    "publica OrderCancelled. OJO: el stock reservado NO se suelta hasta 4.4.",
+                    context.Saga.CorrelationId,
+                    context.Message.Reason))
+                .TransitionTo(Cancelled)
+                .Publish(context => new OrderCancelled
+                {
+                    OrderId = context.Saga.CorrelationId,
+                    CustomerEmail = context.Saga.CustomerEmail,
+                    Reason = context.Message.Reason,
+                }),
+
             Ignore(OrderCreated),
             Ignore(StockReserved));
 
+        // Y tampoco hay un Ignore(StockRejected) en PaymentPending. Llegar aquí
+        // significa haber recibido StockReserved, e Inventory publica uno de los dos
+        // eventos, nunca los dos: un StockRejected en este estado no es un duplicado
+        // de nada, es Inventory contradiciéndose. Ignorarlo escondería un fallo
+        // real del otro servicio.
+
         During(Confirmed,
-            // El estado terminal también necesita sus guardas, y es el que más fácil
-            // se olvida: aquí no queda ninguna transición que escribir, así que un
-            // During(Confirmed, ...) parece código muerto. No lo es — sin él, una
-            // reentrega tardía de cualquiera de los tres eventos manda a la cola de
-            // error un pedido que terminó perfectamente.
+            // Los estados terminales también necesitan sus guardas, y son los que
+            // más fácil se olvidan: aquí no queda ninguna transición que escribir,
+            // así que un During(Confirmed, ...) parece código muerto. No lo es — sin
+            // él, una reentrega tardía manda a la cola de error un pedido que
+            // terminó perfectamente.
+            //
+            // Van los CINCO eventos, no solo los tres del camino recorrido: llegar a
+            // Confirmed descarta que StockRejected o PaymentFailed sean parte de la
+            // historia de este pedido, pero no impide que uno se reentregue tarde
+            // —o que llegue reacuñado a mano, como en las pruebas de 3.6—, y el
+            // resultado sería el mismo pedido perfecto en order-state_error.
             Ignore(OrderCreated),
             Ignore(StockReserved),
-            Ignore(PaymentCompleted));
+            Ignore(PaymentCompleted),
+            Ignore(StockRejected),
+            Ignore(PaymentFailed));
+
+        During(Cancelled,
+            // El segundo estado terminal, con las mismas cinco guardas y por el
+            // mismo motivo. Este es más fácil de olvidar todavía, porque se llega a
+            // él por dos caminos distintos y ninguno de los dos pasa por aquí al
+            // escribirlo.
+            Ignore(OrderCreated),
+            Ignore(StockReserved),
+            Ignore(PaymentCompleted),
+            Ignore(StockRejected),
+            Ignore(PaymentFailed));
     }
 }
