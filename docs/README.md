@@ -47,5 +47,6 @@ Documentos de procedimiento, no ligados a un punto del roadmap. No siguen la con
 | 4.2 | Estados de la saga: la cadena feliz completa y `OrderConfirmed` | 2026-09-01 | [fase_4_2.md](fase_4_2.md) |
 | 4.3 | Caminos de error de la saga y los dos primeros consumers de Orders.API | 2026-09-02 | [fase_4_3.md](fase_4_3.md) |
 | 4.4 | La compensación: `ReleaseStock`, `StockReleased` y `CompensatingStock` | 2026-09-02 | [fase_4_4.md](fase_4_4.md) |
+| 4.5 | La saga persistida en `OrdersDb` y el outbox transaccional | 2026-09-02 | [fase_4_5.md](fase_4_5.md) |
 
 El punto **0.1** (crear solución y estructura de carpetas) se completó antes de que existiera esta convención y no se documentó retroactivamente.

@@ -36,8 +36,18 @@ namespace Orders.Domain.Sagas;
 /// que devolvió las unidades. Solo entonces publica <c>OrderCancelled</c>. Con eso
 /// se cumple la regla 7 de CLAUDE.md: no queda ningún camino en el que el stock
 /// reservado se filtre. Es también el primer y único <c>Send</c> del proyecto, y el
-/// único estado que existe porque la saga mandó algo. Lo que sigue fuera: la
-/// persistencia de la instancia es 4.5 y la validación de precios de Catalog,
+/// único estado que existe porque la saga mandó algo.
+///
+/// **Qué añade 4.5, sin tocar ni una línea de esta clase.** La instancia deja de
+/// vivir en memoria y pasa a <c>OrdersDb.OrderStates</c>, con token de concurrencia
+/// optimista, y lo que esta máquina publica o envía se escribe en el outbox dentro
+/// de la misma transacción que su cambio de estado. Que no haya habido que cambiar
+/// nada aquí es el resultado, no la casualidad: la persistencia y la entrega
+/// fiable son decisiones de la composición (el <c>AddMassTransit</c> de
+/// Orders.API), no del diseño del proceso. Lo único que se reescribió fueron tres
+/// comentarios que prometían este punto — el de <c>OnMissingInstance</c>, el del
+/// <c>Publish</c> de <c>OrderConfirmed</c> y el <c>Finalize()</c> de
+/// <c>Confirmed</c>. Lo que sigue fuera: la validación de precios de Catalog,
 /// 4.8/4.9.
 ///
 /// **Y el pedido por fin se mueve.** Hasta 4.2 <c>Order.Status</c> se quedaba en
@@ -157,12 +167,25 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
     /// Final feliz: stock reservado y cobro aceptado. Es donde se publica
     /// <c>OrderConfirmed</c>.
     ///
-    /// **Es un estado normal, no <c>Finalize()</c>.** Finalizar sacaría la
-    /// instancia del repositorio y, con <c>SetCompletedWhenFinalized()</c>,
-    /// borraría su fila. Hoy no hay fila —el repositorio es en memoria— así que no
-    /// se ahorra nada y se pierde poder inspeccionar el desenlace, que es
-    /// justamente lo que hace verificable este punto. Cuando 4.5 cree la tabla, se
-    /// decide con la tabla delante y con el coste real de acumular filas.
+    /// **Es un estado normal, no <c>Finalize()</c>, y 4.5 lo confirma con la tabla
+    /// delante.** Finalizar sacaría la instancia del repositorio y, con
+    /// <c>SetCompletedWhenFinalized()</c>, borraría su fila de
+    /// <c>OrdersDb.OrderStates</c>.
+    ///
+    /// En 4.2 el argumento fue que no había fila que borrar y la decisión se
+    /// aplazó a este punto. Releída ahora que sí la hay, la respuesta es la misma
+    /// y el motivo es mejor: **el desenlace de un pedido tiene que poder
+    /// consultarse después**. Es lo que hace verificable esta fase (mirar
+    /// <c>CurrentState</c> es cómo se comprueba que la compensación terminó), lo
+    /// que 4.7 necesita para afirmar el estado final, y lo que 6.5 querrá para la
+    /// página de estado del pedido. Con <c>Finalize()</c>, de un pedido cerrado no
+    /// queda más rastro que <c>Order.Status</c>, que dice *qué* pasó pero no *por
+    /// dónde* se pasó.
+    ///
+    /// El precio, dicho en voz alta: la tabla crece sin techo, una fila por pedido
+    /// para siempre, y nadie la purga. Es exactamente la misma renuncia consciente
+    /// que <c>ProcessedMessages</c> (3.6), y con la misma condición: el día que
+    /// aparezca una purga, aparece con su índice sobre <c>CreatedAt</c>.
     /// </summary>
     public State Confirmed { get; private set; } = null!;
 
@@ -334,22 +357,28 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
         // desvaneció (verificación 7 de docs/fase_4_2.md). Es lo contrario de lo
         // que se había supuesto al planificar el punto.
         //
-        // Con InMemoryRepository() un reinicio borra todas las instancias —medido
-        // en la verificación 7 de docs/fase_4_1.md—, así que un pedido que estaba
-        // esperando su cobro se queda huérfano. En 4.1 eso era inocuo: el único
-        // evento declarado era el que ARRANCA la saga, que simplemente empezaba de
-        // cero. Desde 4.2 tiene consecuencia — el StockReserved o el
-        // PaymentCompleted de ese pedido no tienen dónde caer.
+        // Con InMemoryRepository() un reinicio borraba todas las instancias
+        // —medido en la verificación 7 de docs/fase_4_1.md—, así que un pedido que
+        // estaba esperando su cobro se quedaba huérfano. En 4.1 eso era inocuo: el
+        // único evento declarado era el que ARRANCA la saga, que simplemente
+        // empezaba de cero. Desde 4.2 tenía consecuencia — el StockReserved o el
+        // PaymentCompleted de ese pedido no tenían dónde caer.
         //
-        // Con el descarte por defecto, ese pedido desaparece sin dejar rastro, que
-        // es exactamente el agujero que 4.5 existe para cerrar. Esta línea lo pone
-        // en order-state_error, donde se ve y se puede contar. Es la misma lección
-        // que la guarda Ignore de 4.1: lo que hay que dejar escrito es lo que el
-        // valor por defecto no hace.
+        // Con el descarte por defecto, ese pedido desaparecía sin dejar rastro.
+        // Esta línea lo pone en order-state_error, donde se ve y se puede contar.
+        // Es la misma lección que la guarda Ignore de 4.1: lo que hay que dejar
+        // escrito es lo que el valor por defecto no hace.
         //
-        // Cuando 4.5 persista la saga, esta línea deja de dispararse por reinicios
-        // y pasa a señalar lo único que quedará: un evento de un pedido que nunca
-        // existió. Merece la pena releerla entonces, no quitarla.
+        // ── Releído en 4.5, como 4.2 pidió, y se QUEDA cambiando de significado ──
+        //
+        // Con la saga persistida en OrdersDb.OrderStates, un reinicio de
+        // Orders.API ya no pierde nada: la instancia se lee de la tabla y el
+        // evento la encuentra. Así que estas dos líneas dejan de dispararse por la
+        // causa que las trajo. No sobran: pasan a señalar lo único que queda, que
+        // es un evento correlacionado con un pedido que **nunca existió** — un
+        // mensaje reacuñado a mano, o un contrato con un OrderId inventado. Eso ya
+        // no es un accidente de infraestructura, es una incoherencia, y merece la
+        // cola de error todavía más que antes.
         Event(() => StockReserved, e =>
         {
             e.CorrelateById(message => message.Message.OrderId);
@@ -520,10 +549,15 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
                 // ConversationId igual por los dos caminos, que es lo que permitirá
                 // a Notifications deduplicar con la guarda de 3.6.
                 //
-                // Y se publica DENTRO de la transición, no en un consumer aparte: el
-                // outbox de 4.5 es quien hará que este Publish y el cambio de estado
-                // sean atómicos. Hoy no lo son, y es el mismo agujero de doble
-                // escritura que 3.3 anotó en OrdersController.
+                // Y se publica DENTRO de la transición, no en un consumer aparte.
+                // **Desde 4.5 eso además es atómico**: el UseEntityFrameworkOutbox
+                // del Program.cs hace que este Publish escriba una fila de
+                // OutboxMessage en la misma transacción que guarda el nuevo estado
+                // de la instancia. Hasta 4.4 no lo era, y era el mismo agujero de
+                // doble escritura que 3.3 anotó en OrdersController: la saga podía
+                // pasar a Confirmed y morir antes de que el evento saliera, con lo
+                // que el pedido se quedaba en Pending para siempre. Ni una línea de
+                // esta clase cambió para cerrarlo — se cerró en la composición.
                 .Publish(context => new OrderConfirmed
                 {
                     OrderId = context.Saga.CorrelationId,

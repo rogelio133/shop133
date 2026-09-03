@@ -25,4 +25,41 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.8" />
   </ItemGroup>
 
+  <!--
+    Segundo paquete del proyecto, y entra en 4.5: es el repositorio de saga sobre
+    EF Core y el outbox transaccional. Aporta dos cosas que se usan aqui dentro,
+    y por eso vive aqui y no en Orders.API:
+
+      - Las extensiones AddInboxStateEntity/AddOutboxMessageEntity/
+        AddOutboxStateEntity, que se llaman desde el OnModelCreating de
+        OrdersDbContext. El mapeo de una tabla es trabajo de esta capa.
+      - Los tipos de configuracion que usa el AddMassTransit de Orders.API
+        (EntityFrameworkRepository, AddEntityFrameworkOutbox), que le llegan por
+        transitividad. Es exactamente lo que ya pasa con UseSqlServer: el
+        provider se declara aqui y Program.cs lo usa sin declararlo.
+
+    Descartado declararlo en Orders.API. Compilaria igual, pero pondria una
+    decision de persistencia en la capa equivocada: la regla 5 de CLAUDE.md dice
+    que EF Core es cosa del .Infrastructure, y el unico paquete de EF que la
+    excepciona es .Design, porque las herramientas dotnet-ef lo buscan en el
+    startup project. Este no es ese caso.
+
+    Version 8.5.10, la misma que MassTransit en Orders.Domain y
+    MassTransit.RabbitMQ en las tres .API. Fijarla no es higiene:
+    MassTransitPackages_StayOnMajorVersion8 falla con cualquier cosa que no
+    empiece por "8.", porque la rama 9.x paso a licencia comercial y un
+    "dotnet add package" sin fijar la version instala esa.
+    (No se escribe aqui el nombre del flag: un comentario XML no admite dos
+    guiones seguidos y rompe la build con MSB4025 — anotado en CLAUDE.md desde
+    3.1 y vuelto a pisar en 4.5.)
+
+    Arrastra Microsoft.EntityFrameworkCore.Relational 10.0.0, una version por
+    debajo de la 10.0.8 que trae el provider de arriba. Gana la mas alta, asi que
+    no hay dos EF Core en el grafo; se anota porque el restore lo imprime y
+    parece un conflicto.
+  -->
+  <ItemGroup>
+    <PackageReference Include="MassTransit.EntityFrameworkCore" Version="8.5.10" />
+  </ItemGroup>
+
 </Project>
