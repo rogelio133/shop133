@@ -174,6 +174,22 @@ Three things the test host needs that are not obvious. **Two `UseSetting` calls,
 
 **Nothing of `4.5` is covered by a test.** `OrdersApiFactory` strips every MassTransit descriptor, so the suite has no saga, no outbox and no reordered `Publish` — the 71 tests pass identically against `4.4`'s code. All nine verifications were by hand against the real compose. That is `4.7`'s first job.
 
+**`4.6` is done — Notifications.API stops being an empty template and the choreography finally shows** — see [docs/fase_4_6.md](docs/fase_4_6.md). It creates **`Notifications.Infrastructure`** (asked for and approved; the target layout below was updated with it) and deliberately no `Notifications.Domain` — same criterion as Inventory and Payments. `NotificationsDb` is the **fifth** database and the only one that did not exist from Phase 0, so `db/init/01-create-databases.sql`, `docker-compose.yml` and `.env.example` all gained a fifth entry. Three packages, all already in the repo at those versions. **The architecture suite stays at 16 and the whole repo at 71** — every shape was already covered (precedent of `3.3`/`3.5`: say so rather than invent a rule that never matches). **`Shop133.Contracts` was not touched**: both events have carried `CustomerEmail` since `0.3`, which is exactly what those declarations were promising.
+
+**The queue names are the whole risk of the item, and nothing in the repo can see it.** The consumers are called `OrderConfirmedNotificationConsumer` / `OrderCancelledNotificationConsumer` — **deliberately breaking the "a consumer is named after its message" convention** — because `SetKebabCaseEndpointNameFormatter()` derives the queue from the type name and Orders.API has owned `order-confirmed` / `order-cancelled` since `4.3`. Homonymous classes would make the two services **competing consumers of one queue**, so each event would reach only one of them: half the orders never moving `Order.Status` and the other half never notified, **with no error anywhere**. It is `4.4`'s `queue:release-stock` trap in reverse — there the danger was renaming a consumer, here it is *not* renaming one. The architecture tests read `.csproj` files and paths, never a broker's topology, so **the check is that `order-confirmed` still has exactly ONE consumer**, not that the queues exist. Rejected: an explicit `.Endpoint(e => e.Name = ...)` (leaves two homonymous classes, and a log only prints the short name) and a service-prefixed formatter (leaves Notifications with a naming convention unlike the other four).
+
+**Notifications gains a database, and that does not reverse the `///` those contracts have carried since `0.3`.** That comment says the service "has no database of its own and cannot read OrdersDb", which is why `CustomerEmail` travels inside the event — and every word of it still holds: `notifications_user` has no permission on `OrdersDb`, so either the data arrives in the message or the service cannot work. The database enters for the reason Payments' did in `3.5`: **without a row to consult the consumer cannot be idempotent at all**, and rule 6 has no exceptions. Rejected: an in-memory `MessageId` set (holds while the process lives and is lost on restart — exactly when a redelivery is most likely) and documenting the hole like `StockItem`'s concurrency gap (that is a known ownerless gap, this would be skipping one of the seven rules in the cheapest service to fix).
+
+**The PK of `Notifications` is `(OrderId, Kind)`**, so business idempotency comes free by key, the way Inventory got it in `3.4` and Payments had to write by hand. It deliberately still allows a row of each kind for one order: an order both confirmed and cancelled is a real incoherence, and the thing that prevents it is `Order.Confirm()`/`Cancel()` in `OrdersDb`, not this table. `Notification` is built by two static factories (`Confirmation`/`Cancellation`) exactly like `Payment`, and — the addition over that precedent — **the factory writes the `Subject` and `Body`**, so the text cannot drift from the `Kind`. Its `Truncate()` is the one guard in the file that does not throw, on purpose: `Reason` length is decided by the size of the order (`StockRejected` accumulates one per unservable line), and throwing would leave the customer with **no** email at all rather than a clipped one.
+
+**`NotificationsDbContext` has no outbox tables, and for once the asymmetry with Orders is explained by what the service does rather than by roadmap position: Notifications publishes nothing.** It is the end of the choreography, the only service that purely consumes — no publish, no dual write to close. That also makes it the fifth literal copy of the `AddMassTransit` block whose shared part has *shrunk*: with Orders carrying the outbox, all five now share only the `Host` and the formatter.
+
+**Measured, and it is the point of the item: `OrderConfirmed` and `OrderCancelled` now have two bound queues each** — Orders' and Notifications' — which is `4.1`'s decision 2 made visible between two different services instead of inside one. A cheap order ends `Confirmed` with a `Kind=Confirmation` row; a `1197.00` one ends `Cancelled`, returns its 3 units and the email body carries *"el importe 1197.00 supera el límite autorizado"*; a nonexistent product produces **the same kind of notice** with a different reason — one `Cancellation` for both error paths, as `OrderCancelled`'s `///` promised. Both guards verified by hand: the same `message_id` logs "se descarta" and adds nothing, while a **new** `message_id` sails past the transport guard and is stopped by the PK — and **the two counters diverge on purpose there** (`ProcessedMessages` 3 → 4, `Notifications` stays at 3). Counting only the emails cannot tell *skipped* from *blew up*, which is `3.7`'s trap 3 applied to by-hand verification.
+
+**The guard fires before `dotnet ef` does, and the second error message is the misleading one.** The first `migrations add` failed with *"Falta la configuración 'ConnectionStrings:NotificationsDb'"* followed by `Unable to create a 'DbContext'` blaming `DbContextOptions` — the guard was working, the `UserSecretsId` and the secrets were missing. **Order: `UserSecretsId` in the `.csproj` → `user-secrets set` → `migrations add`.** Also: **`db-init` only re-ran because its `environment` changed**; editing only the `.sql` (a mounted volume) would have left the container untouched and the fifth database uncreated, with a perfectly correct script — that case needs `--force-recreate db-init`. And accented text in a redirected log reads as `estÃ¡` while the SQL Server row is correct: a console codepage artifact, nothing to fix.
+
+**Nothing of `4.6` is covered by a test either, and unlike `3.4`/`3.5` no roadmap item picks up the debt** — `4.7` is the state machine, not this service. That is the largest gap the item opens. When it gets closed, the pattern is `Inventory.Tests`/`Payments.Tests` (a `ServiceCollection` around the consumer, no `WebApplicationFactory`, so still no `public partial class Program { }`), `Category=Docker` because of the database. Two related gaps stay with `8.2`: nothing checks that `Program.cs` registers the consumers, and nothing checks queue-name collisions between services.
+
 **Phase 4 is in progress. `4.1` is done — the saga exists and correlates** — see [docs/fase_4_1.md](docs/fase_4_1.md). `Orders.Domain/Sagas/` holds `OrderState` (the saga instance) and `OrderStateMachine`, and `Orders.Domain` gained its **first `PackageReference` ever**: `MassTransit` **8.5.10** — the core package and not `MassTransit.Abstractions`, because `SagaStateMachineInstance` is in the abstractions but `MassTransitStateMachine<T>` is not, so referencing only the abstractions does not compile. That does not break rule 5, it fulfils it: the exception letting `Orders.Domain` reference `Shop133.Contracts` exists *because* saga state machines live there, and `OrdersDomain_ProjectReferences_ContainOnlyContracts` only inspects `ProjectReference`. The architecture suite went to **16**: `StateMachineFiles_LiveOnlyIn_OrdersDomain` scans `src/**/*StateMachine.cs` and demands `Orders.Domain`, and it was broken on purpose before being trusted.
 
 **The line `0.3` promised and never ran is now live**: `Event(() => OrderCreated, e => e.CorrelateById(m => m.Message.OrderId))`. No contract carries a `CorrelationId` — that was decided against so the correlation key would not be duplicated next to an `OrderId` that always equals it — and `3.3`/`3.4` confirmed the envelope travels with `correlationId: null`. **Scope is deliberately "skeleton + first transition"**: one event, one state (`StockPending`), one `Initially`. The rest of the happy path is `4.2`, the error paths `4.3`. `Order.Status` is still `Pending` and nothing moves it — measured: the `201` response says `"status":"Pending"` while the saga starts alongside it.
@@ -314,7 +330,7 @@ Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed su
 | 1 | Catalog.API | **Code complete** — 1.1–1.7 done; awaiting the PRs to `develop`/`main` and the `fase-1` tag |
 | 2 | Orders.API (synchronous) | **Code complete** — 2.1–2.4 done; awaiting the PRs to `develop`/`main` and the `fase-2` tag |
 | 3 | MassTransit + RabbitMQ messaging | **Code complete** — 3.1–3.7 done; awaiting the PRs to `develop`/`main` and the `fase-3` tag |
-| 4 | Saga + compensations | **In progress** on `feature/fase-4-saga` — 4.1–4.5 done |
+| 4 | Saga + compensations | **In progress** on `feature/fase-4-saga` — 4.1–4.6 done |
 | 5 | YARP Gateway | Not started |
 | 6 | Frontend (MVC + Bootstrap 5) | Not started |
 | 7 | Observability | Not started |
@@ -349,7 +365,7 @@ shop133/
 │   │   ├── Orders/        Orders.API, Orders.Domain (saga), Orders.Infrastructure
 │   │   ├── Payments/      Payments.API, Payments.Infrastructure
 │   │   ├── Inventory/     Inventory.API, Inventory.Infrastructure
-│   │   └── Notifications/ Notifications.API
+│   │   └── Notifications/ Notifications.API, Notifications.Infrastructure
 │   ├── Gateway/           Shop133.Gateway
 │   ├── Frontend/          Shop133.Web
 │   └── Shared/            Shop133.Contracts
@@ -376,7 +392,7 @@ Do not create projects outside this structure without asking.
 
 These are the rules the project exists to teach. Breaking one silently defeats the purpose.
 
-**1. One database per service.** No service opens a connection to another service's database. Not for a "quick read", not for a join, not for a report. If a service needs another's data, it gets it through an event or an API call. `CatalogDb`, `OrdersDb`, `InventoryDb`, `PaymentsDb` each have exactly one owner. Since Phase 0.4 this is enforced by SQL Server, not by convention: each service connects with its own login (`catalog_user`, `orders_user`, …) that has `db_owner` on its own database and no access at all to the others. Reaching for a neighbour's database fails with `Msg 916`. Never "fix" that by switching a service to `sa`.
+**1. One database per service.** No service opens a connection to another service's database. Not for a "quick read", not for a join, not for a report. If a service needs another's data, it gets it through an event or an API call. `CatalogDb`, `OrdersDb`, `InventoryDb`, `PaymentsDb` and `NotificationsDb` each have exactly one owner. Since Phase 0.4 this is enforced by SQL Server, not by convention: each service connects with its own login (`catalog_user`, `orders_user`, …) that has `db_owner` on its own database and no access at all to the others. Reaching for a neighbour's database fails with `Msg 916`. Never "fix" that by switching a service to `sa`.
 
 **2. Services communicate through events.** From Phase 3 onward, cross-service communication goes through RabbitMQ. The synchronous `HttpClient` call from Orders → Catalog was *deliberate technical debt* meant to make the coupling painful — **and it was deleted in `3.3`**, along with its config key, its tests and its NuGet package; there is no longer a single `HttpClient` in Orders.API. That deletion is the reference for the next one: the debt lived in one folder so it could go in one piece. No new cross-service HTTP call may be added. This rule **cannot be enforced by the architecture tests** — `HttpClient` is in the shared framework and leaves no trace in a `.csproj`, so it rests on review.
 
@@ -396,7 +412,7 @@ These are the rules the project exists to teach. Breaking one silently defeats t
 - **Events are past tense** and are `record` types: `OrderCreated`, `StockReserved`, `StockRejected`, `PaymentCompleted`, `PaymentFailed`, `OrderConfirmed`, `OrderCancelled`.
 - **Commands are imperative**: `ReserveStock`, `ReleaseStock`.
 - **Assembly naming**: shared/infrastructure projects take the `Shop133.` prefix (`Shop133.Contracts`, `Shop133.Gateway`, `Shop133.Web`); service projects do not (`Catalog.API`, `Orders.Domain`).
-- **Databases**: `CatalogDb`, `OrdersDb`, `InventoryDb`, `PaymentsDb`. The saga state is persisted in `OrdersDb`.
+- **Databases**: `CatalogDb`, `OrdersDb`, `InventoryDb`, `PaymentsDb` and, since `4.6`, `NotificationsDb` — the only one that did not exist from Phase 0. The saga state is persisted in `OrdersDb`.
 - **Secrets** go in User Secrets or environment variables, never in `appsettings.json`.
 - **Controllers** live in `Controllers/`, are named `<Plural>Controller`, and carry `[ApiController]` + `[Route("[controller]")]`. Keep them thin: bind, delegate, return `ActionResult<T>`. Business logic belongs in `.Infrastructure`/`.Domain`, not in the action. MassTransit consumers are *not* controllers — they live in `Consumers/` from Phase 3 on.
 
@@ -437,7 +453,7 @@ Tests are not a phase. They are numbered items spread across the roadmap — `0.
 
 The reference rules read the **`.csproj` files**, not the compiled assemblies: Roslyn prunes unused references from the manifest, so with service projects still empty an assembly-level check would pass vacuously. `ProjectGraph.cs` is that reader; add new reference rules on top of it. Rules about *types* (records, immutability) use plain reflection, and `NetArchTest` covers the one namespace-dependency assertion.
 
-**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`. Since `4.4`: **16 `Fast`** (`Shop133.ArchitectureTests`) and **55 `Docker`** (19 `Catalog.Tests` + 12 `Orders.Tests` + 15 `Inventory.Tests` + 9 `Payments.Tests`), **71 in total**. Orders went 17 → 10 in `3.3` (the seven that tested the synchronous debt) and 10 → 12 in `3.7` (it can finally assert the publish); Inventory went 9 → 15 in `4.4`. **The saga itself still has no test** — that is `4.7`, and it is the largest gap in the suite right now.
+**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`. Since `4.4`: **16 `Fast`** (`Shop133.ArchitectureTests`) and **55 `Docker`** (19 `Catalog.Tests` + 12 `Orders.Tests` + 15 `Inventory.Tests` + 9 `Payments.Tests`), **71 in total**. Orders went 17 → 10 in `3.3` (the seven that tested the synchronous debt) and 10 → 12 in `3.7` (it can finally assert the publish); Inventory went 9 → 15 in `4.4`. `4.5` and `4.6` both added **zero** tests, and both were re-run green at 71 after the fact. **The saga itself still has no test** — that is `4.7`, and it is the largest gap in the suite right now. **Notifications has none either and no roadmap item owns that one**: `4.7` is the state machine, so unlike `3.4`/`3.5` — whose by-hand verification `3.7` picked up — `4.6`'s debt has no scheduled collector. When it is written, the pattern is `Inventory.Tests`/`Payments.Tests` (a `ServiceCollection` around the consumer, no `WebApplicationFactory`) and it is `Category=Docker`, because of `NotificationsDb`.
 
 **Since `3.7` no test needs RabbitMQ — measured with the broker stopped, `Orders.Tests` passes 12/12.** `OrdersApiFactory` strips the RabbitMQ bus MassTransit registered and puts the in-memory harness in its place; the two consumer suites never used a broker. Docker is still required for SQL Server: the harness replaces the **broker**, not the database, and rule 1 above bars the InMemory provider. This reverses the `3.3`–`3.6` state where `docker compose up -d` was a prerequisite.
 
@@ -523,28 +539,45 @@ dotnet run --project src/Services/Catalog/Catalog.API   # 5124
 # It does need RabbitMQ — a Publish with the broker down hangs rather than fails.
 dotnet run --project src/Services/Orders/Orders.API      # 5189
 
-# Since 3.1 these three also connect to RabbitMQ on startup. A dead broker does
-# NOT stop them booting — it logs `warn: Connection Failed` and retries. They all
-# need ConnectionStrings:RabbitMq in User Secrets:
+# Since 3.1 these also connect to RabbitMQ on startup (Notifications since 4.6).
+# A dead broker does NOT stop them booting — it logs `warn: Connection Failed` and
+# retries. They all need ConnectionStrings:RabbitMq in User Secrets:
 #   dotnet user-secrets set "ConnectionStrings:RabbitMq" `
 #     "amqp://guest:guest@localhost:5672" --project src/Services/Orders/Orders.API
 # Since 3.4 Inventory ALSO needs ConnectionStrings:InventoryDb in User Secrets,
-# and since 3.5 Payments needs ConnectionStrings:PaymentsDb. User Secrets only
+# since 3.5 Payments needs ConnectionStrings:PaymentsDb, and since 4.6
+# Notifications needs ConnectionStrings:NotificationsDb. User Secrets only
 # load in Development — `--no-launch-profile` makes the guard fire with the secret
 # perfectly set, and so does running bin/<cfg>/<svc>.exe directly (it skips
 # launchSettings.json). Use `--launch-profile http`, or set the variable by hand.
 dotnet run --project src/Services/Inventory/Inventory.API  # 5015
 dotnet run --project src/Services/Payments/Payments.API    # 5156
+# Notifications.API has NO HTTP endpoint at all (its Controllers/ folder is empty)
+# — everything it does happens in its two consumers. Port 5043 only serves the
+# OpenAPI document.
+dotnet run --project src/Services/Notifications/Notifications.API  # 5043
 
-# Inspect the broker without the UI. Since 4.4 there are SIX queues:
+# Inspect the broker without the UI. Since 4.6 there are EIGHT queues:
 # `order-created` (Inventory), `stock-reserved` (Payments), `order-state` (the
 # saga — the name comes from the INSTANCE type, OrderState, not from the state
-# machine), `order-confirmed`/`order-cancelled` (Orders' own two consumers) and
-# `release-stock` (Inventory's second consumer, the compensation).
-# `OrderCreated` and `StockReserved` each have TWO bindings — a service consumer
-# and the saga observing the same fanout, not a relay: 4.1's decision 2 made
-# visible. Their `_error` siblings are created lazily on the first fault, so
-# absence means nothing.
+# machine), `order-confirmed`/`order-cancelled` (Orders' own two consumers),
+# `release-stock` (Inventory's second consumer, the compensation) and
+# `order-confirmed-notification`/`order-cancelled-notification` (Notifications).
+# FOUR exchanges now have TWO bindings each: `OrderCreated` and `StockReserved`
+# (a service consumer plus the saga observing the same fanout, not a relay) and,
+# since 4.6, `OrderConfirmed` and `OrderCancelled` (Orders plus Notifications).
+# That last pair is 4.1's decision 2 made visible between two DIFFERENT services.
+# Their `_error` siblings are created lazily on the first fault, so absence means
+# nothing.
+#
+# THE CHECK THAT MATTERS HERE IS THE CONSUMER COUNT, NOT THE QUEUE LIST. The
+# kebab formatter derives a queue name from the consumer type, so two services
+# with homonymous consumer classes silently share ONE queue and become competing
+# consumers — each event reaching only one of them, with no error anywhere. That
+# is why Notifications' consumers are named ...NotificationConsumer, breaking the
+# project's naming convention on purpose (4.6). If `order-confirmed` ever shows
+# `consumers = 2`, the collision is back. No architecture test can see this: they
+# read .csproj files and paths, never a broker's topology.
 # **Nothing publishes into the void any more.** 4.3 gave StockRejected and
 # PaymentFailed their first bound queue and created the OrderCancelled exchange;
 # 4.4 adds `Shop133.Contracts.Commands:ReleaseStock` -> release-stock (the only
@@ -623,10 +656,16 @@ dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll -cl
 # Control); re-run it, do not downgrade the package.
 
 # EF Core migrations — DbContext lives in Infrastructure, host in API.
-# All four services have one since 3.5: swap Catalog for Orders, Inventory or
-# Payments in both paths. To keep a seed OUT of InitialCreate (as 1.4 and 3.4 both
-# did), there is no flag: comment out the HasData line, generate the schema
-# migration, uncomment it, then generate the seed migration.
+# All FIVE services have one since 4.6: swap Catalog for Orders, Inventory,
+# Payments or Notifications in both paths. To keep a seed OUT of InitialCreate (as
+# 1.4 and 3.4 both did), there is no flag: comment out the HasData line, generate
+# the schema migration, uncomment it, then generate the seed migration.
+#
+# ORDER MATTERS ON A BRAND-NEW SERVICE (measured in 4.6): <UserSecretsId> in the
+# .csproj -> `dotnet user-secrets set` -> `migrations add`. Skip the first two and
+# the Program.cs config guard fires during `migrations add`, which then reports
+# "Unable to create a 'DbContext'" blaming DbContextOptions. The guard is right;
+# the second message is the misleading one.
 #
 # If either command dies with "Could not load assembly '<X>.Infrastructure'",
 # read it with -v before believing the message: in 3.5 the real cause was Smart

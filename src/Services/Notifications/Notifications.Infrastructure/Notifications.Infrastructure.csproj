@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!--
+    Sin ningun ProjectReference, igual que Inventory.Infrastructure (3.4) y
+    Payments.Infrastructure (3.5), y por el mismo motivo.
+
+    Notifications no tiene capa de dominio: la saga vive en Orders.Domain, y lo
+    que hay aqui es el registro de un email simulado, no reglas de negocio. Mismo
+    criterio que llevo a Catalog (1.1), Inventory (3.4) y Payments (3.5) a no
+    tenerla.
+
+    Y tampoco referencia Shop133.Contracts: quien traduce un OrderConfirmed o un
+    OrderCancelled en una fila de Notifications es el consumer, y el consumer vive
+    en la API. Si algun dia una entidad de aqui necesita un tipo de Contracts, esa
+    es la senal de que la traduccion se ha colado en la capa equivocada.
+  -->
+
+  <!--
+    Unico paquete del proyecto. El provider de SQL Server arrastra
+    Microsoft.EntityFrameworkCore y .Relational, asi que no hace falta
+    declararlos aparte.
+
+    Version 10.0.8, la misma que los otros tres .Infrastructure: es la que tiene
+    instalada la herramienta global dotnet-ef. Va por detras del 10.0.11 de
+    Microsoft.AspNetCore.OpenApi a proposito - no es un descuido.
+
+    Aqui y no en Notifications.API: lo comprueba el test de arquitectura
+    EfCorePackages_LiveOnlyIn_InfrastructureProjects, que solo le permite a un
+    proyecto .API declarar Microsoft.EntityFrameworkCore.Design.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.8" />
+  </ItemGroup>
+
+</Project>

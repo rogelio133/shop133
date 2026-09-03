@@ -48,5 +48,6 @@ Documentos de procedimiento, no ligados a un punto del roadmap. No siguen la con
 | 4.3 | Caminos de error de la saga y los dos primeros consumers de Orders.API | 2026-09-02 | [fase_4_3.md](fase_4_3.md) |
 | 4.4 | La compensación: `ReleaseStock`, `StockReleased` y `CompensatingStock` | 2026-09-02 | [fase_4_4.md](fase_4_4.md) |
 | 4.5 | La saga persistida en `OrdersDb` y el outbox transaccional | 2026-09-02 | [fase_4_5.md](fase_4_5.md) |
+| 4.6 | Notifications.API consume `OrderConfirmed`/`OrderCancelled` y "manda" el email | 2026-09-03 | [fase_4_6.md](fase_4_6.md) |
 
 El punto **0.1** (crear solución y estructura de carpetas) se completó antes de que existiera esta convención y no se documentó retroactivamente.

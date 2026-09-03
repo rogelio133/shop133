@@ -51,8 +51,9 @@ services:
     networks:
       - shop133-net
 
-  # Crea las 4 bases (CatalogDb, OrdersDb, InventoryDb, PaymentsDb) y un login
-  # por servicio con permiso SOLO sobre la suya. Arranca, ejecuta el script y
+  # Crea las 5 bases (CatalogDb, OrdersDb, InventoryDb, PaymentsDb y, desde 4.6,
+  # NotificationsDb) y un login por servicio con permiso SOLO sobre la suya.
+  # Arranca, ejecuta el script y
   # sale con 0: no es un servicio de larga vida, por eso no lleva healthcheck
   # ni restart. Con "docker compose ps" no aparece; hace falta "ps -a".
   #
@@ -75,6 +76,9 @@ services:
       - ORDERS_DB_PASSWORD=${ORDERS_DB_PASSWORD}
       - INVENTORY_DB_PASSWORD=${INVENTORY_DB_PASSWORD}
       - PAYMENTS_DB_PASSWORD=${PAYMENTS_DB_PASSWORD}
+      # La quinta, desde 4.6. Sin ella sqlcmd sustituye $(NOTIFICATIONS_DB_PASSWORD)
+      # por vacio, el CREATE LOGIN falla contra CHECK_POLICY y db-init sale != 0.
+      - NOTIFICATIONS_DB_PASSWORD=${NOTIFICATIONS_DB_PASSWORD}
     volumes:
       - ./db/init:/db-init:ro
     # entrypoint OBLIGATORIO: el de la imagen arranca el motor de SQL Server.

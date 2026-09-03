@@ -128,6 +128,39 @@ ALTER ROLE db_owner ADD MEMBER payments_user;
 GO
 
 -- ============================================================
+-- Notifications  (Fase 4.6)
+-- ============================================================
+--
+-- La quinta base, y la unica que no nacio en la Fase 0. Entra en 4.6 porque el
+-- consumer de Notifications no puede cumplir la regla 6 sin una fila que
+-- consultar — mismo motivo por el que Payments gano la suya en 3.5.
+--
+-- Que Notifications tenga base NO le da acceso a nada ajeno: sigue sin poder
+-- leer OrdersDb, y por eso el CustomerEmail viaja dentro de OrderConfirmed y
+-- OrderCancelled.
+USE master;
+GO
+
+IF DB_ID('NotificationsDb') IS NULL
+    CREATE DATABASE NotificationsDb;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'notifications_user')
+    CREATE LOGIN notifications_user
+        WITH PASSWORD = '$(NOTIFICATIONS_DB_PASSWORD)',
+             DEFAULT_DATABASE = NotificationsDb,
+             CHECK_POLICY = ON;
+GO
+
+USE NotificationsDb;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'notifications_user')
+    CREATE USER notifications_user FOR LOGIN notifications_user;
+ALTER ROLE db_owner ADD MEMBER notifications_user;
+GO
+
+-- ============================================================
 -- Resumen: lo que se vera en "docker compose logs db-init"
 -- ============================================================
 USE master;
@@ -140,6 +173,6 @@ SELECT CAST(d.name AS varchar(16))                        AS [database],
 FROM sys.databases d
 LEFT JOIN sys.server_principals p
        ON p.name = LOWER(REPLACE(d.name, 'Db', '')) + '_user'
-WHERE d.name IN ('CatalogDb', 'OrdersDb', 'InventoryDb', 'PaymentsDb')
+WHERE d.name IN ('CatalogDb', 'OrdersDb', 'InventoryDb', 'PaymentsDb', 'NotificationsDb')
 ORDER BY d.name;
 GO
