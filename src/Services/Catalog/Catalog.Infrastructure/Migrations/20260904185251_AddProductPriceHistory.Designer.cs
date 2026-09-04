@@ -4,6 +4,7 @@ using Catalog.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Catalog.Infrastructure.Migrations
 {
     [DbContext(typeof(CatalogDbContext))]
-    partial class CatalogDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260904185251_AddProductPriceHistory")]
+    partial class AddProductPriceHistory
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -68,28 +71,6 @@ namespace Catalog.Infrastructure.Migrations
                             Id = 5,
                             Name = "Libretas"
                         });
-                });
-
-            modelBuilder.Entity("Catalog.Infrastructure.Entities.ProcessedMessage", b =>
-                {
-                    b.Property<Guid>("MessageId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("ConsumerName")
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
-                    b.Property<string>("MessageType")
-                        .IsRequired()
-                        .HasMaxLength(250)
-                        .HasColumnType("nvarchar(250)");
-
-                    b.Property<DateTimeOffset>("ProcessedAt")
-                        .HasColumnType("datetimeoffset");
-
-                    b.HasKey("MessageId", "ConsumerName");
-
-                    b.ToTable("ProcessedMessages", (string)null);
                 });
 
             modelBuilder.Entity("Catalog.Infrastructure.Entities.Product", b =>

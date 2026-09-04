@@ -50,5 +50,6 @@ Documentos de procedimiento, no ligados a un punto del roadmap. No siguen la con
 | 4.5 | La saga persistida en `OrdersDb` y el outbox transaccional | 2026-09-02 | [fase_4_5.md](fase_4_5.md) |
 | 4.6 | Notifications.API consume `OrderConfirmed`/`OrderCancelled` y "manda" el email | 2026-09-03 | [fase_4_6.md](fase_4_6.md) |
 | 4.7 | Los cuatro escenarios obligatorios contra `OrderStateMachine` con el harness | 2026-09-03 | [fase_4_7.md](fase_4_7.md) |
+| 4.8 | Catalog.API estrena MassTransit y valida la foto de precios del pedido | 2026-09-04 | [fase_4_8.md](fase_4_8.md) |
 
 El punto **0.1** (crear solución y estructura de carpetas) se completó antes de que existiera esta convención y no se documentó retroactivamente.

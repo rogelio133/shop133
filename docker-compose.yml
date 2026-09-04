@@ -154,6 +154,22 @@ services:
         # el script saldria con 0 aunque fallara y "completed successfully"
         # seria mentira.
         condition: service_completed_successfully
+      # Anadido en 4.8, cuando Catalog.API estreno MassTransit.
+      #
+      # ES ORDEN, NO CORRECCION, y conviene no confundirlo: 3.1 midio que un
+      # broker caido NO impide arrancar a un servicio con MassTransit — loguea
+      # "warn: Connection Failed", reintenta con backoff y se reconecta solo
+      # cuando el broker vuelve. Asi que sin esta guarda el contenedor arranca
+      # igual. Lo que se compra son ~30 s sin ruido de reintentos en un "up -d"
+      # en frio; lo que se paga es que "up -d" ahora espera al healthcheck de
+      # rabbitmq (start_period 30s).
+      #
+      # A diferencia de db-init, rabbitmq SI tiene healthcheck, asi que aqui
+      # service_healthy esta disponible y es la condicion correcta: con
+      # service_started el contenedor arrancaria contra un broker que todavia
+      # esta levantando el nodo.
+      rabbitmq:
+        condition: service_healthy
     environment:
       # Explicito aunque Production ya es el valor por defecto cuando la
       # variable no esta: la decision de 1.5 de quitar la guarda IsDevelopment()
@@ -180,6 +196,29 @@ services:
       # certificado de SQL Server es autofirmado (mismo motivo que el -C de
       # sqlcmd).
       - "ConnectionStrings__CatalogDb=Server=sqlserver,1433;Database=CatalogDb;User Id=catalog_user;Password=${CATALOG_DB_PASSWORD};TrustServerCertificate=True"
+      # OBLIGATORIA desde 4.8, no opcional: la guarda de Program.cs lanza ANTES
+      # de app.Build(), y en Production los User Secrets no se cargan. Sin esta
+      # linea el contenedor muere al arrancar en el proximo "up -d --build".
+      # catalog-api es el unico servicio contenedorizado, asi que es el unico
+      # sitio del compose donde esto hace falta.
+      #
+      # Host "rabbitmq" — el nombre del SERVICIO dentro de shop133-net.
+      # "localhost" aqui apuntaria al propio contenedor de la API (el aviso de
+      # cabecera de este archivo, otra vez).
+      #
+      # Se construye en linea desde las MISMAS dos variables que consume el
+      # servicio rabbitmq de mas arriba, con el argumento identico que uso 1.6
+      # para ${CATALOG_DB_PASSWORD}: dos copias de una credencial divergen, y el
+      # sintoma (ACCESS_REFUSED) no senala a la copia vieja. Por eso .env.example
+      # no necesita ninguna clave nueva.
+      #
+      # Sobre el aviso que CLAUDE.md arrastra desde 3.2 ("guest solo autentica
+      # desde localhost, problema el dia que los servicios tengan contenedores"):
+      # ese dia es hoy, y NO aplica. La imagen oficial de RabbitMQ trae
+      # loopback_users.guest = false en /etc/rabbitmq/conf.d/10-defaults.conf, asi
+      # que guest autentica sobre shop133-net. El aviso describe una instalacion
+      # de RabbitMQ de serie, no esta imagen.
+      - "ConnectionStrings__RabbitMq=amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672"
     # Sin healthcheck a proposito: no hay endpoint /health hasta 8.4, y la
     # imagen aspnet de .NET 8+ ya no incluye curl ni wget, asi que cualquier
     # test: HTTP fallaria siempre y dejaria el contenedor en unhealthy.
