@@ -10,6 +10,29 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
     <PackageReference Include="Scalar.AspNetCore" Version="2.14.14" />
+
+    <!--
+      Anadido en 4.8, cuando Catalog dejo de ser el unico servicio sin mensajeria:
+      consume OrderCreated para validar la foto de precios del pedido.
+
+      Version 8.5.10, la misma que los otros cuatro servicios. El major va PINNED
+      a proposito y lo comprueba el test MassTransitPackages_StayOnMajorVersion8:
+      MassTransit 9 cambio a licencia comercial, y "dotnet add package" sin
+      version instalaria esa. Nunca subir a 9.x sin preguntar. Y ojo: ese test
+      cuenta un atributo Version ausente o vacio como violacion, asi que la
+      version tiene que estar escrita aqui y no delegada a ningun otro sitio.
+
+      Solo el transporte: arrastra el paquete core, igual que el provider de SQL
+      Server arrastra Microsoft.EntityFrameworkCore.
+
+      Va en el .API y NO en Catalog.Infrastructure, como en los otros cuatro
+      servicios: el consumer vive en Consumers/ de este proyecto, y la unica
+      MassTransit que llega a un .Infrastructure en todo el repo es la
+      MassTransit.EntityFrameworkCore del outbox de Orders (4.5), que esta ahi
+      porque configura el modelo.
+    -->
+    <PackageReference Include="MassTransit.RabbitMQ" Version="8.5.10" />
+
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.8" PrivateAssets="all" />
   </ItemGroup>
 

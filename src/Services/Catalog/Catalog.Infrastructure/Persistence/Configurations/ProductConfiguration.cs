@@ -68,6 +68,30 @@ internal sealed class ProductConfiguration : IEntityTypeConfiguration<Product>
         builder.Property(product => product.Price)
             .HasPrecision(18, 2);
 
+        // ── La memoria de un precio (4.8) ──
+        //
+        // Las dos son opcionales y eso es el modelo, no una concesión: null
+        // significa "este producto nunca ha cambiado de precio", que es cierto de
+        // las 50 filas del seed. Por eso HasData no necesita tocarse — omitir una
+        // columna nullable es legal, y las filas quedan a NULL.
+        //
+        // La precisión se declara igual que en Price, y por el mismo motivo: es
+        // una columna de dinero, y dejarla implícita haría que un cambio de
+        // proveedor le moviera el tipo sin que nadie lo notara. Que las dos
+        // columnas de precio tengan la MISMA precisión no es cosmético — un
+        // decimal(18,2) comparado contra un decimal(18,4) redondearía en el motor
+        // y volvería auténtico un precio que no lo es.
+        builder.Property(product => product.PreviousPrice)
+            .IsRequired(false)
+            .HasPrecision(18, 2);
+
+        // Sin índice, deliberadamente: nadie consulta por esta columna. El
+        // consumer de 4.8 llega al producto por su Id (la PK) y lee la fecha ya
+        // materializada. El día que aparezca una consulta "productos cuyo precio
+        // cambió esta semana", aparecerá con su índice.
+        builder.Property(product => product.PriceChangedAt)
+            .IsRequired(false);
+
         builder.Property(product => product.Stock)
             .IsRequired();
 

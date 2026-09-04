@@ -1,4 +1,8 @@
-﻿using Catalog.Infrastructure.Persistence;
+﻿using Catalog.API;
+using Catalog.API.Consumers;
+using Catalog.Infrastructure.Persistence;
+
+using MassTransit;
 
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi;
@@ -56,6 +60,95 @@ var connectionString = builder.Configuration.GetConnectionString("CatalogDb")
 // arranque esconde el paso y no sobrevive a más de una instancia del servicio.
 builder.Services.AddDbContext<CatalogDbContext>(options =>
     options.UseSqlServer(connectionString));
+
+// --- Validación de la foto de precios (4.8) ---------------------------------
+//
+// Sin guarda, a propósito y al contrario que las dos claves de arriba y abajo:
+// tiene un valor por defecto sensato y su ausencia no deja el servicio a medias.
+// Mismo criterio literal que Payments:DeclineAmountAbove en 3.5. Ver el /// de
+// PricingValidationOptions, donde está el argumento entero.
+builder.Services.Configure<PricingValidationOptions>(
+    builder.Configuration.GetSection(PricingValidationOptions.SectionName));
+
+// --- Mensajería (4.8) -------------------------------------------------------
+//
+// Catalog era el ÚNICO de los cinco servicios sin MassTransit: desde 1.6 solo se
+// le podía hablar por HTTP, y 3.3 borró la última llamada síncrona que alguien le
+// hacía. Entra ahora porque 4.8 le da dueño al importe del pedido — ver el /// de
+// OrderCreatedPricingConsumer.
+//
+// El URI de RabbitMQ vive en User Secrets porque lleva usuario y contraseña,
+// igual que en los otros cuatro servicios desde 3.1.
+//
+// La guarda no es decorativa. Sin ella la clave ausente no falla aquí: falla al
+// arrancar el bus, dentro de un hosted service, con un mensaje que no menciona la
+// configuración. Aquí revienta antes de app.Build(), diciendo qué falta.
+//
+// Y tiene dos consecuencias fuera de este archivo que hay que recordar juntas,
+// porque las dos rompen algo que ya funcionaba:
+//
+//   1. Catalog.Tests. La regla que escribió 3.1: cada guarda nueva en un
+//      Program.cs es una línea nueva en la fábrica de su suite, porque
+//      WebApplicationFactory<Program> ejecuta este archivo y esta línea lanza
+//      ANTES de app.Build(), así que ConfigureTestServices no llega a tener turno.
+//      Sin tocar CatalogApiFactory, los 19 tests de 1.7 van a rojo en el
+//      constructor.
+//
+//   2. El contenedor. catalog-api es el único servicio contenedorizado (1.6) y en
+//      Production NO se cargan User Secrets, así que docker-compose.yml tiene que
+//      traer ConnectionStrings__RabbitMq o el contenedor muere al arrancar.
+var rabbitMqConnectionString = builder.Configuration.GetConnectionString("RabbitMq")
+    ?? throw new InvalidOperationException(
+        "Falta la configuración 'ConnectionStrings:RabbitMq'. En local vive en User Secrets: " +
+        "dotnet user-secrets set \"ConnectionStrings:RabbitMq\" \"amqp://guest:guest@localhost:5672\" " +
+        "--project src/Services/Catalog/Catalog.API");
+
+// Sexta copia casi literal del bloque de Orders, Inventory, Payments y
+// Notifications, y sigue SIN extraerse. La revisión se cerró en 3.5 y se
+// reconfirmó en 4.5 y 4.6: lo único que diverge entre servicios son los
+// AddConsumer, que es justo lo que no se puede compartir.
+//
+// Como el de Notifications y al revés que el de Orders, **este bloque no configura
+// ningún outbox**. El motivo aquí no es que Catalog no publique —publica dos
+// eventos— sino que su consumer no hace ninguna escritura de negocio con la que
+// hubiera que casar el mensaje: lo único que escribe es la marca de idempotencia.
+// El agujero que queda está anotado en el consumer.
+builder.Services.AddMassTransit(x =>
+{
+    // ── El nombre de esta clase es load-bearing, igual que en 4.6 ──
+    //
+    // El formatter de abajo deriva la cola del nombre del tipo menos el sufijo
+    // "Consumer", así que ésta da "order-created-pricing".
+    //
+    // Llamarla OrderCreatedConsumer —que es lo que pide la convención del
+    // proyecto— daría "order-created", que **ya es de Inventory.API desde 3.4**.
+    // Dos servicios sobre la misma cola no son dos suscriptores del fanout: son
+    // consumidores COMPETIDORES, y cada OrderCreated llegaría solo a uno de los
+    // dos, sin un solo error en ningún log. Ver el /// del consumer.
+    x.AddConsumer<OrderCreatedPricingConsumer>();
+
+    // Kebab-case en minúsculas, el mismo formatter que los otros cuatro servicios
+    // desde 3.1.
+    x.SetKebabCaseEndpointNameFormatter();
+
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        // Host(Uri) saca usuario y contraseña del userinfo del URI, así que no
+        // hacen falta h.Username()/h.Password() por separado.
+        cfg.Host(new Uri(rabbitMqConnectionString));
+
+        // Sin esta línea el AddConsumer de arriba no crea ningún receive endpoint
+        // y el mensaje se pierde en silencio: el fallo más caro de diagnosticar de
+        // la Fase 3, y el motivo por el que 3.1 la dejó puesta cuando todavía no
+        // hacía nada.
+        //
+        // La prueba de que funcionó es la línea "Configured endpoint
+        // order-created-pricing, Consumer: ..." en el log de arranque, antes de
+        // "Bus started". Esa línea es además la fuente de verdad del nombre de la
+        // cola, del que depende toda la propiedad de seguridad de arriba.
+        cfg.ConfigureEndpoints(context);
+    });
+});
 
 var app = builder.Build();
 

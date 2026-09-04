@@ -4,14 +4,49 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!--
+      Anadido en 4.6, con "dotnet user-secrets init". Sin el, este proyecto no
+      tiene donde guardar ConnectionStrings:NotificationsDb ni
+      ConnectionStrings:RabbitMq, y las dos guardas de Program.cs reventarian
+      siempre. Mismo caso que Inventory.API y Payments.API en 3.1.
+    -->
+    <UserSecretsId>b2f0a3d1-7c4e-4a58-9e26-3f1c8d5b0a74</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
+
+    <!--
+      Version 8.5.10, la misma que los otros cuatro servicios. El major va PINNED
+      a proposito y lo comprueba el test MassTransitPackages_StayOnMajorVersion8:
+      MassTransit 9 cambio a licencia comercial, y "dotnet add package" sin
+      version instalaria esa. Nunca subir a 9.x sin preguntar.
+
+      Solo el transporte: arrastra el paquete core, igual que el provider de SQL
+      Server arrastra Microsoft.EntityFrameworkCore.
+    -->
+    <PackageReference Include="MassTransit.RabbitMQ" Version="8.5.10" />
+
+    <!--
+      El unico sitio donde EF Core se permite fuera de un proyecto
+      .Infrastructure, y el test EfCorePackages_LiveOnlyIn_InfrastructureProjects
+      lo dice literalmente: la herramienta dotnet ef busca este paquete en el
+      proyecto de arranque, no en el que tiene el DbContext.
+
+      PrivateAssets="all" porque es una dependencia de tiempo de diseno: no debe
+      propagarse a quien referencie este proyecto ni acabar en una imagen. Mismo
+      criterio que en Catalog.API (1.2), Orders.API (2.2), Inventory.API (3.4) y
+      Payments.API (3.5).
+
+      Version 10.0.8, la de Notifications.Infrastructure y la de la herramienta
+      global dotnet-ef.
+    -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.8" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\Shared\Shop133.Contracts\Shop133.Contracts.csproj" />
+    <ProjectReference Include="..\Notifications.Infrastructure\Notifications.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

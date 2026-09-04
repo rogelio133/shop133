@@ -157,13 +157,10 @@ public sealed class Order
     public string CustomerEmail { get; private set; }
 
     /// <summary>
-    /// En qué punto está el pedido. **No hay vía de mutación todavía**, y es
-    /// deliberado: en la Fase 2 solo se alcanza <see cref="OrderStatus.Pending"/>,
-    /// y quien mueve el estado es la OrderStateMachine. Escribir ahora
-    /// <c>Confirm()</c> y <c>Cancel()</c> sería inventarles la firma antes de
-    /// tener el caso de uso — exactamente lo que 1.1 evitó dejando a
-    /// <c>Product</c> sin <c>Update()</c> hasta que 1.3 lo necesitó. Entran en
-    /// 4.2 y 4.3, con sus guardas de transición y la máquina de estados delante.
+    /// En qué punto está el pedido. Se mueve con <see cref="Confirm"/> y
+    /// <see cref="Cancel"/> desde 4.3; hasta entonces no había vía de mutación a
+    /// propósito, porque no había caso de uso — el mismo criterio que dejó a
+    /// <c>Product</c> sin <c>Update()</c> hasta que 1.3 lo necesitó.
     /// </summary>
     public OrderStatus Status { get; private set; }
 
@@ -210,6 +207,62 @@ public sealed class Order
     /// decimal de solo lectura e intentaría crearle una columna.
     /// </summary>
     public decimal Total => _items.Sum(item => item.Subtotal);
+
+    /// <summary>
+    /// Da el pedido por bueno: stock reservado y cobro aceptado.
+    ///
+    /// Lo llama <c>OrderConfirmedConsumer</c> (Orders.API, 4.3) al recibir el
+    /// <c>OrderConfirmed</c> que publica la saga. **No lo llama la saga**: vive en
+    /// este mismo proyecto pero no puede tocar <c>OrdersDbContext</c> —la flecha va
+    /// .API → .Infrastructure → .Domain, regla 5—, así que el camino entre "la saga
+    /// terminó" y "la fila cambió" pasa obligatoriamente por un mensaje y un
+    /// consumer. Es el precio de la regla, y hace visible que hay una ventana entre
+    /// las dos cosas.
+    /// </summary>
+    public void Confirm() => TransitionTo(OrderStatus.Confirmed);
+
+    /// <summary>
+    /// Cierra el pedido sin completarlo. Lo llama <c>OrderCancelledConsumer</c>.
+    ///
+    /// **No recibe el motivo**, aunque <c>OrderCancelled</c> lo traiga: el pedido
+    /// no distingue por qué se canceló —lo dice el <c>///</c> de
+    /// <see cref="OrderStatus.Cancelled"/> desde 2.1— y guardarlo aquí sería una
+    /// columna nueva, una migración y un texto duplicado del que ya viaja en el
+    /// evento hacia Notifications (4.6). Si algún día la interfaz tiene que
+    /// enseñarle al cliente por qué se canceló su pedido, entra entonces con su
+    /// caso de uso delante.
+    /// </summary>
+    public void Cancel() => TransitionTo(OrderStatus.Cancelled);
+
+    /// <summary>
+    /// La única puerta por la que cambia <see cref="Status"/>.
+    ///
+    /// **Solo se sale de <see cref="OrderStatus.Pending"/>**: los otros dos estados
+    /// son finales, así que cualquier otra transición —incluida la que va a donde
+    /// ya se está— lanza. No es rigidez: un <c>Confirm()</c> sobre un pedido ya
+    /// cancelado significa que la saga y la base no cuentan la misma historia, y
+    /// eso hay que verlo, no absorberlo.
+    ///
+    /// Y por eso **el duplicado no se distingue aquí**. Recibir dos veces el mismo
+    /// <c>OrderConfirmed</c> es normal —RabbitMQ entrega al menos una vez— y no es
+    /// una incoherencia; quien lo reconoce es el consumer, que comprueba el estado
+    /// y sale en silencio antes de llegar a esta línea. Si esta excepción salta, es
+    /// que la guarda del consumer falló. Mezclar las dos cosas dejando pasar la
+    /// transición a sí mismo haría que el fallo real se colara con el duplicado
+    /// legítimo.
+    /// </summary>
+    private void TransitionTo(OrderStatus target)
+    {
+        if (Status != OrderStatus.Pending)
+        {
+            throw new InvalidOperationException(
+                $"El pedido {Id} está en {Status} y ese estado es final: no puede pasar a {target}. " +
+                "Un duplicado del mensaje lo tiene que reconocer el consumer antes de llegar aquí; " +
+                "si esto salta, la saga y OrdersDb no cuentan la misma historia.");
+        }
+
+        Status = target;
+    }
 
     private static string Validated(string value, int maxLength, string parameterName)
     {

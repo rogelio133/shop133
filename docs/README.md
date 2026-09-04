@@ -43,5 +43,13 @@ Documentos de procedimiento, no ligados a un punto del roadmap. No siguen la con
 | 3.5 | Payments.API consume `StockReserved` y simula el cobro contra `PaymentsDb` | 2026-08-31 | [fase_3_5.md](fase_3_5.md) |
 | 3.6 | Idempotencia por `MessageId` del sobre en Inventory y Payments | 2026-08-31 | [fase_3_6.md](fase_3_6.md) |
 | 3.7 | Tests de consumers con el harness en memoria de MassTransit | 2026-08-31 | [fase_3_7.md](fase_3_7.md) |
+| 4.1 | `OrderStateMachine` en Orders.Domain con MassTransit Saga | 2026-09-01 | [fase_4_1.md](fase_4_1.md) |
+| 4.2 | Estados de la saga: la cadena feliz completa y `OrderConfirmed` | 2026-09-01 | [fase_4_2.md](fase_4_2.md) |
+| 4.3 | Caminos de error de la saga y los dos primeros consumers de Orders.API | 2026-09-02 | [fase_4_3.md](fase_4_3.md) |
+| 4.4 | La compensación: `ReleaseStock`, `StockReleased` y `CompensatingStock` | 2026-09-02 | [fase_4_4.md](fase_4_4.md) |
+| 4.5 | La saga persistida en `OrdersDb` y el outbox transaccional | 2026-09-02 | [fase_4_5.md](fase_4_5.md) |
+| 4.6 | Notifications.API consume `OrderConfirmed`/`OrderCancelled` y "manda" el email | 2026-09-03 | [fase_4_6.md](fase_4_6.md) |
+| 4.7 | Los cuatro escenarios obligatorios contra `OrderStateMachine` con el harness | 2026-09-03 | [fase_4_7.md](fase_4_7.md) |
+| 4.8 | Catalog.API estrena MassTransit y valida la foto de precios del pedido | 2026-09-04 | [fase_4_8.md](fase_4_8.md) |
 
 El punto **0.1** (crear solución y estructura de carpetas) se completó antes de que existiera esta convención y no se documentó retroactivamente.

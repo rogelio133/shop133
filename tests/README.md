@@ -12,14 +12,22 @@ Guía operativa de los cinco proyectos de `tests/`. El *porqué* de cada decisi�
 
 | Proyecto | Tests | Categoría | Qué prueba |
 |---|---|---|---|
-| [`Shop133.ArchitectureTests`](Shop133.ArchitectureTests) | 15 | `Fast` | Las reglas de [CLAUDE.md](../CLAUDE.md) en forma ejecutable, leyendo los `.csproj` de `src/`. |
+| [`Shop133.ArchitectureTests`](Shop133.ArchitectureTests) | 16 | `Fast` | Las reglas de [CLAUDE.md](../CLAUDE.md) en forma ejecutable, leyendo los `.csproj` de `src/`. |
 | [`Shop133.TestUtilities`](Shop133.TestUtilities) | — | — | **No es una suite.** La biblioteca con `SqlServerContainerFixture`, que comparten las cuatro de abajo. |
 | [`Services/Catalog/Catalog.Tests`](Services/Catalog/Catalog.Tests) | 19 | `Docker` | Los endpoints CRUD de `1.3`/`1.4` sobre SQL Server real. |
-| [`Services/Orders/Orders.Tests`](Services/Orders/Orders.Tests) | 12 | `Docker` | `POST /orders` y `GET /orders/{id}`, y que se publica `OrderCreated`. |
-| [`Services/Inventory/Inventory.Tests`](Services/Inventory/Inventory.Tests) | 9 | `Docker` | `OrderCreatedConsumer`: reserva, rechazos, atomicidad e idempotencia. |
+| [`Services/Orders/Orders.Tests`](Services/Orders/Orders.Tests) | 25 | `Docker` **y** `Fast` | `POST /orders` y que se publica `OrderCreated` (12, `Docker`) · los cuatro escenarios de la saga (9, **`Fast`**) · la persistencia de la saga en `OrdersDb` (4, `Docker`). |
+| [`Services/Inventory/Inventory.Tests`](Services/Inventory/Inventory.Tests) | 15 | `Docker` | `OrderCreatedConsumer` (reserva, rechazos, atomicidad, idempotencia) y `ReleaseStockConsumer` (la compensación de `4.4`). |
 | [`Services/Payments/Payments.Tests`](Services/Payments/Payments.Tests) | 9 | `Docker` | `StockReservedConsumer`: cobro, rechazo por importe e idempotencia. |
 
-**64 tests**: 15 `Fast` y 49 `Docker`. El trait va en la clase, nunca en cada método.
+**84 tests**: 25 `Fast` y 59 `Docker`. El trait va en la clase, nunca en cada método.
+
+`Orders.Tests` es la única suite con las dos categorías, desde `4.7`: `OrderStateMachineTests` prueba un
+*proceso* con el repositorio de saga en memoria, así que no necesita base de datos y corre en ~10 s los
+nueve. Para el bucle de desarrollo eso es lo que hay que teclear:
+
+```powershell
+dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll -trait "Category=Fast"
+```
 
 ---
 
@@ -33,10 +41,16 @@ petición no daba error, se quedaba colgada hasta que el test expiraba. `docker 
 prerrequisito.
 
 Desde `3.7`, `OrdersApiFactory` desmonta el bus de RabbitMQ y monta el harness en memoria, y las dos suites
-de consumers nunca lo usaron. **Comprobado con el broker parado: `Orders.Tests` pasa 12/12.**
+de consumers nunca lo usaron. **Comprobado con el broker parado: `Orders.Tests` pasaba 12/12** (hoy 25/25).
 
 Lo que sí sigue haciendo falta es **Docker**, para el SQL Server de Testcontainers. El harness quita el
 broker, no la base de datos — la regla 1 de la estrategia de tests prohíbe el provider InMemory de EF Core.
+
+**La excepción, desde `4.7`:** los 9 tests de `OrderStateMachineTests` no necesitan **ni broker ni base**.
+Prueban las transiciones de la saga con `InMemoryRepository()`, y eso no viola la regla 1 — lo que esa regla
+prohíbe es fingir una base de datos relacional con el provider InMemory de EF Core, no probar un proceso que
+no tiene ninguna. Los que sí tocan `OrdersDb.OrderStates` (`OrderStatePersistenceTests`) son `Docker` como
+todos los demás.
 
 ---
 
@@ -76,8 +90,8 @@ lleva la suya.** `Program.cs` lee sus claves y lanza *antes* de `app.Build()`, a
 
 ### Requisitos previos
 
-1. **Docker Desktop corriendo.** Las 49 pruebas `Docker` levantan su propio SQL Server en un puerto
-   aleatorio.
+1. **Docker Desktop corriendo.** Las 59 pruebas `Docker` levantan su propio SQL Server en un puerto
+   aleatorio. Las 25 `Fast` no lo necesitan.
 2. **La imagen `mcr.microsoft.com/mssql/server:2022-latest`.** Es la misma etiqueta que
    `docker-compose.yml`, así que normalmente ya está descargada; la primera vez son ~1,5 GB.
 3. RabbitMQ **no** hace falta. Ver el aviso de arriba.
@@ -90,17 +104,20 @@ dotnet build
 
 # 2. Ejecutar. Cada proyecto de test es su propio ejecutable (regla 5b de CLAUDE.md),
 #    pero conviene lanzarlo por el .dll — ver el primer aviso de abajo.
-dotnet tests\Shop133.ArchitectureTests\bin\Debug\net10.0\Shop133.ArchitectureTests.dll   # 15, sin Docker
-dotnet tests\Services\Catalog\Catalog.Tests\bin\Debug\net10.0\Catalog.Tests.dll          # 19, ~75 s
-dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll             # 12, ~53 s
-dotnet tests\Services\Inventory\Inventory.Tests\bin\Debug\net10.0\Inventory.Tests.dll    #  9, ~62 s
-dotnet tests\Services\Payments\Payments.Tests\bin\Debug\net10.0\Payments.Tests.dll       #  9, ~63 s
+dotnet tests\Shop133.ArchitectureTests\bin\Debug\net10.0\Shop133.ArchitectureTests.dll   # 16, sin Docker
+dotnet tests\Services\Catalog\Catalog.Tests\bin\Debug\net10.0\Catalog.Tests.dll          # 19, ~80 s
+dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll             # 25, ~73 s
+dotnet tests\Services\Inventory\Inventory.Tests\bin\Debug\net10.0\Inventory.Tests.dll    # 15, ~101 s
+dotnet tests\Services\Payments\Payments.Tests\bin\Debug\net10.0\Payments.Tests.dll       #  9, ~61 s
 
 # 3. Filtrar. Ojo: la opción es `-trait` / `-class`, con UN guion.
 #    `--filter-trait` y `--filter-class` son de `dotnet test` y dan "unknown option"
 #    o un exit 3 sin mensaje.
 dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll -class "Orders.Tests.CreateOrderTests"
 dotnet tests\Shop133.ArchitectureTests\bin\Debug\net10.0\Shop133.ArchitectureTests.dll -trait "Category=Fast"
+
+#    El bucle de desarrollo desde 4.7: los 9 tests de la saga, sin Docker, en ~10 s.
+dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll -trait "Category=Fast"
 
 # 4. Ante un fallo, redirigir a fichero en vez de leer la cola de la consola:
 #    EF Core registra a nivel info y el detalle se pierde de vista.

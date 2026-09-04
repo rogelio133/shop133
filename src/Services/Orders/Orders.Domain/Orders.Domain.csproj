@@ -4,6 +4,27 @@
     <ProjectReference Include="..\..\..\Shared\Shop133.Contracts\Shop133.Contracts.csproj" />
   </ItemGroup>
 
+  <!--
+    Primer paquete de este proyecto, y entra en 4.1 porque MassTransitStateMachine
+    vive aquí: se comprobó en el caché de NuGet que SagaStateMachineInstance está
+    en MassTransit.Abstractions pero MassTransitStateMachine no, así que referenciar
+    solo las abstracciones no basta.
+
+    No rompe la regla 5 de CLAUDE.md, la cumple: la excepción que deja a
+    Orders.Domain referenciar Shop133.Contracts existe justamente "porque las saga
+    state machines viven en Orders.Domain". El test
+    OrdersDomain_ProjectReferences_ContainOnlyContracts solo mira ProjectReference,
+    que sigue siendo una.
+
+    Versión explícita y clavada a la de las tres .API. Dejarla al criterio de
+    "dotnet add package" instalaría hoy la 9.2.0, que tiene licencia comercial;
+    MassTransitPackages_StayOnMajorVersion8 cuenta un Version vacío como violación
+    precisamente para eso.
+  -->
+  <ItemGroup>
+    <PackageReference Include="MassTransit" Version="8.5.10" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
