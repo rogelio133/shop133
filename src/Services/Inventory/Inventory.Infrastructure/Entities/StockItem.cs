@@ -120,12 +120,44 @@ public sealed class StockItem
         QuantityReserved += quantity;
     }
 
-    // Sin Release(). No tiene llamante en 3.4 — quien devuelve unidades es el
-    // consumer de ReleaseStock, que llega en 4.4. Inventar aquí su firma sería
-    // exactamente lo que 1.1 evitó dejando a Product sin Update() hasta que 1.3
-    // lo necesitó, y lo que 2.1 evitó no escribiendo Order.Confirm().
-    //
-    // Y no es una firma obvia: 4.4 tiene que decidir antes si ReleaseStock puede
-    // prescindir de Lines y soltar por OrderId leyendo StockReservations, en
-    // cuyo caso el método que hace falta no recibe una cantidad.
+    /// <summary>
+    /// Devuelve unidades comprometidas. Baja <see cref="QuantityReserved"/> y deja
+    /// <see cref="QuantityOnHand"/> intacto — es la operación inversa exacta de
+    /// <see cref="Reserve"/>, porque reservar tampoco tocó las unidades físicas.
+    ///
+    /// Que las dos columnas existan por separado es lo que hace que esto sea
+    /// posible sin ambigüedad. Con una sola columna decrementada (la alternativa
+    /// que 3.4 descartó) no habría forma de distinguir *vendido* de *apartado para
+    /// un pedido que aún puede caerse*, y devolver unidades sería indistinguible de
+    /// inventarlas.
+    ///
+    /// **Lanza si se piden más de las reservadas**, y ésa es la guarda importante:
+    /// soltar de más *crea unidades de la nada*, que es literalmente lo que avisa
+    /// el <c>///</c> de ReleaseStock. Lanza en vez de saturar en 0 por el mismo
+    /// motivo que <see cref="Reserve"/> lanza en vez de devolver false: llegar aquí
+    /// sin reserva suficiente que soltar es un error de programación —el consumer
+    /// suelta lo que dice la fila de StockReservations, que es lo mismo que reservó—
+    /// y no un caso de negocio. Saturar silenciosamente convertiría una incoherencia
+    /// entre las dos tablas en un número redondeado que nadie miraría.
+    ///
+    /// Recibe una cantidad, aunque el comando ReleaseStock solo lleve el OrderId:
+    /// quien localiza por pedido es el consumer, y de la reserva saca cuánto
+    /// corresponde a cada producto. El comentario que ocupaba este sitio hasta 4.4
+    /// especulaba con que "el método que hace falta no recibe una cantidad" y se
+    /// quedó a medias — la búsqueda es por OrderId, la aritmética sigue siendo por
+    /// línea.
+    /// </summary>
+    public void Release(int quantity)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(quantity);
+
+        if (quantity > QuantityReserved)
+        {
+            throw new InvalidOperationException(
+                $"No se pueden liberar {quantity} unidad(es) del producto {ProductId}: " +
+                $"solo hay {QuantityReserved} reservada(s).");
+        }
+
+        QuantityReserved -= quantity;
+    }
 }

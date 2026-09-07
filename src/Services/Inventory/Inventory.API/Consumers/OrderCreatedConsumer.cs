@@ -117,6 +117,14 @@ public sealed class OrderCreatedConsumer(
         // Aquí sí se vuelve a publicar StockReserved en vez de salir en silencio,
         // y la diferencia con la rama de arriba es el motivo: un MessageId nuevo
         // es alguien que ha vuelto a preguntar, no la misma entrega repetida.
+        //
+        // Desde 4.4 esta guarda mira la fila SIN mirar su ReleasedAt, a propósito:
+        // una reserva ya liberada sigue siendo motivo para no volver a reservar. Es
+        // el argumento por el que ReleaseStockConsumer marca la fila en vez de
+        // borrarla — sin ella, un OrderCreated reentregado con MessageId nuevo
+        // volvería a comprometer unidades para un pedido ya cancelado. El
+        // StockReserved que se republica cae en una saga que ya está en Cancelled y
+        // lo ignora (4.3), así que no mueve nada.
         var existing = await db.StockReservations
             .AsNoTracking()
             .FirstOrDefaultAsync(reservation => reservation.OrderId == message.OrderId, cancellationToken);

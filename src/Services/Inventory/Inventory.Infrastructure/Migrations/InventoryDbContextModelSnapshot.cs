@@ -370,6 +370,9 @@ namespace Inventory.Infrastructure.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<DateTimeOffset?>("ReleasedAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.HasKey("OrderId");
 
                     b.ToTable("StockReservations", (string)null);

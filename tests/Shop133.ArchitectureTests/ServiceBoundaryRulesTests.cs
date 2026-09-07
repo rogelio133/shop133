@@ -76,6 +76,40 @@ public sealed class ServiceBoundaryRulesTests
             "y no es un controller. Fuera de lugar: " + string.Join(", ", offenders));
     }
 
+    /// <summary>
+    /// La regla 5 de CLAUDE.md dice que la excepción de Orders.Domain existe
+    /// "because saga state machines live in Orders.Domain". Hasta 4.1 eso era solo
+    /// prosa: ninguna regla miraba dónde estaba una máquina de estados, porque no
+    /// había ninguna.
+    ///
+    /// Merece test por lo mismo que lo merecía el sitio de un consumer: mover la
+    /// saga a Orders.Infrastructure o a Orders.API compilaría sin una queja y
+    /// dejaría el proyecto de dominio sin la única razón por la que existe. Es
+    /// exactamente el fallo silencioso que este proyecto quiere evitar.
+    ///
+    /// Nótese que la regla es más estrecha que las otras dos de este fichero: no
+    /// dice "en el .Domain de su servicio" sino "en Orders.Domain", en singular.
+    /// Es deliberado — hoy solo hay una saga y solo Orders tiene capa de dominio,
+    /// y una regla que ya contemplara servicios que no existen sería un filtro que
+    /// nunca engancha. Si algún día hay una segunda saga, se ensancha entonces.
+    /// </summary>
+    [Fact]
+    public void StateMachineFiles_LiveOnlyIn_OrdersDomain()
+    {
+        var offenders = Directory
+            .EnumerateFiles(Path.Combine(ProjectGraph.RepositoryRoot, "src"), "*StateMachine.cs", SearchOption.AllDirectories)
+            .Select(path => Path.GetRelativePath(ProjectGraph.RepositoryRoot, path).Replace('\\', '/'))
+            .Where(relativePath => !relativePath.Contains("/obj/", StringComparison.Ordinal))
+            .Where(relativePath => !IsInsideOrdersDomain(relativePath))
+            .ToList();
+
+        Assert.True(
+            offenders.Count == 0,
+            "Una máquina de estados de saga vive en Orders.Domain: es la razón por la que ese " +
+            "proyecto existe y por la que la regla 5 le permite referenciar Shop133.Contracts. " +
+            "Fuera de lugar: " + string.Join(", ", offenders));
+    }
+
     [Fact]
     public void Frontend_DoesNotReference_ServicesOrGateway()
     {
@@ -117,4 +151,13 @@ public sealed class ServiceBoundaryRulesTests
         return segments is ["src", "Services", var service, var project, "Consumers", ..]
             && project == $"{service}.API";
     }
+
+    /// <summary>
+    /// "src/Services/Orders/Orders.Domain/Sagas/OrderStateMachine.cs" es válido;
+    /// cualquier otra ubicación no lo es. No se exige la carpeta <c>Sagas/</c> —
+    /// lo que la regla defiende es el proyecto, no el orden interno de sus
+    /// carpetas.
+    /// </summary>
+    private static bool IsInsideOrdersDomain(string relativePath) =>
+        relativePath.Split('/') is ["src", "Services", "Orders", "Orders.Domain", ..];
 }

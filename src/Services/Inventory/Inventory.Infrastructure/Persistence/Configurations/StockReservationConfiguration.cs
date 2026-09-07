@@ -53,6 +53,17 @@ internal sealed class StockReservationConfiguration : IEntityTypeConfiguration<S
         builder.Property(reservation => reservation.CreatedAt)
             .IsRequired();
 
+        // ReleasedAt (4.4) va SIN IsRequired(), y no es un olvido: la columna es
+        // datetimeoffset NULL porque null es un valor con significado —la reserva
+        // sigue viva—. Es lo que consulta la guarda de negocio de
+        // ReleaseStockConsumer, igual que la propia existencia de la fila es lo que
+        // consulta la de OrderCreatedConsumer.
+        //
+        // La línea existe aunque la convención de EF ya mapearía un
+        // DateTimeOffset? como nullable, por el mismo motivo que el Navigation de
+        // abajo: dejar escrito que la nulabilidad es una decisión y no un descuido.
+        builder.Property(reservation => reservation.ReleasedAt);
+
         // ── Las líneas: tipo owned, no entidad propia ──
         //
         // Igual que OrderItem en 2.2. Lo que se gana: EF impide consultar una

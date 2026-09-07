@@ -119,44 +119,55 @@ public sealed class OrdersController(
 
         db.Orders.Add(order);
 
-        // Un solo SaveChanges para el pedido y sus líneas: OrderItem es un tipo
-        // owned (2.2), así que EF inserta las filas de OrderItems sin que nadie
-        // las añada a un DbSet. No hay transacción explícita porque SaveChanges
-        // ya envuelve todo el lote en una.
-        await db.SaveChangesAsync(cancellationToken);
-
-        // ── Persistir primero, publicar después. Y el agujero que eso deja ──
+        // ── 4.5: el Publish pasa a ir ANTES del SaveChanges ──
         //
-        // El orden inverso —publicar y luego guardar— parece más rápido y es
-        // peor: Inventory podría reservar stock de un pedido que nunca llegó a
-        // persistirse, y eso es stock reservado que nadie va a liberar nunca,
-        // justo lo que la regla 7 existe para impedir.
+        // Parece que esto revierte la decisión 3 de docs/fase_3_3.md, que eligió
+        // expresamente "persistir primero, publicar después". No la revierte: la
+        // cumple, porque lo que ha cambiado es qué hace esta línea.
         //
-        // El precio de este orden es el problema de la doble escritura: si el
-        // proceso se cae entre el COMMIT y este Publish, el pedido queda en
-        // Pending para siempre y nadie se entera, porque no hay evento que
-        // arranque la saga. No hay forma de cerrarlo con dos sistemas y sin
-        // transacción distribuida — la solución es el outbox transaccional, que
-        // escribe el mensaje en OrdersDb dentro de la misma transacción del
-        // pedido y lo entrega después. Entra en 4.5 con
-        // MassTransit.EntityFrameworkCore. Hasta entonces el agujero está aquí,
-        // abierto y anotado.
+        // Aquel orden se eligió para que Inventory no pudiera reservar stock de un
+        // pedido que nunca llegó a persistirse —stock reservado que nadie va a
+        // liberar, justo lo que la regla 7 existe para impedir—. Y tenía un
+        // precio, la doble escritura: muerto el proceso entre el COMMIT y el
+        // Publish, el pedido se quedaba en Pending para siempre sin evento que
+        // arrancara la saga. 3.6 agrandó ese agujero al quitar el reenvío que lo
+        // tapaba por rebote.
         //
-        // Se inyecta IPublishEndpoint y NO IBus, y no es cuestión de estilo: el
-        // outbox de 4.5 se engancha a IPublishEndpoint —que MassTransit registra
-        // con ámbito de petición— y no ve nada de lo que se publique por IBus,
-        // que es singleton. Elegirlo hoy es lo que evita reescribir esta línea
-        // entonces.
+        // Con el AddEntityFrameworkOutbox de Program.cs, este Publish **ya no
+        // habla con RabbitMQ**: escribe una fila en OutboxMessage dentro del
+        // ChangeTracker de este mismo DbContext. Así que va antes del SaveChanges
+        // porque tiene que ir DENTRO de él — es lo que hace que el pedido y su
+        // evento entren en la misma transacción. El peligro que motivaba el orden
+        // viejo desaparece por construcción: si el SaveChanges no confirma, no hay
+        // pedido y tampoco hay mensaje que entregar.
         //
-        // CancellationToken.None a propósito: una vez commiteado el pedido, el
-        // evento tiene que salir. Pasando el token de la petición, un navegador
-        // cerrado a destiempo dejaría un pedido huérfano sin saga.
+        // Si algún día alguien quita el outbox y deja este orden, vuelve el fallo
+        // que 3.3 evitaba, y en su forma peor. Las dos cosas cambian juntas.
+        //
+        // Aquí se cobra la decisión 4 de 3.3: se inyecta IPublishEndpoint y NO
+        // IBus. El outbox se engancha al primero, que es scoped y comparte ámbito
+        // con el DbContext; IBus es singleton y publicaría directo al broker sin
+        // ver ninguna transacción. Por eso esta línea solo ha habido que moverla.
+        //
+        // CancellationToken.None se queda, aunque ahora signifique otra cosa: ya
+        // no protege de que un navegador cerrado deje un pedido huérfano —de eso
+        // se encarga la transacción—, sino de que la escritura de la fila del
+        // outbox no se cancele a mitad y haga fallar el SaveChanges entero.
         await publisher.Publish(ToOrderCreated(order), CancellationToken.None);
+
+        // Un solo SaveChanges para el pedido, sus líneas y —desde 4.5— la fila del
+        // outbox con el OrderCreated. OrderItem es un tipo owned (2.2), así que EF
+        // inserta las filas de OrderItems sin que nadie las añada a un DbSet. No
+        // hay transacción explícita porque SaveChanges ya envuelve todo el lote en
+        // una, y ese "todo el lote" es exactamente lo que este punto amplía.
+        await db.SaveChangesAsync(cancellationToken);
 
         // El primer rastro del proyecto en un log que sirva para seguir un mensaje
         // por el broker. En 3.4 y 3.5 esto es lo que se cruza con la UI de
         // RabbitMQ para saber si el problema está antes o después de la
         // publicación.
+        // "publicado" desde 4.5 significa "escrito en el outbox y confirmado con
+        // el pedido". Sale hacia RabbitMQ un instante después, por su cuenta.
         logger.LogInformation(
             "Pedido {OrderId} creado con {LineCount} línea(s) por un total de {Total}; OrderCreated publicado.",
             order.Id,

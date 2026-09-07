@@ -33,14 +33,27 @@ public sealed class CatalogDbContext(DbContextOptions<CatalogDbContext> options)
     /// </summary>
     public DbSet<Category> Categories => Set<Category>();
 
+    /// <summary>
+    /// La bitácora de idempotencia de 3.6, que llega a Catalog en 4.8 con su
+    /// primer consumer. Es la quinta base del sistema en tenerla.
+    ///
+    /// **No es negocio**: un producto existe lo use o no alguien RabbitMQ. Esta
+    /// tabla existe solo porque la entrega es *al menos una vez*. Por eso su
+    /// entidad vive en <c>Entities/</c> junto a las otras dos y no en un
+    /// namespace aparte — el proyecto no tiene esa separación en ningún servicio—
+    /// pero conviene saber leerla distinto.
+    /// </summary>
+    public DbSet<ProcessedMessage> ProcessedMessages => Set<ProcessedMessage>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         // ApplyConfiguration explícito, no ApplyConfigurationsFromAssembly: con
-        // dos entidades el escaneo por reflexión sigue sin ahorrar nada y
+        // tres entidades el escaneo por reflexión sigue sin ahorrar nada y
         // esconde qué se está registrando. Se cambia el día que haya media
-        // docena.
+        // docena — tres no son seis.
         modelBuilder.ApplyConfiguration(new CategoryConfiguration());
         modelBuilder.ApplyConfiguration(new ProductConfiguration());
+        modelBuilder.ApplyConfiguration(new ProcessedMessageConfiguration());
 
         base.OnModelCreating(modelBuilder);
     }
