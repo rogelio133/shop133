@@ -50,6 +50,28 @@ namespace Orders.Domain.Sagas;
 /// <c>Confirmed</c>. Lo que sigue fuera: la validación de precios de Catalog,
 /// 4.8/4.9.
 ///
+/// **Qué añade 4.9, y es la primera rama PARALELA de la saga.** Los dos eventos
+/// que Catalog.API publica desde 4.8 —<c>OrderPricingValidated</c> y
+/// <c>OrderPricingRejected</c>, que hasta hoy se publicaban al vacío— pasan a
+/// consumirse aquí, y con ellos entra <c>PricingPending</c> **delante** de
+/// <c>StockPending</c>. Hasta 4.8 esta máquina era una cadena: un evento, una
+/// respuesta, un estado. Ahora, desde el <c>Initially</c>, hay **dos respuestas
+/// pendientes a la vez** —la de Catalog y la de Inventory— porque Inventory sigue
+/// consumiendo <c>OrderCreated</c> del mismo exchange fanout (decisión 2 de 4.1,
+/// sin cambios). Eso es una unión (*join*), y es lo que obliga a los tres estados
+/// nuevos: <c>PricingPending</c>, <c>PricingPendingStockReserved</c> y
+/// <c>CancellingStockPending</c>.
+///
+/// **El título de 4.9 en el roadmap es falso, y este punto lo desmiente.** Dice
+/// "<c>OrderPricingRejected → Cancelled</c> sin nada que compensar". El <c>///</c>
+/// de <c>OrderPricingRejected</c> ya avisó en 4.8 de que podía serlo y encargó
+/// releerlo con la máquina de estados delante; releído: **un rechazo de precio
+/// puede llegar con el stock ya reservado**, y entonces sí hay algo que compensar.
+/// Es el mismo movimiento con el que 4.4 corrigió la nota de 4.3 sobre
+/// <c>CompensatingStock</c>. El resultado es que <c>OrderPricingRejected</c> **no
+/// lleva nunca a <c>Cancelled</c> directamente**: o manda la compensación, o espera
+/// a saber si hay algo que compensar.
+///
 /// **Y el pedido por fin se mueve.** Hasta 4.2 <c>Order.Status</c> se quedaba en
 /// <c>Pending</c> aunque la saga llegara a <c>Confirmed</c>: la saga vive en
 /// Orders.Domain y no puede tocar <c>OrdersDbContext</c> (regla 5), así que mover
@@ -100,8 +122,52 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
     // sentido a un estado, y aquí ese hueco lo tiene otro servicio.
     //
     // 4.9 mete PricingPending DELANTE de StockPending sin que Submitted reaparezca:
-    // será otro sitio donde la saga espera de verdad, esta vez la respuesta de
-    // Catalog.
+    // es otro sitio donde la saga espera de verdad, esta vez la respuesta de
+    // Catalog. La regla se cumple; lo que 4.2 no podía prever es que esa espera
+    // fuese SIMULTÁNEA a la de Inventory (ver el bloque del join, más abajo).
+    //
+    // ── 4.9 y la regla, cuando hay DOS esperas a la vez ──
+    //
+    // "Un estado por cada respuesta que se espera" describe una cadena, y desde
+    // 4.9 esto ya no lo es. Inventory consume OrderCreated del mismo fanout que
+    // Catalog, así que en cuanto arranca la saga hay dos respuestas pendientes en
+    // paralelo y ninguna causa a la otra. La regla generalizada es la que se
+    // aplica aquí: **un estado por cada CONJUNTO de respuestas que siguen
+    // pendientes**, más lo que ya se sabe del desenlace. De ahí salen cuatro estados
+    // nuevos y ni uno más:
+    //
+    //   PricingPending                 falta Catalog; Inventory sin contestar
+    //   PricingPendingStockReserved    falta Catalog; Inventory reservó
+    //   PricingPendingPaymentCompleted falta Catalog; reservado Y COBRADO
+    //   StockPending                   falta Inventory; Catalog validó
+    //   CancellingStockPending         falta Inventory; Catalog RECHAZÓ
+    //
+    // El tercero es el que no estaba previsto y lo impuso una medición: la rama de
+    // Inventory no acaba en el StockReserved, porque Payments consume ese mismo
+    // evento del fanout y cobra sin esperar a nadie. Contra el compose real esa
+    // rama entera se adelantó a Catalog en la mitad de los pedidos. Ver su ///.
+    //
+    // Los cruces que NO necesitan estado, y conviene ver por qué:
+    //
+    // - Inventory rechaza (esté el precio como esté): el pedido está perdido y no
+    //   hay nada reservado que soltar, así que se cancela sin esperar a Catalog. La
+    //   respuesta que llegue tarde cae en Cancelled, donde se ignora. Es seguro
+    //   porque validar precios **no escribe nada de negocio** —lo dice el /// de
+    //   OrderCreatedPricingConsumer, y es la razón de que su idempotencia saliera
+    //   distinta en 4.8—, así que descartarla no deja rastro que limpiar.
+    //
+    // - El cobro se rechaza con el precio sin saber: condena el pedido diga lo que
+    //   diga Catalog, y hay stock que devolver, así que se va directo a
+    //   CompensatingStock. Otra respuesta que llega tarde y se ignora allí.
+    //
+    // *Descartado* modelar el join con un `bool StockIsReserved` en OrderState y
+    // ramificar con .IfElse(...): son 7 estados en vez de 8, pero cuesta una
+    // migración de OrdersDb (columna bit) y estrena los primeros condicionales de
+    // esta máquina. Con estados no hay nada que decidir en tiempo de ejecución y,
+    // sobre todo, **la fila de OrderStates dice por sí sola dónde está un pedido en
+    // paralelo** — que es exactamente por lo que CurrentState es string y no int
+    // (2.1) y por lo que los estados terminales no son Finalize() (4.5). Un bit en
+    // otra columna habría que cruzarlo a mano para leer lo mismo.
     //
     // ── Y CompensatingStock, que 4.3 descartó y 4.4 resucita ──
     //
@@ -130,9 +196,110 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
     // taparse, igual que los de OnMissingInstance y la doble escritura.
 
     /// <summary>
+    /// **El destino de la primera transición desde 4.9**, en el sitio que ocupaba
+    /// <c>StockPending</c> desde 4.1. No ha contestado nadie: ni Catalog con su
+    /// validación de precios (4.8) ni Inventory con su reserva (3.4).
+    ///
+    /// El nombre dice solo la mitad y es deliberado: la espera que este punto
+    /// *añade* es la de Catalog, y la de Inventory ya existía. Lo que hace que las
+    /// dos quepan en un estado es que aquí todavía no se sabe nada de ninguna —
+    /// en cuanto una contesta, el estado cambia para decir cuál falta.
+    ///
+    /// **Es donde espera un pedido con Catalog caído**, y eso es lo que 4.8 compró:
+    /// el <c>POST /orders</c> sigue devolviendo <c>201</c> y el pedido se queda
+    /// aquí hasta que Catalog vuelva. Un retraso, no un <c>502</c> — lo que ganó la
+    /// Fase 3 no se devuelve. El precio, y es el tercer hueco sin dueño de esta
+    /// clase junto al de <c>CompensatingStock</c> y el de <c>OnMissingInstance</c>:
+    /// **no hay plazo**. Si Catalog no contesta nunca, el pedido se queda aquí para
+    /// siempre.
+    /// </summary>
+    public State PricingPending { get; private set; } = null!;
+
+    /// <summary>
+    /// Inventory ya reservó; falta la respuesta de Catalog. La otra mitad del join,
+    /// y el estado que hace visible que las dos validaciones corren en paralelo.
+    ///
+    /// **No se puede pasar de aquí a <c>PaymentPending</c> sin la respuesta de
+    /// Catalog**, aunque el stock ya esté apartado: hacerlo sería dar por bueno el
+    /// precio que 4.8 existe para comprobar. Y **no se puede cancelar sin más** si
+    /// esa respuesta es un rechazo: desde aquí hay unidades reservadas, así que se
+    /// va a <c>CompensatingStock</c> como desde <c>PaymentPending</c>.
+    ///
+    /// Ese segundo camino es el que desmiente el título de 4.9 en el roadmap.
+    ///
+    /// **Y este estado tiene que aceptar además los dos eventos de cobro**, porque
+    /// Payments consume <c>StockReserved</c> del mismo fanout y cobra sin esperar a
+    /// nadie: la rama de Inventory puede completarse entera antes de que Catalog
+    /// conteste. Medido, no supuesto — ver el <c>///</c> de
+    /// <see cref="PricingPendingPaymentCompleted"/>.
+    /// </summary>
+    public State PricingPendingStockReserved { get; private set; } = null!;
+
+    /// <summary>
+    /// El stock está reservado, **el cobro ya se aceptó** y Catalog todavía no ha
+    /// contestado. La rama de Inventory terminó entera antes que la de Catalog.
+    ///
+    /// ── Este estado existe por una medición, y la medición sorprendió ──
+    ///
+    /// Al planificar 4.9 se dio por hecho que esta inversión sería rara: exige que
+    /// una lectura de Catalog tarde más que dos escrituras encadenadas
+    /// (Inventory + Payments). Contra el compose real resultó ser **la mitad de los
+    /// pedidos**: de siete legítimos, cuatro los ganó Inventory y tres Catalog. Sin
+    /// este estado, esos pedidos dependían de que el <c>UseMessageRetry</c> del
+    /// <c>Program.cs</c> reordenara la entrega dentro de su ventana de ~500 ms — o
+    /// sea de que Catalog no se retrasara, que es exactamente lo que no se puede
+    /// suponer de un servicio que puede caerse.
+    ///
+    /// **La regla que separa este caso del que sí se deja faultear**: una inversión
+    /// *estructural* —dos ramas paralelas que pueden terminar en cualquier orden—
+    /// se modela con un estado; un reordenamiento de *entrega* dentro de una misma
+    /// rama causal se deja al reintento. Ver la nota de <c>PricingPending</c> sobre
+    /// <c>PaymentCompleted</c>.
+    ///
+    /// **El agujero que este estado hace visible, y que no tiene dueño**: si Catalog
+    /// rechaza desde aquí, el pedido ya está cobrado. La saga suelta el stock, pero
+    /// **no existe ningún contrato de devolución** en el proyecto — el
+    /// <c>TransactionId</c> que <c>PaymentCompleted</c> lleva desde 0.3 "para poder
+    /// emitir el reembolso" sigue sin nadie que lo use. Se registra en el log con
+    /// toda la letra en vez de esconderlo.
+    /// </summary>
+    public State PricingPendingPaymentCompleted { get; private set; } = null!;
+
+    /// <summary>
+    /// Catalog rechazó el precio y **todavía no se sabe si hay algo que soltar**:
+    /// Inventory no ha contestado. El pedido está perdido de hecho, pero la saga no
+    /// puede terminarlo hasta saber qué hizo Inventory con él.
+    ///
+    /// Es el estado que el título de 4.9 da por innecesario, y las dos alternativas
+    /// están descartadas por motivos concretos:
+    ///
+    /// *Descartado* cancelar aquí mismo e ignorar el <c>StockReserved</c> que
+    /// llegue después: la reserva de Inventory no se soltaría nunca. Es la regla 7
+    /// de CLAUDE.md rota, y rota **en silencio** — el pedido quedaría
+    /// perfectamente <c>Cancelled</c> con sus unidades apartadas para siempre, que
+    /// es exactamente el agujero que 4.4 cerró por el otro camino.
+    ///
+    /// *Descartado* mandar <c>ReleaseStock</c> a ciegas sin esperar: el
+    /// <c>ReleaseStockConsumer</c> de Inventory **lanza si no encuentra fila de
+    /// reserva**, y eso es una decisión deliberada de 4.4 (soltar lo que nunca se
+    /// apartó crea unidades de la nada). El comando acabaría en
+    /// <c>release-stock_error</c> y la saga esperaría en <c>CompensatingStock</c>
+    /// un <c>StockReleased</c> que no va a llegar — cambiar una espera por otra
+    /// peor.
+    ///
+    /// El mismo hueco que <c>PricingPending</c> y por la misma razón: no hay plazo.
+    /// </summary>
+    public State CancellingStockPending { get; private set; } = null!;
+
+    /// <summary>
     /// El stock está pedido y todavía no hay respuesta. Destino de la primera
-    /// transición desde 4.1 y sitio donde la saga espera el <c>StockReserved</c>
-    /// que atiende este punto — o el <c>StockRejected</c> de 4.3.
+    /// transición entre 4.1 y 4.8, y sitio donde la saga espera el
+    /// <c>StockReserved</c> de 4.2 — o el <c>StockRejected</c> de 4.3.
+    ///
+    /// **Desde 4.9 se llega aquí desde <c>PricingPending</c>**, al validar Catalog
+    /// el precio, y no desde el <c>Initially</c>. Lo que el estado significa no
+    /// cambió; lo que cambió es que llegar a él ya afirma algo más: que la foto de
+    /// precios del pedido es auténtica.
     /// </summary>
     public State StockPending { get; private set; } = null!;
 
@@ -145,14 +312,39 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
     /// Se entra al recibir <c>StockReserved</c> y no al mandar nada: quien está
     /// cobrando es Payments.API, que consume ese mismo evento desde 3.5. La saga se
     /// entera a la vez que él, no antes.
+    ///
+    /// **Y desde 4.9 eso tiene una consecuencia incómoda que conviene decir en voz
+    /// alta: la validación de precios NO llega a ser una puerta.** Payments cobra
+    /// en cuanto ve el <c>StockReserved</c> del fanout, sin esperar a esta saga ni
+    /// a Catalog, así que un pedido con precio falso puede quedar cobrado antes de
+    /// que el rechazo de Catalog llegue. Lo que 4.9 garantiza no es que no se cobre
+    /// —eso exigiría que Payments consumiera otra cosa, o sea cambiar el consumer
+    /// de otro servicio, que es justo lo que la decisión 2 de 4.1 descartó— sino
+    /// que **el pedido acaba cancelado y el stock devuelto**. Un veto con
+    /// compensación, no una autorización previa.
+    ///
+    /// Se llega aquí por dos caminos desde 4.9, según quién contestara primero:
+    /// desde <c>StockPending</c> con el <c>StockReserved</c>, o desde
+    /// <c>PricingPendingStockReserved</c> con el <c>OrderPricingValidated</c>. Los
+    /// dos significan lo mismo —precio auténtico y stock apartado— y por eso
+    /// desembocan en el mismo sitio.
     /// </summary>
     public State PaymentPending { get; private set; } = null!;
 
     /// <summary>
-    /// El cobro se rechazó, se ha mandado <c>ReleaseStock</c> a Inventory y la saga
-    /// espera su <c>StockReleased</c>. **Es el único estado del proyecto que existe
-    /// porque la saga mandó algo**, y por tanto el único que se parece a los de una
-    /// saga de orquestación.
+    /// Hay stock reservado que hay que devolver: se ha mandado <c>ReleaseStock</c> a
+    /// Inventory y la saga espera su <c>StockReleased</c>. **Es el único estado del
+    /// proyecto que existe porque la saga mandó algo**, y por tanto el único que se
+    /// parece a los de una saga de orquestación.
+    ///
+    /// **Desde 4.9 se llega por TRES caminos con dos historias distintas**, y eso
+    /// tiene consecuencias en sus guardas de idempotencia (ver el <c>During</c>
+    /// correspondiente). Hasta 4.8 solo se venía de <c>PaymentPending</c> con un
+    /// <c>PaymentFailed</c>: el cobro se rechazó. Ahora también se viene de
+    /// <c>PricingPendingStockReserved</c> y de <c>CancellingStockPending</c>, las
+    /// dos con un <c>OrderPricingRejected</c> y **sin que se haya cobrado nada** —
+    /// el precio era falso. Lo que comparten los tres, que es lo único que este
+    /// estado necesita saber: el pedido está perdido y hay unidades apartadas.
     ///
     /// Es también el único sitio donde el pedido está a la vez cancelado de hecho y
     /// sin cancelar de derecho: <c>Order.Status</c> sigue en <c>Pending</c> porque
@@ -221,6 +413,48 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
     /// que tocar Contracts para existir".
     /// </summary>
     public Event<OrderCreated> OrderCreated { get; private set; } = null!;
+
+    /// <summary>
+    /// La foto de precios del pedido es auténtica. Lo publica Catalog.API desde 4.8
+    /// y **hasta hoy no lo consumía nadie**: su exchange existía con cero colas
+    /// ligadas, o sea publicándose al vacío, igual que les pasó a
+    /// <c>StockRejected</c> y <c>PaymentFailed</c> entre 3.4 y 4.3. Éste es el
+    /// binding que lo cierra.
+    ///
+    /// "Auténtica" no significa "igual al precio de hoy" — ver su <c>///</c>, donde
+    /// 4.8 explica por qué comparar contra el precio actual rechazaría un pedido
+    /// legítimo cuyo precio cambió a mitad del checkout. Significa que es un precio
+    /// que Catalog llegó a ofrecer dentro de una ventana, y que el <c>Total</c>
+    /// cuadra con las líneas.
+    ///
+    /// Solo lleva el <c>OrderId</c>, y a la saga le basta: lo único que necesita
+    /// saber es *que* la espera terminó bien.
+    /// </summary>
+    public Event<OrderPricingValidated> OrderPricingValidated { get; private set; } = null!;
+
+    /// <summary>
+    /// La foto de precios no es auténtica: algún producto no existe, algún
+    /// <c>UnitPrice</c> no es un precio que Catalog ofreciera, o el <c>Total</c> no
+    /// cuadra con las líneas. Publicado por Catalog.API desde 4.8.
+    ///
+    /// **Es el evento que cierra el agujero medido en la corrección 2b de
+    /// docs/fase_3_3.md**: desde que 3.3 dejó que el cuerpo del <c>POST</c> traiga
+    /// el precio, un pedido de un producto real a <c>0.01</c> atravesaba la saga
+    /// entera y se cobraba un céntimo. Inventory no podía verlo —guarda cantidades,
+    /// no importes— y el importe se había quedado sin dueño. Ahora lo tiene.
+    ///
+    /// Su <c>Reason</c> viaja tal cual dentro de <c>OrderCancelled</c>, como el de
+    /// <c>StockRejected</c>: diagnóstico y material para el email de 4.6, nunca un
+    /// código que nadie deba parsear.
+    ///
+    /// **Y aquí NO se puede afirmar lo que afirma <c>StockRejected</c>.** Aquel
+    /// puede decir que no hay nada que compensar porque la reserva de Inventory es
+    /// atómica. Éste no: Inventory consume <c>OrderCreated</c> del mismo fanout que
+    /// Catalog, así que cuando este rechazo llega el stock puede estar ya
+    /// reservado. Los dos <c>During</c> que lo atienden son los que resuelven eso,
+    /// y ninguno de los dos va a <c>Cancelled</c> directo.
+    /// </summary>
+    public Event<OrderPricingRejected> OrderPricingRejected { get; private set; } = null!;
 
     /// <summary>
     /// Lo publica Inventory.API desde 3.4 y lo consume Payments.API desde 3.5.
@@ -430,6 +664,27 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
             e.OnMissingInstance(missing => missing.Fault());
         });
 
+        // Los dos de 4.9, séptima y octava repetición del mismo par de líneas. Los
+        // ocho contratos que consume esta saga llevan OrderId y ninguno lleva
+        // CorrelationId, así que no hay nada que decidir aquí.
+        //
+        // Declararlos es lo que liga sus exchanges a la cola order-state, o sea lo
+        // que hace que OrderPricingValidated y OrderPricingRejected dejen de
+        // publicarse al vacío desde 4.8. Que sea aquí y no en 4.8 es el mismo
+        // patrón de siempre: un Event<T> declarado sin un During que lo atienda
+        // liga la cola igual y manda cada mensaje a order-state_error.
+        Event(() => OrderPricingValidated, e =>
+        {
+            e.CorrelateById(message => message.Message.OrderId);
+            e.OnMissingInstance(missing => missing.Fault());
+        });
+
+        Event(() => OrderPricingRejected, e =>
+        {
+            e.CorrelateById(message => message.Message.OrderId);
+            e.OnMissingInstance(missing => missing.Fault());
+        });
+
         Initially(
             When(OrderCreated)
                 .Then(context =>
@@ -442,11 +697,18 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
                     context.Saga.CreatedAt = DateTimeOffset.UtcNow;
 
                     logger.LogInformation(
-                        "Saga arrancada para el pedido {OrderId} de {CustomerEmail}; pasa a StockPending.",
+                        "Saga arrancada para el pedido {OrderId} de {CustomerEmail}; pasa a " +
+                        "PricingPending. Catalog e Inventory están procesando este mismo evento " +
+                        "en paralelo.",
                         context.Saga.CorrelationId,
                         context.Saga.CustomerEmail);
                 })
-                .TransitionTo(StockPending));
+                // Desde 4.9 el destino es PricingPending y no StockPending. No es que
+                // se haya insertado un paso en una cadena: es que a partir de aquí hay
+                // DOS respuestas pendientes a la vez, porque el mismo OrderCreated que
+                // arranca esta saga lo están consumiendo Catalog (order-created-pricing)
+                // e Inventory (order-created) del mismo exchange fanout.
+                .TransitionTo(PricingPending));
 
         // ── Idempotencia (regla 6 de CLAUDE.md) ──
         //
@@ -470,6 +732,339 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
         // ignoran los eventos que ya se atendieron ANTES de llegar a él. Un evento
         // que se atiende DESPUÉS no se ignora nunca — ver la nota de PaymentPending
         // más abajo.
+
+        // ── El join de 4.9: las dos ramas paralelas ─────────────────────────────
+        //
+        // Los tres During que siguen son la parte nueva de este punto. Se leen mejor
+        // como una tabla de "quién ha contestado ya":
+        //
+        //                                  Catalog     rama Inventory→Payments
+        //   PricingPending                 falta       sin contestar
+        //   PricingPendingStockReserved    falta       reservó
+        //   PricingPendingPaymentCompleted falta       reservó y cobró
+        //   StockPending                   validó      sin contestar
+        //   CancellingStockPending         rechazó     sin contestar
+        //
+        // Y los cruces que no necesitan estado, porque el desenlace ya no depende de
+        // Catalog: si Inventory rechaza se cancela (nada apartado), y si el cobro se
+        // rechaza se compensa (hay algo apartado). En los dos casos la respuesta de
+        // Catalog llega tarde y se ignora donde caiga. Es seguro porque validar
+        // precios no escribe nada de negocio (4.8), así que descartarla no deja
+        // rastro.
+
+        During(PricingPending,
+            // ── Rama de Catalog: el precio es auténtico ──
+            //
+            // Inventory sigue sin contestar, así que la espera que queda es la suya:
+            // exactamente el StockPending que esta saga tuvo desde 4.1.
+            When(OrderPricingValidated)
+                .Then(context => logger.LogInformation(
+                    "Pedido {OrderId}: Catalog validó la foto de precios; pasa a StockPending. " +
+                    "Inventory todavía no ha contestado.",
+                    context.Saga.CorrelationId))
+                .TransitionTo(StockPending),
+
+            // ── Rama de Catalog: el precio es falso, y NO se puede cancelar ──
+            //
+            // Aquí es donde el título de 4.9 en el roadmap ("sin nada que
+            // compensar") se cae. No es que haya algo que compensar: es que **no se
+            // sabe todavía**. Inventory está procesando el mismo OrderCreated en
+            // paralelo y puede haber reservado ya. Cancelar ahora e ignorar el
+            // StockReserved que llegue después dejaría las unidades apartadas para
+            // siempre — la regla 7 rota en silencio, con el pedido perfectamente
+            // Cancelled.
+            //
+            // Así que se espera, en un estado que dice exactamente eso. Ver el ///
+            // de CancellingStockPending, donde están las dos alternativas
+            // descartadas.
+            When(OrderPricingRejected)
+                .Then(context =>
+                {
+                    // Se guarda porque después ya no vuelve a pasar por delante:
+                    // OrderCancelled sale una transición más tarde —al contestar
+                    // Inventory— y ni StockReserved ni StockRejected llevan este
+                    // texto. Es el mismo razonamiento que el del PaymentFailed de
+                    // 4.4, y el motivo de que ahora sean TRES los caminos que
+                    // escriben este campo.
+                    context.Saga.CancellationReason = context.Message.Reason;
+
+                    logger.LogWarning(
+                        "Pedido {OrderId}: Catalog rechazó la foto de precios ({Reason}); pasa a " +
+                        "CancellingStockPending. El pedido NO se cancela hasta saber si Inventory " +
+                        "llegó a reservar algo que haya que devolver.",
+                        context.Saga.CorrelationId,
+                        context.Message.Reason);
+                })
+                .TransitionTo(CancellingStockPending),
+
+            // ── Rama de Inventory: reservó, y hay que seguir esperando a Catalog ──
+            //
+            // Lo que NO se hace aquí es pasar a PaymentPending. El stock está
+            // apartado, pero dar el pedido por bueno sin la respuesta de Catalog
+            // sería aceptar el precio que 4.8 existe para comprobar — o sea tener
+            // toda la validación y no usarla cuando Inventory gana la carrera.
+            When(StockReserved)
+                .Then(context => logger.LogInformation(
+                    "Pedido {OrderId}: Inventory reservó el stock por {Amount} antes de que " +
+                    "Catalog contestara; pasa a PricingPendingStockReserved.",
+                    context.Saga.CorrelationId,
+                    context.Message.Amount))
+                .TransitionTo(PricingPendingStockReserved),
+
+            // ── Rama de Inventory: rechazó, y aquí sí se termina sin esperar ──
+            //
+            // El pedido está perdido pase lo que pase con el precio, y la reserva de
+            // Inventory es atómica: un rechazo significa que ninguna unidad se movió.
+            // No hay nada que compensar y no hay nada que la respuesta de Catalog
+            // pueda cambiar, así que se cancela ya. La que llegue tarde cae en
+            // Cancelled, donde se ignora.
+            //
+            // Este es el ÚNICO camino en el que el "sin nada que compensar" del
+            // título de 4.9 acierta, y ni siquiera es el evento que el título nombra.
+            When(StockRejected)
+                .Then(context => logger.LogInformation(
+                    "Pedido {OrderId}: stock rechazado ({Reason}) con el precio todavía sin " +
+                    "validar; pasa a Cancelled y se publica OrderCancelled. No hay nada que " +
+                    "compensar y la respuesta de Catalog ya no cambia nada.",
+                    context.Saga.CorrelationId,
+                    context.Message.Reason))
+                .TransitionTo(Cancelled)
+                .Publish(context => new OrderCancelled
+                {
+                    OrderId = context.Saga.CorrelationId,
+                    CustomerEmail = context.Saga.CustomerEmail,
+                    Reason = context.Message.Reason,
+                }),
+
+            // Duplicado de OrderCreated: la guarda que estrenó 4.1, que se muda aquí
+            // con el Initially.
+            Ignore(OrderCreated));
+
+        // ── Lo que NO se atiende en PricingPending, y la medición que lo justifica ──
+        //
+        // Ni PaymentCompleted, ni PaymentFailed, ni StockReleased. La saga no ha visto
+        // todavía el StockReserved de este pedido, así que un cobro resuelto aquí no
+        // es un duplicado: es una entrega REORDENADA. Mismo criterio literal que el de
+        // StockPending desde 4.2, y misma consecuencia — va a order-state_error, donde
+        // se ve.
+        //
+        // **Y ocurre de verdad: medido contra el compose real, dos de siete pedidos.**
+        // La causa no es que Payments se adelante a Inventory —no puede, consume el
+        // StockReserved que Inventory publica— sino que la cola order-state se
+        // consume con concurrencia > 1, así que dos mensajes que llegaron en orden se
+        // procesan a la vez y terminan al revés. Eso NO lo estrena 4.9: existe desde
+        // 4.2 con PaymentCompleted en StockPending, y lo que ha hecho este punto es
+        // destaparlo al añadir un salto más al recorrido.
+        //
+        // Se deja faultear, y funciona, porque el UseMessageRetry del Program.cs de
+        // Orders.API (5 × 100 ms) reentrega el mensaje y la segunda vez la instancia
+        // ya está donde tiene que estar: las tres inversiones medidas se absorbieron
+        // sin que order-state_error creciera. **Ésa es la diferencia con la inversión
+        // que sí se modela con un estado** (PricingPendingPaymentCompleted): aquélla
+        // es estructural —dos ramas paralelas que pueden acabar en cualquier orden, y
+        // ningún reintento arregla que Catalog tarde— y ésta es un reordenamiento de
+        // entrega dentro de una misma cadena causal, que es exactamente lo que un
+        // reintento sí arregla.
+        //
+        // Bajar la concurrencia de order-state a 1 lo quitaría del todo, y se
+        // *descarta*: serializa la saga entera del servicio para tapar una carrera
+        // que el reintento ya cubre, y es la misma línea que 4.7 dejó anotada por
+        // esconder carreras en los tests en vez de mostrarlas.
+
+        During(PricingPendingStockReserved,
+            // El precio era auténtico y el stock ya está apartado: es exactamente lo
+            // que significa PaymentPending, así que se salta StockPending. No es un
+            // atajo — StockPending es "falta Inventory", e Inventory ya contestó.
+            When(OrderPricingValidated)
+                .Then(context => logger.LogInformation(
+                    "Pedido {OrderId}: Catalog validó la foto de precios y el stock ya estaba " +
+                    "reservado; pasa directo a PaymentPending.",
+                    context.Saga.CorrelationId))
+                .TransitionTo(PaymentPending),
+
+            // ── **La transición que desmiente el título de 4.9** ──
+            //
+            // Precio falso y stock ya reservado: hay algo que compensar, y es el
+            // mismo algo que el camino de PaymentFailed de 4.4. Se reutiliza su
+            // maquinaria entera —CompensatingStock, el Send a queue:release-stock, y
+            // el OrderCancelled que sale al recibir StockReleased— sin una línea
+            // nueva de diseño.
+            //
+            // Nótese lo que NO ha pasado por aquí: nadie ha cobrado nada... o eso
+            // parece. Payments consume StockReserved del fanout por su cuenta (3.5),
+            // así que puede estar cobrando ahora mismo. Ver el /// de PaymentPending:
+            // 4.9 es un veto con compensación, no una autorización previa.
+            //
+            // El orden importa, igual que en el camino de 4.4: primero TransitionTo,
+            // después Send. Con el Send delante, la respuesta de Inventory podría
+            // llegar con la instancia todavía aquí, donde StockReleased no está
+            // aceptado.
+            When(OrderPricingRejected)
+                .Then(context =>
+                {
+                    context.Saga.CancellationReason = context.Message.Reason;
+
+                    logger.LogWarning(
+                        "Pedido {OrderId}: Catalog rechazó la foto de precios ({Reason}) con el " +
+                        "stock YA reservado; pasa a CompensatingStock y se envía ReleaseStock a " +
+                        "{Endpoint}. El título de 4.9 decía que aquí no había nada que compensar.",
+                        context.Saga.CorrelationId,
+                        context.Message.Reason,
+                        InventoryReleaseStockEndpoint);
+                })
+                .TransitionTo(CompensatingStock)
+                .Send(
+                    InventoryReleaseStockEndpoint,
+                    context => new ReleaseStock { OrderId = context.Saga.CorrelationId }),
+
+            // ── La rama de Inventory sigue corriendo, y puede terminarse entera ──
+            //
+            // Payments consume StockReserved del mismo fanout, así que está cobrando
+            // mientras la saga espera aquí. Las dos transiciones que siguen no son
+            // defensa contra un caso raro: medido contra el compose real, esta
+            // inversión pasa en la MITAD de los pedidos.
+            When(PaymentCompleted)
+                .Then(context => logger.LogInformation(
+                    "Pedido {OrderId}: Payments aceptó el cobro por {Amount} (transacción " +
+                    "{TransactionId}) antes de que Catalog contestara; pasa a " +
+                    "PricingPendingPaymentCompleted. El pedido NO se confirma hasta saber si la " +
+                    "foto de precios era auténtica.",
+                    context.Saga.CorrelationId,
+                    context.Message.Amount,
+                    context.Message.TransactionId))
+                .TransitionTo(PricingPendingPaymentCompleted),
+
+            // Un cobro rechazado condena el pedido diga lo que diga Catalog, y hay
+            // stock que devolver: se entra en la compensación de 4.4 sin esperar la
+            // respuesta de precios, que caerá en CompensatingStock y se ignorará.
+            // Por eso este cruce no necesita estado propio.
+            When(PaymentFailed)
+                .Then(context =>
+                {
+                    context.Saga.CancellationReason = context.Message.Reason;
+
+                    logger.LogWarning(
+                        "Pedido {OrderId}: cobro rechazado ({Reason}) con el precio todavía sin " +
+                        "validar; pasa a CompensatingStock y se envía ReleaseStock a {Endpoint}. " +
+                        "La respuesta de Catalog ya no cambia el desenlace.",
+                        context.Saga.CorrelationId,
+                        context.Message.Reason,
+                        InventoryReleaseStockEndpoint);
+                })
+                .TransitionTo(CompensatingStock)
+                .Send(
+                    InventoryReleaseStockEndpoint,
+                    context => new ReleaseStock { OrderId = context.Saga.CorrelationId }),
+
+            Ignore(OrderCreated),
+            Ignore(StockReserved));
+
+        // Y no se ignora StockRejected: llegar aquí significa que Inventory ya
+        // contestó StockReserved, y publica uno o el otro, nunca los dos. Sería
+        // Inventory contradiciéndose. Mismo criterio que el de PaymentPending.
+
+        During(PricingPendingPaymentCompleted,
+            // La rama de Inventory terminó bien y ahora Catalog confirma que el
+            // precio era auténtico: el pedido está completo. Se salta PaymentPending
+            // por el mismo motivo por el que PricingPendingStockReserved se salta
+            // StockPending — esos estados son esperas que aquí ya terminaron.
+            When(OrderPricingValidated)
+                .Then(context => logger.LogInformation(
+                    "Pedido {OrderId}: Catalog validó la foto de precios y el cobro ya estaba " +
+                    "aceptado; pasa directo a Confirmed y se publica OrderConfirmed.",
+                    context.Saga.CorrelationId))
+                .TransitionTo(Confirmed)
+                .Publish(context => new OrderConfirmed
+                {
+                    OrderId = context.Saga.CorrelationId,
+                    CustomerEmail = context.Saga.CustomerEmail,
+                }),
+
+            // ── El caso peor del proyecto, y se registra en vez de esconderse ──
+            //
+            // El precio era falso y **ya se ha cobrado**. La saga suelta el stock y
+            // cancela el pedido, que es todo lo que puede hacer: no existe ningún
+            // contrato de devolución en Shop133.Contracts. El TransactionId que
+            // PaymentCompleted lleva desde 0.3 "para poder emitir el reembolso"
+            // sigue sin nadie que lo use, y aquí es donde por fin se nota.
+            //
+            // Se deja como hueco anotado y no se inventa un RefundPayment: sería el
+            // decimotercer contrato, un consumer nuevo en Payments y una decisión de
+            // negocio (¿se reembolsa entero? ¿queda registro del intento?) que este
+            // punto no tiene por qué tomar. Lo que sí hace es que el caso salga por
+            // el log con todas las letras en vez de desaparecer.
+            When(OrderPricingRejected)
+                .Then(context =>
+                {
+                    context.Saga.CancellationReason = context.Message.Reason;
+
+                    logger.LogError(
+                        "Pedido {OrderId}: Catalog rechazó la foto de precios ({Reason}) DESPUÉS " +
+                        "de que el cobro se aceptara. Se suelta el stock y se cancela, pero **el " +
+                        "cobro NO se devuelve**: no existe contrato de reembolso. Pasa a " +
+                        "CompensatingStock y se envía ReleaseStock a {Endpoint}.",
+                        context.Saga.CorrelationId,
+                        context.Message.Reason,
+                        InventoryReleaseStockEndpoint);
+                })
+                .TransitionTo(CompensatingStock)
+                .Send(
+                    InventoryReleaseStockEndpoint,
+                    context => new ReleaseStock { OrderId = context.Saga.CorrelationId }),
+
+            Ignore(OrderCreated),
+            Ignore(StockReserved),
+            Ignore(PaymentCompleted));
+
+        // No se ignoran StockRejected ni PaymentFailed: llegar aquí implica que
+        // Inventory contestó reservando y que Payments contestó cobrando, y cada uno
+        // publica un evento o el otro, nunca los dos.
+
+        During(CancellingStockPending,
+            // Inventory había reservado: hay que devolverlo. Se entra en la
+            // compensación de 4.4 por el tercero de sus caminos.
+            When(StockReserved)
+                .Then(context => logger.LogWarning(
+                    "Pedido {OrderId}: Inventory había reservado stock para un pedido cuyo precio " +
+                    "Catalog ya rechazó; pasa a CompensatingStock y se envía ReleaseStock a " +
+                    "{Endpoint}.",
+                    context.Saga.CorrelationId,
+                    InventoryReleaseStockEndpoint))
+                .TransitionTo(CompensatingStock)
+                .Send(
+                    InventoryReleaseStockEndpoint,
+                    context => new ReleaseStock { OrderId = context.Saga.CorrelationId }),
+
+            // Inventory tampoco pudo reservar: no hay nada que devolver y el pedido
+            // se termina aquí.
+            //
+            // **Los dos motivos son ciertos a la vez** —precio falso y sin stock— y
+            // se publica el de precio, que es el que está guardado en la instancia.
+            // No se concatenan: el que llevó a la saga a dar el pedido por perdido
+            // fue el de Catalog, y el /// de OrderCancelled promete un texto para que
+            // el cliente entienda qué pasó, no un inventario de todo lo que falló.
+            When(StockRejected)
+                .Then(context => logger.LogInformation(
+                    "Pedido {OrderId}: Inventory tampoco pudo reservar ({StockReason}); pasa a " +
+                    "Cancelled y se publica OrderCancelled con el motivo de precio " +
+                    "({PricingReason}). No hay nada que compensar.",
+                    context.Saga.CorrelationId,
+                    context.Message.Reason,
+                    context.Saga.CancellationReason))
+                .TransitionTo(Cancelled)
+                .Publish(context => new OrderCancelled
+                {
+                    OrderId = context.Saga.CorrelationId,
+                    CustomerEmail = context.Saga.CustomerEmail,
+                    Reason = context.Saga.CancellationReason,
+                }),
+
+            Ignore(OrderCreated),
+            Ignore(OrderPricingRejected));
+
+        // Y no se ignora OrderPricingValidated: llegar aquí significa que Catalog ya
+        // contestó rechazando, y publica uno o el otro, nunca los dos. Sería Catalog
+        // contradiciéndose — la simetría exacta del StockRejected en PaymentPending.
 
         During(StockPending,
             When(StockReserved)
@@ -509,8 +1104,17 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
                 }),
 
             // Duplicado de OrderCreated (la guarda que estrenó 4.1).
-            Ignore(OrderCreated));
+            Ignore(OrderCreated),
 
+            // Y el de OrderPricingValidated, que 4.9 añade: es el evento que trajo la
+            // saga hasta aquí desde PricingPending.
+            Ignore(OrderPricingValidated));
+
+        // Lo que 4.9 deliberadamente NO ignora en StockPending: OrderPricingRejected.
+        // Llegar aquí implica que Catalog ya contestó validando, y Catalog publica uno
+        // o el otro, nunca los dos — sería Catalog contradiciéndose. Es la simetría
+        // exacta del StockRejected en PaymentPending, tres bloques más abajo.
+        //
         // Nótese lo que **no** hay aquí: ni Ignore(PaymentCompleted) ni
         // Ignore(PaymentFailed) en StockPending. Sería fácil añadirlos "por
         // simetría" y estaría mal: un cobro resuelto sin haber visto la reserva no
@@ -625,7 +1229,12 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
                     context => new ReleaseStock { OrderId = context.Saga.CorrelationId }),
 
             Ignore(OrderCreated),
-            Ignore(StockReserved));
+            Ignore(StockReserved),
+
+            // El de 4.9: a PaymentPending se llega por dos caminos y los dos pasan
+            // por el OrderPricingValidated, así que en los dos es un evento ya
+            // atendido.
+            Ignore(OrderPricingValidated));
 
         // Y tampoco hay un Ignore(StockRejected) en PaymentPending. Llegar aquí
         // significa haber recibido StockReserved, e Inventory publica uno de los dos
@@ -659,20 +1268,42 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
                     Reason = context.Saga.CancellationReason,
                 }),
 
-            // Las guardas de este estado, por la regla de siempre: se ignora lo que
-            // ya se atendió ANTES de llegar aquí. El camino es OrderCreated →
-            // StockReserved → PaymentFailed, así que son esos tres.
+            // ── Las guardas de este estado, y desde 4.9 es el único donde no salen
+            //    de un solo recorrido ──
+            //
+            // La regla de siempre —se ignora lo que ya se atendió ANTES de llegar
+            // aquí— se aplica a los CINCO caminos que desembocan en este estado desde
+            // 4.9, y hay que unirlos:
+            //
+            //   PaymentPending              --PaymentFailed-->         precio VALIDADO, cobro NO
+            //   PricingPendingStockReserved --OrderPricingRejected-->  precio RECHAZADO, sin cobrar
+            //   PricingPendingStockReserved --PaymentFailed-->         precio SIN SABER, cobro NO
+            //   PricingPendingPaymentCompleted --OrderPricingRejected--> precio RECHAZADO, COBRADO
+            //   CancellingStockPending      --StockReserved-->         precio RECHAZADO, sin cobrar
+            //
+            // Los cinco pasaron por OrderCreated y por StockReserved; en todo lo demás
+            // difieren. Como el estado no recuerda por dónde vino, **las guardas son
+            // la unión**, y eso incluye PaymentCompleted.
+            //
+            // **Y ahí se pierde algo, dicho en voz alta**: hasta 4.8 este estado NO
+            // ignoraba PaymentCompleted a propósito, porque solo se llegaba con un
+            // PaymentFailed y un cobro aceptado aquí era Payments contradiciéndose.
+            // Desde 4.9 hay un camino legítimo que sí pasó por el cobro, así que esa
+            // contradicción deja de detectarse. Es el precio de que un estado tenga
+            // varias historias; la alternativa —partirlo en dos por procedencia— no
+            // ganaría ninguna transición distinta.
             Ignore(OrderCreated),
             Ignore(StockReserved),
-            Ignore(PaymentFailed));
+            Ignore(PaymentFailed),
+            Ignore(PaymentCompleted),
+            Ignore(OrderPricingValidated),
+            Ignore(OrderPricingRejected));
 
-        // Y lo que deliberadamente NO se ignora en CompensatingStock, que es la
-        // parte que hay que leer: ni PaymentCompleted ni StockRejected. Llegar aquí
-        // implica que Payments ya contestó PaymentFailed y que Inventory ya contestó
-        // StockReserved, y cada uno de los dos publica un evento o el otro, nunca
-        // los dos. Un PaymentCompleted en este estado no es un duplicado — es
-        // Payments diciendo que cobró un pedido que acaba de rechazar. Mismo
-        // criterio literal que el de PaymentPending, tres líneas más arriba.
+        // Y lo único que sigue sin ignorarse en CompensatingStock desde 4.9:
+        // StockRejected. Llegar aquí implica que Inventory ya contestó StockReserved,
+        // e Inventory publica uno o el otro, nunca los dos — sería Inventory diciendo
+        // que no reservó lo que la saga le está pidiendo que devuelva. Mismo criterio
+        // literal que el de PaymentPending.
 
         During(Confirmed,
             // Los estados terminales también necesitan sus guardas, y son los que
@@ -681,19 +1312,23 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
             // él, una reentrega tardía manda a la cola de error un pedido que
             // terminó perfectamente.
             //
-            // Van los SEIS eventos, no solo los tres del camino recorrido: llegar a
-            // Confirmed descarta que StockRejected o PaymentFailed sean parte de la
-            // historia de este pedido, pero no impide que uno se reentregue tarde
-            // —o que llegue reacuñado a mano, como en las pruebas de 3.6—, y el
-            // resultado sería el mismo pedido perfecto en order-state_error.
+            // Van los OCHO eventos, no solo los del camino recorrido: llegar a
+            // Confirmed descarta que StockRejected, PaymentFailed o
+            // OrderPricingRejected sean parte de la historia de este pedido, pero no
+            // impide que uno se reentregue tarde —o que llegue reacuñado a mano, como
+            // en las pruebas de 3.6—, y el resultado sería el mismo pedido perfecto en
+            // order-state_error.
             //
-            // El Ignore(StockReleased) que añade 4.4 es, de los seis, el único
-            // literalmente inalcanzable: al camino feliz no se le manda nunca
-            // ReleaseStock, así que nadie puede contestarlo. Se pone igual porque la
-            // disciplina de los estados terminales es deliberadamente roma —los
-            // ignoran TODOS— y una excepción obligaría a razonar caso por caso cada
-            // vez que se añade un evento, que es como se olvida uno.
+            // El Ignore(StockReleased) que añadió 4.4 y el Ignore(OrderPricingRejected)
+            // que añade 4.9 son literalmente inalcanzables: al camino feliz no se le
+            // manda nunca ReleaseStock, y un pedido confirmado tiene por fuerza su
+            // precio validado. Se ponen igual porque la disciplina de los estados
+            // terminales es deliberadamente roma —los ignoran TODOS— y una excepción
+            // obligaría a razonar caso por caso cada vez que se añade un evento, que
+            // es como se olvida uno. 4.9 acaba de añadir dos.
             Ignore(OrderCreated),
+            Ignore(OrderPricingValidated),
+            Ignore(OrderPricingRejected),
             Ignore(StockReserved),
             Ignore(PaymentCompleted),
             Ignore(StockRejected),
@@ -701,16 +1336,27 @@ public sealed class OrderStateMachine : MassTransitStateMachine<OrderState>
             Ignore(StockReleased));
 
         During(Cancelled,
-            // El segundo estado terminal, con las mismas seis guardas y por el mismo
-            // motivo. Este es más fácil de olvidar todavía, porque se llega a él por
-            // dos caminos distintos y ninguno de los dos pasa por aquí al escribirlo.
+            // El segundo estado terminal, con las mismas ocho guardas y por el mismo
+            // motivo. Este es más fácil de olvidar todavía, porque **desde 4.9 se
+            // llega a él por CUATRO caminos distintos** —StockRejected desde
+            // PricingPending y desde StockPending, StockReleased desde
+            // CompensatingStock, y StockRejected desde CancellingStockPending— y
+            // ninguno de los cuatro pasa por aquí al escribirlo.
             //
             // Aquí el Ignore(StockReleased) sí es imprescindible, y es el más obvio
-            // de los seis en cuanto se ve de dónde se viene: CompensatingStock
+            // de los ocho en cuanto se ve de dónde se viene: CompensatingStock
             // desemboca justo aquí, así que una reentrega tardía del evento que
             // acaba de mover la saga cae exactamente en este estado. Es el caso
             // normal, no el raro.
+            //
+            // Y los dos de precio también son del caso normal, no del raro: el
+            // camino de PricingPending --StockRejected--> Cancelled termina el pedido
+            // **sin esperar a Catalog**, así que la respuesta de Catalog llega
+            // siempre después y siempre cae aquí. Sin estas dos líneas, todo pedido
+            // sin stock acabaría con un mensaje en order-state_error.
             Ignore(OrderCreated),
+            Ignore(OrderPricingValidated),
+            Ignore(OrderPricingRejected),
             Ignore(StockReserved),
             Ignore(PaymentCompleted),
             Ignore(StockRejected),

@@ -230,7 +230,23 @@ Three things the test host needs that are not obvious. **Two `UseSetting` calls,
 
 **All four deliberate breakages were caught by exactly the intended test, and the first confirms `3.7`'s trap 3 for the FOURTH time** (3.7, 4.4, 4.7, here): killing the transport guard fails on `Assert.Empty(Published<Fault<T>>())` and **not** on the event count, which still reads 1 — the unguarded duplicate dies on the duplicate-key `INSERT` before publishing rather than publishing twice. The two window breakages fall in two *different* tests, confirming the window's halves are covered separately. **Smart App Control did not fire once**, despite a freshly downloaded package plus rebuilt assemblies.
 
-**Phase 4 is in progress. `4.1` is done — the saga exists and correlates** — see [docs/fase_4_1.md](docs/fase_4_1.md). `Orders.Domain/Sagas/` holds `OrderState` (the saga instance) and `OrderStateMachine`, and `Orders.Domain` gained its **first `PackageReference` ever**: `MassTransit` **8.5.10** — the core package and not `MassTransit.Abstractions`, because `SagaStateMachineInstance` is in the abstractions but `MassTransitStateMachine<T>` is not, so referencing only the abstractions does not compile. That does not break rule 5, it fulfils it: the exception letting `Orders.Domain` reference `Shop133.Contracts` exists *because* saga state machines live there, and `OrdersDomain_ProjectReferences_ContainOnlyContracts` only inspects `ProjectReference`. The architecture suite went to **16**: `StateMachineFiles_LiveOnlyIn_OrdersDomain` scans `src/**/*StateMachine.cs` and demands `Orders.Domain`, and it was broken on purpose before being trusted.
+**`4.9` is done and Phase 4 is code complete — the saga gains `PricingPending` and its first PARALLEL branch** — see [docs/fase_4_9.md](docs/fase_4_9.md). It consumes the two events `4.8` had been publishing into the void, so **all twelve messages now have a bound queue**. **Two files of `src/` changed and only one of them is code** (`OrderStateMachine.cs`; `OrderState.cs` is comments only) — no contract, no `.csproj`, no package, **no migration**, no `Program.cs`. The architecture suite stays at **16**; `Orders.Tests` goes 25 → **35**, the repo 94 → **104**.
+
+**The roadmap's title for `4.9` is false and desmentirlo is what the item delivers.** It says "`OrderPricingRejected → Cancelled` with nothing to compensate". `4.8`'s `///` warned it might be and commissioned the re-read; re-read: **`OrderPricingRejected` never leads to `Cancelled` directly.** Inventory still consumes `OrderCreated` off the same fanout, so pricing validation and stock reservation run **in parallel** and a price rejection can arrive with stock already reserved — then it sends `ReleaseStock` and goes through `CompensatingStock`. Same move with which `4.4` corrected `4.3`'s note. **Measured, and it is the item entire: an order for 3 units at `0.01` — which in `4.8` reached Payments and got charged — ends `Cancelled` with the stock exactly where it was (`42/18` before and after)** and the customer emailed the reason.
+
+**The rule of `4.2` does not change, it generalises: one state per *set* of replies still outstanding.** From 5 states to **9**. Modelled with **states only** — *rejected* a `bool StockIsReserved` + `.IfElse`, which costs a migration, introduces the machine's first conditionals, and loses the property that `OrderStates.CurrentState` alone says where a parallel order is (the reason `CurrentState` is `string`, 2.1, and the reason terminal states are not `Finalize()`, 4.5). `CurrentStateMaxLength` is 64 and the longest new name is 30, so **no migration**.
+
+**The state that was NOT planned was imposed by a measurement, and it is the most transferable lesson.** The plan assumed it rare for the Inventory→Payments branch to finish **entirely** before Catalog, and would have let it fault, trusting `UseMessageRetry` (5 × 100 ms) to reorder it. Against the real compose it was **half the orders** — 4 of 7 cold, 0 of 6 warm, i.e. **the outcome depends on how warm a container is**. Hence `PricingPendingPaymentCompleted`. What proves the retry was not enough: with `catalog-api` **stopped**, an order parks there with stock reserved and the payment already accepted — no 500 ms window covers a downed service. **The rule: a structural inversion gets a state; a delivery reordering gets the retry.**
+
+**And the delivery reordering was measured too, for the first time.** `PaymentCompleted` reached the saga in `PricingPending`, and three events beat their own order's `OrderCreated` (firing `OnMissingInstance`). The cause is not Payments overtaking Inventory — it cannot — but that **`order-state` is consumed with concurrency > 1**. **That is not new in `4.9`**: it has existed since `4.2` with `PaymentCompleted` in `StockPending`; this item merely uncovered it by adding a hop. All four faults were absorbed by the retry with **`order-state_error` not growing by a single message** (its 2 messages are from an earlier session). *Rejected* dropping `ConcurrentMessageLimit` to 1 on that endpoint: it serialises the whole service's saga to hide a race the retry already covers — literally the line `4.7` annotated for hiding races. **`OnMissingInstance(Fault())` changes meaning a third time**: `4.2` added it against silent discard, `4.5` said it now only means "an event for an order that never existed", and since `4.9` it fires routinely for an answer that overtakes its own `OrderCreated`.
+
+**Two guards worth not re-deriving.** `OrderPricingRejected` is **not** ignored in `StockPending`, nor `OrderPricingValidated` in `CancellingStockPending`: reaching those means Catalog already answered, and it publishes one or the other, never both — **Catalog contradicting itself**, the exact symmetry of `StockRejected`-in-`PaymentPending`. And `CompensatingStock` is now reachable by **five** paths with different histories, so its guards are the union — **which includes `PaymentCompleted`, and that loses a detection**: until `4.8` a payment accepted there was Payments contradicting itself, and now there is a legitimate path through it. Said aloud rather than dressed up.
+
+**Two things that cost time.** **A running service locks the `.dll`, the build fails, and the test runner then runs the OLD binary** — `MSB3027 … locked by "Orders.API"` printed ten lines above a green `15/15`. Same class as `4.8`'s stale `bin/`, but worse because there *is* a visible error next to the green result: stop the services before building, and read the build result before the test result. And `sqlcmd -P $env:MSSQL_SA_PASSWORD` with the variable unset ate the following `-C` again (documented since `3.6`); read it out of `.env` instead.
+
+**What the item destapa and does not fix, with no owner in the roadmap:** if Catalog rejects the price **after** Payments charged, the saga releases the stock but **the charge is not refunded** — there is no refund contract, and the `TransactionId` `PaymentCompleted` has carried since `0.3` "to issue the refund" still has no user. It comes out as a `LogError` rather than vanishing. Also ownerless: neither `PricingPending` nor `CancellingStockPending` has a timeout (the third and fourth such gap, with `CompensatingStock`'s). And **the pricing validation never becomes a gate**: Payments charges off the fanout without waiting for anyone, so what `4.9` guarantees is that the order ends cancelled and the stock returned — **a veto with compensation, not a prior authorisation.**
+
+**Phase 4 was in progress. `4.1` is done — the saga exists and correlates** — see [docs/fase_4_1.md](docs/fase_4_1.md). `Orders.Domain/Sagas/` holds `OrderState` (the saga instance) and `OrderStateMachine`, and `Orders.Domain` gained its **first `PackageReference` ever**: `MassTransit` **8.5.10** — the core package and not `MassTransit.Abstractions`, because `SagaStateMachineInstance` is in the abstractions but `MassTransitStateMachine<T>` is not, so referencing only the abstractions does not compile. That does not break rule 5, it fulfils it: the exception letting `Orders.Domain` reference `Shop133.Contracts` exists *because* saga state machines live there, and `OrdersDomain_ProjectReferences_ContainOnlyContracts` only inspects `ProjectReference`. The architecture suite went to **16**: `StateMachineFiles_LiveOnlyIn_OrdersDomain` scans `src/**/*StateMachine.cs` and demands `Orders.Domain`, and it was broken on purpose before being trusted.
 
 **The line `0.3` promised and never ran is now live**: `Event(() => OrderCreated, e => e.CorrelateById(m => m.Message.OrderId))`. No contract carries a `CorrelationId` — that was decided against so the correlation key would not be duplicated next to an `OrderId` that always equals it — and `3.3`/`3.4` confirmed the envelope travels with `correlationId: null`. **Scope is deliberately "skeleton + first transition"**: one event, one state (`StockPending`), one `Initially`. The rest of the happy path is `4.2`, the error paths `4.3`. `Order.Status` is still `Pending` and nothing moves it — measured: the `201` response says `"status":"Pending"` while the saga starts alongside it.
 
@@ -370,7 +386,7 @@ Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed su
 | 1 | Catalog.API | **Code complete** — 1.1–1.7 done; awaiting the PRs to `develop`/`main` and the `fase-1` tag |
 | 2 | Orders.API (synchronous) | **Code complete** — 2.1–2.4 done; awaiting the PRs to `develop`/`main` and the `fase-2` tag |
 | 3 | MassTransit + RabbitMQ messaging | **Code complete** — 3.1–3.7 done; awaiting the PRs to `develop`/`main` and the `fase-3` tag |
-| 4 | Saga + compensations | **In progress** on `feature/fase-4-saga` — 4.1–4.8 done; 4.9 remains |
+| 4 | Saga + compensations | **Code complete** — 4.1–4.9 done; awaiting the PRs to `develop`/`main` and the `fase-4` tag |
 | 5 | YARP Gateway | Not started |
 | 6 | Frontend (MVC + Bootstrap 5) | Not started |
 | 7 | Observability | Not started |
@@ -493,7 +509,9 @@ Tests are not a phase. They are numbered items spread across the roadmap — `0.
 
 The reference rules read the **`.csproj` files**, not the compiled assemblies: Roslyn prunes unused references from the manifest, so with service projects still empty an assembly-level check would pass vacuously. `ProjectGraph.cs` is that reader; add new reference rules on top of it. Rules about *types* (records, immutability) use plain reflection, and `NetArchTest` covers the one namespace-dependency assertion.
 
-**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`. Since `4.8`: **25 `Fast`** (16 `Shop133.ArchitectureTests` + 9 `Orders.Tests`) and **69 `Docker`** (29 `Catalog.Tests` + 16 `Orders.Tests` + 15 `Inventory.Tests` + 9 `Payments.Tests`), **94 in total**. Orders went 17 → 10 in `3.3` (the seven that tested the synchronous debt), 10 → 12 in `3.7` (it can finally assert the publish) and 12 → 25 in `4.7`; Inventory went 9 → 15 in `4.4`; Catalog went 19 → 29 in `4.8`. `4.5` and `4.6` both added **zero** tests.
+**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`. Since `4.9`: **34 `Fast`** (16 `Shop133.ArchitectureTests` + 18 `Orders.Tests`) and **70 `Docker`** (29 `Catalog.Tests` + 17 `Orders.Tests` + 15 `Inventory.Tests` + 9 `Payments.Tests`), **104 in total**. Orders went 17 → 10 in `3.3` (the seven that tested the synchronous debt), 10 → 12 in `3.7` (it can finally assert the publish), 12 → 25 in `4.7` and 25 → 35 in `4.9`; Inventory went 9 → 15 in `4.4`; Catalog went 19 → 29 in `4.8`. `4.5` and `4.6` both added **zero** tests.
+
+**`4.9` rewrote all 13 saga tests rather than only adding to them, and that they went red is the signal**: they published `OrderCreated → StockReserved → …` without passing through Catalog, so once `PricingPending` went in front, `StockReserved` stopped leading to `PaymentPending`. `AssertNoFaults()` went from 6 `Fault<T>` to 8. Its four deliberate breakages are in [docs/fase_4_9.md](docs/fase_4_9.md); the one worth carrying is that **implementing the roadmap's title literally still reaches `Cancelled` with exactly one `OrderCancelled`** — only the `ReleaseStock` count catches the leaked stock, so a final-state assertion would have approved it.
 
 **`Orders.Tests` is the only suite carrying both categories, and `OrderStateMachineTests` is the first `Fast` suite of a service** — 9 tests in ~10 s with no Docker at all, because it exercises a *process* with `InMemoryRepository()` and needs no database. That does not bend rule 1 above: what that rule bars is faking a relational database with EF's InMemory provider, not testing something that has no database. The 4 tests that do touch `OrdersDb.OrderStates` (`OrderStatePersistenceTests`) are `Docker` like everything else. **Notifications still has no test and no roadmap item owns it**: `4.7` was the state machine, so unlike `3.4`/`3.5` — whose by-hand verification `3.7` picked up — `4.6`'s debt has no scheduled collector. When it is written, the pattern is `Inventory.Tests`/`Payments.Tests` (a `ServiceCollection` around the consumer, no `WebApplicationFactory`) and it is `Category=Docker`, because of `NotificationsDb`.
 
@@ -581,8 +599,12 @@ dotnet build
 #   dotnet user-secrets set "ConnectionStrings:RabbitMq" `
 #     "amqp://guest:guest@localhost:5672" --project src/Services/Catalog/Catalog.API
 dotnet run --project src/Services/Catalog/Catalog.API   # 5124
-# Since 3.3 Orders does NOT need Catalog: it publishes OrderCreated instead of
-# calling it. With Catalog down, POST /orders answers 201 (measured: 420 ms).
+# Since 3.3 Orders does NOT need Catalog to ANSWER: it publishes OrderCreated
+# instead of calling it. With Catalog down, POST /orders answers 201 (measured in
+# 4.9: 15 ms). But since 4.9 Catalog IS on the critical path of every order — the
+# saga starts in PricingPending and waits for its answer, with no timeout — so
+# with catalog-api stopped every order parks mid-saga and resumes on its own when
+# Catalog comes back (measured). A delay, not a 502.
 # It does need RabbitMQ — a Publish with the broker down hangs rather than fails.
 dotnet run --project src/Services/Orders/Orders.API      # 5189
 
@@ -629,19 +651,28 @@ dotnet run --project src/Services/Notifications/Notifications.API  # 5043
 # Inventory's since 3.4. If `order-confirmed` or `order-created` ever shows
 # `consumers = 2`, a collision is back. No architecture test can see this: they
 # read .csproj files and paths, never a broker's topology.
-# **Two messages publish into the void again, and it is deliberate.** 4.3 gave
-# StockRejected and PaymentFailed their first bound queue and created the
-# OrderCancelled exchange; 4.4 adds `Shop133.Contracts.Commands:ReleaseStock` ->
-# release-stock (the only command exchange, and the only one reached with Send
-# rather than Publish) and `Shop133.Contracts.Events:StockReleased` -> order-state.
-# With those, ten messages were all bound. 4.8 then adds the ELEVENTH and TWELFTH
-# — OrderPricingValidated and OrderPricingRejected — whose exchanges have ZERO
-# bound queues until the saga consumes them in 4.9. Same shape as 3.4/3.5, where
-# StockRejected and PaymentFailed published into nothing for a whole phase: no
-# failure, no warning. To see one, bind a spy queue (durable:true) after declaring
-# the exchange as fanout/durable BY HAND — MassTransit declares lazily, so the
-# exchange does not exist until the first publish, and a spy set up afterwards is
-# too late.
+# **Since 4.9 all TWELVE messages have a bound queue, for the first time in the
+# project.** 4.3 gave StockRejected and PaymentFailed their first bound queue and
+# created the OrderCancelled exchange; 4.4 added `Shop133.Contracts.Commands:
+# ReleaseStock` -> release-stock (the only command exchange, and the only one
+# reached with Send rather than Publish) and `StockReleased` -> order-state; 4.8
+# added the eleventh and twelfth, OrderPricingValidated and OrderPricingRejected,
+# which published into the void for one item; 4.9 binds both to order-state. That
+# "published into nothing" state — no failure, no warning — has now happened three
+# times (3.4/3.5, then 4.8) and is the thing to check for after adding a contract.
+# To see one, bind a spy queue (durable:true) after declaring the exchange as
+# fanout/durable BY HAND — MassTransit declares lazily, so the exchange does not
+# exist until the first publish, and a spy set up afterwards is too late.
+#
+# Since 4.9 `OrderCreated` still has THREE bindings but the saga consumes EIGHT
+# events, so `order-state` is the busiest queue by far. Two consequences measured
+# in 4.9 and worth expecting: it is consumed with concurrency > 1, so events that
+# arrive in order can be processed out of order (absorbed by the UseMessageRetry
+# in Orders.API's endpoints callback), and an answer from Catalog or Inventory can
+# beat its own order's OrderCreated, firing OnMissingInstance(Fault()). Both are
+# absorbed — check that order-state_error does not GROW, not that it is empty; it
+# can hold messages from earlier sessions. Read them without consuming with
+# `POST /api/queues/%2F/order-state_error/get` and `ackmode: ack_requeue_true`.
 # The name `release-stock` is load-bearing: OrderStateMachine has
 # `queue:release-stock` written in a constant, so renaming the consumer or changing
 # Inventory's endpoint formatter strands the commands in a queue nobody reads —
@@ -699,14 +730,18 @@ dotnet test tests/Shop133.ArchitectureTests        # a single test project
 dotnet tests\Shop133.ArchitectureTests\bin\Debug\net10.0\Shop133.ArchitectureTests.dll   # 16, no Docker
 dotnet tests\Shop133.ArchitectureTests\bin\Debug\net10.0\Shop133.ArchitectureTests.dll -trait "Category=Fast"
 dotnet tests\Services\Catalog\Catalog.Tests\bin\Debug\net10.0\Catalog.Tests.dll          # 29, Docker, ~140 s
-dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll             # 25, Docker, ~73 s
+dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll             # 35, Docker, ~82 s
 dotnet tests\Services\Inventory\Inventory.Tests\bin\Debug\net10.0\Inventory.Tests.dll    # 15, Docker, ~101 s
 dotnet tests\Services\Payments\Payments.Tests\bin\Debug\net10.0\Payments.Tests.dll       #  9, Docker, ~61 s
 dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll -class "Orders.Tests.CreateOrderTests"
 
-# Since 4.7 the development loop for the saga needs NO Docker at all: the 9 tests of
-# OrderStateMachineTests run on the in-memory repository in ~10 s. Orders.Tests is the
-# only suite carrying both categories.
+# Since 4.7 the development loop for the saga needs NO Docker at all: the 18 tests of
+# OrderStateMachineTests (9 until 4.9) run on the in-memory repository in ~20 s.
+# Orders.Tests is the only suite carrying both categories.
+#
+# STOP the running services before building a test project. A live Orders.API locks
+# Orders.Domain.dll, the build fails with MSB3027 — and the runner then happily runs
+# the STALE binary and reports green (measured in 4.9). Read the build result first.
 dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll -trait "Category=Fast"
 
 # Redirect to a file rather than reading the console tail: EF Core logs at info,

@@ -114,9 +114,26 @@ public sealed class OrderState : SagaStateMachineInstance
     /// Inventory contesta <c>StockReleased</c> —una transición después— y ese
     /// evento no lleva ningún texto. Entre los dos mensajes hay que recordarlo.
     ///
-    /// Que solo lo escriba un camino de los dos es deliberado y no una asimetría
-    /// que haya que "arreglar": guardar también el de <c>StockRejected</c> sería
-    /// un campo escrito para no leerse nunca.
+    /// **Desde 4.9 lo escriben TRES caminos, no uno.** A los de arriba se suman los
+    /// dos <c>OrderPricingRejected</c>: el de <c>PricingPending</c>, que va a
+    /// <c>CancellingStockPending</c> a esperar la respuesta de Inventory, y el de
+    /// <c>PricingPendingStockReserved</c>, que va a <c>CompensatingStock</c>. Los
+    /// dos por el mismo motivo que el de <c>PaymentFailed</c>: el
+    /// <c>OrderCancelled</c> sale una transición más tarde, disparado por un evento
+    /// que no lleva texto.
+    ///
+    /// Sigue habiendo un camino que **no** lo escribe, y sigue siendo deliberado:
+    /// los <c>StockRejected</c> que cancelan directamente publican en la misma
+    /// transición en la que reciben el motivo, así que lo leen del mensaje. La
+    /// regla que separa los dos grupos no es qué evento llega, es **si la
+    /// publicación ocurre en esa misma transición o en otra posterior**.
+    ///
+    /// Un detalle que solo aparece con 4.9 y conviene tener escrito: en
+    /// <c>CancellingStockPending --StockRejected--> Cancelled</c> los **dos** motivos
+    /// son ciertos a la vez (precio falso y sin stock) y se publica el que hay aquí
+    /// guardado, el de precio. No se concatenan — el <c>///</c> de
+    /// <c>OrderCancelled</c> promete un texto para que el cliente entienda qué pasó,
+    /// no un inventario de todo lo que falló.
     ///
     /// Inicializado a cadena vacía y no a <c>null!</c> como los dos de arriba:
     /// aquí sí existe un camino que llega a publicar sin haber pasado por el

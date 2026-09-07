@@ -46,6 +46,23 @@ namespace Orders.Tests;
 /// etapas: ordena bien, pero no des-gasta el <c>InactivityTask</c>, y sin él solo se puede
 /// afirmar "al menos uno", nunca "exactamente uno" — que es justo lo que el roadmap exige del
 /// escenario 3. Es el mismo descarte que razonó 4.4 con <c>Published.Any&lt;StockReserved&gt;()</c>.
+///
+/// ── Qué añade 4.9, y por qué se tocaron los nueve tests que ya había ──
+///
+/// La saga gana <c>PricingPending</c> **delante** de <c>StockPending</c>, así que un
+/// <c>StockReserved</c> ya no lleva a <c>PaymentPending</c> y los nueve tests anteriores se
+/// pusieron rojos de golpe. La adaptación es insertarles el <c>OrderPricingValidated</c> donde
+/// toca; que rompieran es la señal de que cubrían de verdad las transiciones.
+///
+/// Lo que 4.9 añade encima es la primera **rama paralela** de la saga: Catalog e Inventory
+/// consumen el mismo <c>OrderCreated</c> del mismo fanout, así que sus dos respuestas llegan en
+/// un orden que nadie garantiza. Esta clase recorre los dos órdenes a mano —publicando los
+/// eventos en la secuencia que se quiere probar, que el <c>ConcurrentMessageLimit = 1</c>
+/// convierte en determinista— porque una carrera que solo se prueba en el orden probable no
+/// está probada.
+///
+/// **Y aquí es donde se desmiente el título de 4.9 en el roadmap** ("sin nada que compensar"):
+/// ver <see cref="PricingRejected_WithStockAlreadyReserved_SendsExactlyOneReleaseStock"/>.
 /// </summary>
 [Trait("Category", "Fast")]
 public sealed class OrderStateMachineTests : IAsyncLifetime
@@ -73,6 +90,7 @@ public sealed class OrderStateMachineTests : IAsyncLifetime
         var orderId = Guid.NewGuid();
 
         await PublishAsync(OrderCreated(orderId));
+        await PublishAsync(PricingValidated(orderId));
         await PublishAsync(new StockReserved { OrderId = orderId, Amount = MugPrice });
         await PublishAsync(PaymentCompleted(orderId));
         await SettleAsync();
@@ -107,6 +125,7 @@ public sealed class OrderStateMachineTests : IAsyncLifetime
         var orderId = Guid.NewGuid();
 
         await PublishAsync(OrderCreated(orderId));
+        await PublishAsync(PricingValidated(orderId));
         await PublishAsync(new StockReserved { OrderId = orderId, Amount = MugPrice });
         await PublishAsync(PaymentCompleted(orderId));
         await SettleAsync();
@@ -124,9 +143,15 @@ public sealed class OrderStateMachineTests : IAsyncLifetime
     // ── Escenario 2: sin stock disponible ────────────────────────────────────
 
     /// <summary>
-    /// El camino de error **corto**. El <c>Reason</c> que compone Inventory viaja tal cual
-    /// dentro del <c>OrderCancelled</c>: la saga no lo reescribe ni lo traduce a un código,
-    /// porque quien mejor sabe por qué falló es quien falló.
+    /// El camino de error **corto**, desde <c>StockPending</c> — o sea con el precio ya
+    /// validado. El <c>Reason</c> que compone Inventory viaja tal cual dentro del
+    /// <c>OrderCancelled</c>: la saga no lo reescribe ni lo traduce a un código, porque quien
+    /// mejor sabe por qué falló es quien falló.
+    ///
+    /// Desde 4.9 hay un segundo camino corto —el mismo rechazo llegando **antes** de que
+    /// Catalog conteste— y tiene su propio test, porque sale de un estado distinto y publica
+    /// sin esperar a nadie: ver
+    /// <see cref="StockRejected_WithPricingStillPending_CancelsAndIgnoresTheLatePricingAnswer"/>.
     /// </summary>
     [Fact]
     public async Task StockRejected_ReachesCancelledAndPublishesOrderCancelledWithTheReason()
@@ -135,6 +160,7 @@ public sealed class OrderStateMachineTests : IAsyncLifetime
         const string reason = "el producto 999999 no existe en el inventario";
 
         await PublishAsync(OrderCreated(orderId));
+        await PublishAsync(PricingValidated(orderId));
         await PublishAsync(new StockRejected { OrderId = orderId, Reason = reason });
         await SettleAsync();
 
@@ -165,6 +191,7 @@ public sealed class OrderStateMachineTests : IAsyncLifetime
         var orderId = Guid.NewGuid();
 
         await PublishAsync(OrderCreated(orderId));
+        await PublishAsync(PricingValidated(orderId));
         await PublishAsync(new StockRejected { OrderId = orderId, Reason = "sin unidades" });
         await SettleAsync();
 
@@ -193,6 +220,7 @@ public sealed class OrderStateMachineTests : IAsyncLifetime
         var orderId = Guid.NewGuid();
 
         await PublishAsync(OrderCreated(orderId));
+        await PublishAsync(PricingValidated(orderId));
         await PublishAsync(new StockReserved { OrderId = orderId, Amount = MugPrice });
         await PublishAsync(PaymentFailed(orderId));
         await SettleAsync();
@@ -234,6 +262,7 @@ public sealed class OrderStateMachineTests : IAsyncLifetime
         host.Spy.Answers = false;
 
         await PublishAsync(OrderCreated(orderId));
+        await PublishAsync(PricingValidated(orderId));
         await PublishAsync(new StockReserved { OrderId = orderId, Amount = MugPrice });
         await PublishAsync(PaymentFailed(orderId));
         await SettleAsync();
@@ -262,6 +291,7 @@ public sealed class OrderStateMachineTests : IAsyncLifetime
         const string reason = "el importe 1197.00 supera el límite autorizado";
 
         await PublishAsync(OrderCreated(orderId));
+        await PublishAsync(PricingValidated(orderId));
         await PublishAsync(new StockReserved { OrderId = orderId, Amount = 1197.00m });
         await PublishAsync(new PaymentFailed { OrderId = orderId, Reason = reason });
         await SettleAsync();
@@ -297,9 +327,10 @@ public sealed class OrderStateMachineTests : IAsyncLifetime
     /// distingue *se descartó* de *explotó*.
     ///
     /// Un duplicado en cada mitad del camino: <c>OrderCreated</c> repetido cae en
-    /// <c>StockPending</c> (la guarda que estrenó 4.1) y <c>PaymentCompleted</c> repetido cae
-    /// en <c>Confirmed</c>, o sea en un estado **terminal** — el <c>During(Confirmed, ...)</c>
-    /// que parece código muerto y es el más fácil de borrar por error.
+    /// <c>PricingPending</c> (la guarda que estrenó 4.1, que 4.9 muda a ese estado con el
+    /// <c>Initially</c>) y <c>PaymentCompleted</c> repetido cae en <c>Confirmed</c>, o sea en
+    /// un estado **terminal** — el <c>During(Confirmed, ...)</c> que parece código muerto y es
+    /// el más fácil de borrar por error.
     /// </summary>
     [Fact]
     public async Task DuplicateEvents_ProduceASingleOrderConfirmedAndNoFaults()
@@ -308,6 +339,7 @@ public sealed class OrderStateMachineTests : IAsyncLifetime
 
         await PublishAsync(OrderCreated(orderId));
         await PublishAsync(OrderCreated(orderId));
+        await PublishAsync(PricingValidated(orderId));
         await PublishAsync(new StockReserved { OrderId = orderId, Amount = MugPrice });
         await PublishAsync(PaymentCompleted(orderId));
         await PublishAsync(PaymentCompleted(orderId));
@@ -315,13 +347,336 @@ public sealed class OrderStateMachineTests : IAsyncLifetime
 
         AssertNoFaults();
 
-        // Las cinco entregas llegaron: sin esto el test podría pasar porque los duplicados se
+        // Las seis entregas llegaron: sin esto el test podría pasar porque los duplicados se
         // perdieron por el camino, que es aprobar por el motivo equivocado.
         Assert.Equal(2, Consumed<OrderCreated>().Count);
         Assert.Equal(2, Consumed<PaymentCompleted>().Count);
 
         // Un solo efecto. Dos OrderConfirmed significarían dos emails y dos Order.Confirm(),
         // el segundo de los cuales lanza (4.3).
+        Assert.Single(Published<OrderConfirmed>());
+        Assert.Equal(nameof(OrderStateMachine.Confirmed), host.State(orderId));
+    }
+
+    // ── 4.9: la rama paralela precio/stock ───────────────────────────────────
+    //
+    // Catalog e Inventory consumen el mismo OrderCreated del mismo exchange fanout, así que
+    // sus dos respuestas llegan en un orden que nadie garantiza. Los seis tests que siguen
+    // recorren esa unión: los dos órdenes del camino feliz, y las tres formas en que un
+    // rechazo de precio puede encontrarse la reserva de stock.
+
+    /// <summary>
+    /// **La carrera, en el orden que hasta 4.8 no existía**: Inventory contesta antes que
+    /// Catalog. El pedido llega igual a <c>Confirmed</c>, pasando por
+    /// <c>PricingPendingStockReserved</c> en vez de por <c>StockPending</c>.
+    ///
+    /// Es el test que justifica que el join se modele con estados: los dos órdenes de llegada
+    /// convergen en <c>PaymentPending</c>, y ninguno de los dos "salta" la validación de
+    /// precio — que es la tentación obvia cuando el stock ya está apartado y lo único que
+    /// falta es Catalog.
+    /// </summary>
+    [Fact]
+    public async Task HappyPath_WithStockArrivingBeforePricing_ReachesConfirmedAllTheSame()
+    {
+        var orderId = Guid.NewGuid();
+
+        await PublishAsync(OrderCreated(orderId));
+        await PublishAsync(new StockReserved { OrderId = orderId, Amount = MugPrice });
+        await PublishAsync(PricingValidated(orderId));
+        await PublishAsync(PaymentCompleted(orderId));
+        await SettleAsync();
+
+        AssertNoFaults();
+
+        Assert.Single(Published<OrderConfirmed>());
+        Assert.Equal(nameof(OrderStateMachine.Confirmed), host.State(orderId));
+
+        Assert.Empty(Sent<ReleaseStock>());
+        Assert.Empty(Published<OrderCancelled>());
+    }
+
+    /// <summary>
+    /// **El test que desmiente el título de 4.9 en el roadmap.**
+    ///
+    /// Ese título dice "<c>OrderPricingRejected → Cancelled</c> **sin nada que compensar**".
+    /// Aquí el stock ya está reservado cuando llega el rechazo de precio, así que sí hay algo
+    /// que compensar: la saga manda *exactamente un* <c>ReleaseStock</c> y solo cancela cuando
+    /// Inventory contesta. Es la misma maquinaria de 4.4 alcanzada por un camino nuevo.
+    ///
+    /// El <c>///</c> de <c>OrderPricingRejected</c> avisó de esto en 4.8 —deliberadamente no
+    /// prometió lo que sí promete <c>StockRejected</c>— y encargó releerlo con la máquina de
+    /// estados delante. Esto es ese releído, en forma ejecutable.
+    /// </summary>
+    [Fact]
+    public async Task PricingRejected_WithStockAlreadyReserved_SendsExactlyOneReleaseStock()
+    {
+        var orderId = Guid.NewGuid();
+        const string reason = "el producto 1 (TAZA-001) se pidió a 0.01 y su precio es 249.00";
+
+        await PublishAsync(OrderCreated(orderId));
+        await PublishAsync(new StockReserved { OrderId = orderId, Amount = MugPrice });
+        await PublishAsync(new OrderPricingRejected { OrderId = orderId, Reason = reason });
+        await SettleAsync();
+
+        AssertNoFaults();
+
+        var release = Assert.Single(Sent<ReleaseStock>());
+        Assert.Equal(orderId, release.OrderId);
+        Assert.Single(Consumed<ReleaseStock>());
+        Assert.Single(Published<StockReleased>());
+
+        // El motivo sale de la instancia, guardado una transición antes: StockReleased no lleva
+        // texto. Es el mismo mecanismo que el camino de PaymentFailed, y desde 4.9 son tres los
+        // caminos que escriben OrderState.CancellationReason.
+        var cancelled = Assert.Single(Published<OrderCancelled>());
+        Assert.Equal(reason, cancelled.Reason);
+        Assert.Equal(CustomerEmail, cancelled.CustomerEmail);
+
+        Assert.Equal(nameof(OrderStateMachine.Cancelled), host.State(orderId));
+        Assert.Empty(Published<OrderConfirmed>());
+    }
+
+    /// <summary>
+    /// El rechazo de precio llega **antes** de que Inventory conteste, así que todavía no se
+    /// sabe si hay algo que soltar. La saga no cancela: espera en
+    /// <c>CancellingStockPending</c>, y cuando llega el <c>StockReserved</c> compensa.
+    ///
+    /// **Sin ese estado intermedio esto sería la regla 7 rota en silencio**: cancelar al
+    /// recibir el rechazo dejaría el <c>StockReserved</c> posterior cayendo en
+    /// <c>Cancelled</c>, donde se ignora, con las unidades apartadas para siempre y el pedido
+    /// perfectamente cerrado. Ningún assert de estado final lo detectaría — por eso el que
+    /// importa aquí es el recuento de <c>ReleaseStock</c>.
+    /// </summary>
+    [Fact]
+    public async Task PricingRejected_BeforeInventoryAnswers_CompensatesWhenTheReservationArrives()
+    {
+        var orderId = Guid.NewGuid();
+        const string reason = "el total 0.01 no cuadra con la suma de las líneas (249.00)";
+
+        await PublishAsync(OrderCreated(orderId));
+        await PublishAsync(new OrderPricingRejected { OrderId = orderId, Reason = reason });
+        await PublishAsync(new StockReserved { OrderId = orderId, Amount = MugPrice });
+        await SettleAsync();
+
+        AssertNoFaults();
+
+        Assert.Single(Sent<ReleaseStock>());
+        Assert.Single(Published<StockReleased>());
+
+        var cancelled = Assert.Single(Published<OrderCancelled>());
+        Assert.Equal(reason, cancelled.Reason);
+
+        Assert.Equal(nameof(OrderStateMachine.Cancelled), host.State(orderId));
+    }
+
+    /// <summary>
+    /// La otra salida de <c>CancellingStockPending</c>: Inventory **tampoco** pudo reservar.
+    /// No hay nada que devolver, así que el pedido se cierra sin compensación — el único
+    /// camino en el que el "sin nada que compensar" del título de 4.9 acierta.
+    ///
+    /// Los **dos** motivos son ciertos a la vez (precio falso y sin stock) y se publica el de
+    /// precio, que es el que la saga tenía guardado y el que la llevó a dar el pedido por
+    /// perdido. No se concatenan: el <c>///</c> de <c>OrderCancelled</c> promete un texto para
+    /// que el cliente entienda qué pasó, no un inventario de todo lo que falló.
+    /// </summary>
+    [Fact]
+    public async Task PricingRejected_BeforeInventoryAnswers_WhenStockIsAlsoRejected_DoesNotCompensate()
+    {
+        var orderId = Guid.NewGuid();
+        const string pricingReason = "el producto 1 (TAZA-001) se pidió a 0.01 y su precio es 249.00";
+
+        await PublishAsync(OrderCreated(orderId));
+        await PublishAsync(new OrderPricingRejected { OrderId = orderId, Reason = pricingReason });
+        await PublishAsync(new StockRejected { OrderId = orderId, Reason = "sin unidades" });
+        await SettleAsync();
+
+        AssertNoFaults();
+
+        // Nada que soltar: Inventory no apartó ninguna unidad. Soltar aquí sería devolver
+        // unidades que nunca se movieron, o sea crearlas de la nada.
+        Assert.Empty(Sent<ReleaseStock>());
+        Assert.Empty(Published<StockReleased>());
+
+        var cancelled = Assert.Single(Published<OrderCancelled>());
+        Assert.Equal(pricingReason, cancelled.Reason);
+
+        Assert.Equal(nameof(OrderStateMachine.Cancelled), host.State(orderId));
+    }
+
+    /// <summary>
+    /// El segundo camino corto que estrena 4.9: Inventory rechaza **con el precio todavía sin
+    /// validar**, y la saga cierra el pedido sin esperar a Catalog.
+    ///
+    /// Es seguro porque el pedido está perdido pase lo que pase con el precio y porque no hay
+    /// nada apartado (la reserva de Inventory es atómica). Y descartar la respuesta de Catalog
+    /// no deja rastro: validar precios **no escribe nada de negocio** — es la propiedad de
+    /// <c>OrderCreatedPricingConsumer</c> que en 4.8 hizo que su idempotencia saliera distinta
+    /// de la de los otros cuatro servicios.
+    ///
+    /// La segunda mitad del test es la que se olvida: el <c>OrderPricingValidated</c> que llega
+    /// tarde cae en <c>Cancelled</c> y tiene que ignorarse. **Sin esa guarda, todo pedido sin
+    /// stock dejaría un mensaje en <c>order-state_error</c>** — no es el caso raro, es el
+    /// normal.
+    /// </summary>
+    [Fact]
+    public async Task StockRejected_WithPricingStillPending_CancelsAndIgnoresTheLatePricingAnswer()
+    {
+        var orderId = Guid.NewGuid();
+        const string reason = "el producto 999999 no existe en el inventario";
+
+        await PublishAsync(OrderCreated(orderId));
+        await PublishAsync(new StockRejected { OrderId = orderId, Reason = reason });
+        await PublishAsync(PricingValidated(orderId));
+        await SettleAsync();
+
+        AssertNoFaults();
+
+        var cancelled = Assert.Single(Published<OrderCancelled>());
+        Assert.Equal(reason, cancelled.Reason);
+
+        Assert.Equal(nameof(OrderStateMachine.Cancelled), host.State(orderId));
+
+        // La respuesta tardía llegó de verdad y se ignoró, que es lo que AssertNoFaults()
+        // demuestra. Sin esta línea el test podría pasar porque el mensaje se perdió.
+        Assert.Single(Consumed<OrderPricingValidated>());
+    }
+
+    /// <summary>
+    /// **La inversión que la planificación de 4.9 dio por rara y resultó ser la mitad de los
+    /// pedidos.** La rama de Inventory no acaba en el <c>StockReserved</c>: Payments consume
+    /// ese mismo evento del fanout y cobra sin esperar a nadie, así que la rama entera puede
+    /// completarse antes de que Catalog conteste.
+    ///
+    /// Medido contra el compose real antes de escribir este test: de siete pedidos legítimos,
+    /// **cuatro** los ganó Inventory. Sin <c>PricingPendingPaymentCompleted</c> esos pedidos
+    /// dependían de que el <c>UseMessageRetry</c> reordenara la entrega dentro de su ventana de
+    /// ~500 ms, o sea de que Catalog no se retrasara — que es justo lo que no se puede suponer
+    /// de un servicio que puede caerse.
+    /// </summary>
+    [Fact]
+    public async Task HappyPath_WithTheWholeStockAndPaymentBranchBeforePricing_ReachesConfirmed()
+    {
+        var orderId = Guid.NewGuid();
+
+        await PublishAsync(OrderCreated(orderId));
+        await PublishAsync(new StockReserved { OrderId = orderId, Amount = MugPrice });
+        await PublishAsync(PaymentCompleted(orderId));
+        await PublishAsync(PricingValidated(orderId));
+        await SettleAsync();
+
+        AssertNoFaults();
+
+        var confirmed = Assert.Single(Published<OrderConfirmed>());
+        Assert.Equal(CustomerEmail, confirmed.CustomerEmail);
+
+        Assert.Equal(nameof(OrderStateMachine.Confirmed), host.State(orderId));
+        Assert.Empty(Sent<ReleaseStock>());
+        Assert.Empty(Published<OrderCancelled>());
+    }
+
+    /// <summary>
+    /// **El caso peor del proyecto**: el precio era falso y el cobro ya se había aceptado.
+    ///
+    /// La saga suelta el stock y cancela, que es todo lo que puede hacer — **el cobro no se
+    /// devuelve, porque no existe ningún contrato de reembolso** en <c>Shop133.Contracts</c>.
+    /// El <c>TransactionId</c> que <c>PaymentCompleted</c> lleva desde 0.3 "para poder emitir
+    /// el reembolso" sigue sin nadie que lo use, y este test es donde eso se ve. Queda como
+    /// hueco anotado, no como algo que 4.9 arregle inventando un decimotercer contrato.
+    ///
+    /// Lo que el test sí exige es que la mitad que la saga **puede** cumplir se cumpla: una
+    /// sola liberación de stock y el pedido cerrado.
+    /// </summary>
+    [Fact]
+    public async Task PricingRejected_AfterThePaymentWasAccepted_ReleasesStockAndCancels()
+    {
+        var orderId = Guid.NewGuid();
+        const string reason = "el producto 1 (TAZA-001) se pidió a 0.01 y su precio es 249.00";
+
+        await PublishAsync(OrderCreated(orderId));
+        await PublishAsync(new StockReserved { OrderId = orderId, Amount = MugPrice });
+        await PublishAsync(PaymentCompleted(orderId));
+        await PublishAsync(new OrderPricingRejected { OrderId = orderId, Reason = reason });
+        await SettleAsync();
+
+        AssertNoFaults();
+
+        Assert.Single(Sent<ReleaseStock>());
+        Assert.Single(Published<StockReleased>());
+
+        var cancelled = Assert.Single(Published<OrderCancelled>());
+        Assert.Equal(reason, cancelled.Reason);
+
+        Assert.Equal(nameof(OrderStateMachine.Cancelled), host.State(orderId));
+
+        // El pedido NO se confirma, aunque el cobro esté hecho: es lo que distingue "cobrado"
+        // de "vendido".
+        Assert.Empty(Published<OrderConfirmed>());
+    }
+
+    /// <summary>
+    /// El cobro se rechaza con el precio todavía sin validar. Condena el pedido diga lo que
+    /// diga Catalog y hay stock apartado, así que se entra en la compensación de 4.4 **sin
+    /// esperar** — y la respuesta de Catalog, que llega después, se ignora en
+    /// <c>CompensatingStock</c>.
+    ///
+    /// Es uno de los dos cruces del join que deliberadamente no tienen estado propio: cuando
+    /// el desenlace ya no depende de Catalog, esperarle sería inventar una espera.
+    /// </summary>
+    [Fact]
+    public async Task PaymentFailed_WithPricingStillPending_CompensatesWithoutWaitingForCatalog()
+    {
+        var orderId = Guid.NewGuid();
+        const string reason = "el importe 1197.00 supera el límite autorizado";
+
+        await PublishAsync(OrderCreated(orderId));
+        await PublishAsync(new StockReserved { OrderId = orderId, Amount = 1197.00m });
+        await PublishAsync(new PaymentFailed { OrderId = orderId, Reason = reason });
+        await PublishAsync(PricingValidated(orderId));
+        await SettleAsync();
+
+        AssertNoFaults();
+
+        Assert.Single(Sent<ReleaseStock>());
+        Assert.Single(Published<StockReleased>());
+
+        var cancelled = Assert.Single(Published<OrderCancelled>());
+        Assert.Equal(reason, cancelled.Reason);
+
+        Assert.Equal(nameof(OrderStateMachine.Cancelled), host.State(orderId));
+
+        // La respuesta tardía de Catalog llegó y se ignoró — lo demuestra AssertNoFaults().
+        Assert.Single(Consumed<OrderPricingValidated>());
+    }
+
+    /// <summary>
+    /// La idempotencia de los dos eventos que 4.9 estrena, con la misma mecánica que el
+    /// escenario 4: duplicados con <c>MessageId</c> distintos —reconocen el mismo *pedido*, no
+    /// la misma *entrega*— y **el assert que de verdad prueba la guarda es
+    /// <c>AssertNoFaults()</c>**, no el recuento (trampa 3 de docs/fase_3_7.md, ya confirmada
+    /// cuatro veces en este repositorio).
+    ///
+    /// Los duplicados caen en dos sitios distintos a propósito: el primero en
+    /// <c>StockPending</c>, o sea el estado al que el propio evento acaba de llevar a la saga,
+    /// y el segundo en <c>Confirmed</c>, un estado **terminal** — el <c>During</c> que parece
+    /// código muerto.
+    /// </summary>
+    [Fact]
+    public async Task DuplicatePricingValidated_ProducesASingleEffectAndNoFaults()
+    {
+        var orderId = Guid.NewGuid();
+
+        await PublishAsync(OrderCreated(orderId));
+        await PublishAsync(PricingValidated(orderId));
+        await PublishAsync(PricingValidated(orderId));
+        await PublishAsync(new StockReserved { OrderId = orderId, Amount = MugPrice });
+        await PublishAsync(PaymentCompleted(orderId));
+        await PublishAsync(PricingValidated(orderId));
+        await SettleAsync();
+
+        AssertNoFaults();
+
+        Assert.Equal(3, Consumed<OrderPricingValidated>().Count);
+
         Assert.Single(Published<OrderConfirmed>());
         Assert.Equal(nameof(OrderStateMachine.Confirmed), host.State(orderId));
     }
@@ -384,6 +739,16 @@ public sealed class OrderStateMachineTests : IAsyncLifetime
         TransactionId = $"SIM-{orderId:N}",
     };
 
+    /// <summary>
+    /// La respuesta de Catalog que 4.9 mete delante de todo. Se le da nombre de ayuda —en vez
+    /// de escribir el <c>new</c> a pelo como con <c>StockReserved</c>— porque aparece en trece
+    /// de los quince tests de la clase y una línea corta ahí se lee mejor.
+    /// </summary>
+    private static OrderPricingValidated PricingValidated(Guid orderId) => new()
+    {
+        OrderId = orderId,
+    };
+
     private static PaymentFailed PaymentFailed(Guid orderId) => new()
     {
         OrderId = orderId,
@@ -418,15 +783,22 @@ public sealed class OrderStateMachineTests : IAsyncLifetime
         host.Harness.Consumed.Select<T>().Select(message => message.Context.Message).ToList();
 
     /// <summary>
-    /// Ningún mensaje acabó en la cola de error, para los seis eventos que consume la saga.
+    /// Ningún mensaje acabó en la cola de error, para los **ocho** eventos que consume la saga
+    /// desde 4.9.
     ///
     /// No es decoración: es lo que distingue "el duplicado se descartó" de "el duplicado
     /// reventó" y "el orden se respetó" de "el orden se rompió". Sin esta comprobación, varios
     /// de los tests de esta clase pasarían con las guardas borradas.
+    ///
+    /// Las dos líneas que añade 4.9 no son ceremonia: con la rama paralela, la mitad de los
+    /// tests nuevos publican los eventos en un orden que solo es aceptable si las guardas están
+    /// donde tienen que estar, y un fault es la única señal de que no lo estaban.
     /// </summary>
     private void AssertNoFaults()
     {
         Assert.Empty(Published<Fault<OrderCreated>>());
+        Assert.Empty(Published<Fault<OrderPricingValidated>>());
+        Assert.Empty(Published<Fault<OrderPricingRejected>>());
         Assert.Empty(Published<Fault<StockReserved>>());
         Assert.Empty(Published<Fault<StockRejected>>());
         Assert.Empty(Published<Fault<PaymentCompleted>>());

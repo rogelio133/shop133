@@ -68,7 +68,11 @@ public sealed class OrderStatePersistenceTests(SqlServerContainerFixture contain
 
         Assert.NotNull(instance);
         Assert.Equal(orderId, instance.CorrelationId);
-        Assert.Equal(nameof(OrderStateMachine.StockPending), instance.CurrentState);
+
+        // PricingPending desde 4.9, donde hasta 4.8 decía StockPending: el Initially ya no
+        // apunta ahí porque a partir de él hay DOS respuestas pendientes a la vez, la de
+        // Catalog y la de Inventory.
+        Assert.Equal(nameof(OrderStateMachine.PricingPending), instance.CurrentState);
         Assert.Equal(CustomerEmail, instance.CustomerEmail);
         Assert.NotEqual(default, instance.CreatedAt);
 
@@ -98,6 +102,11 @@ public sealed class OrderStatePersistenceTests(SqlServerContainerFixture contain
         await PublishAsync(OrderCreated(orderId));
 
         var afterStart = await host.WaitForStateAsync(
+            orderId, nameof(OrderStateMachine.PricingPending), CancellationToken);
+
+        await PublishAsync(new OrderPricingValidated { OrderId = orderId });
+
+        var afterPricing = await host.WaitForStateAsync(
             orderId, nameof(OrderStateMachine.StockPending), CancellationToken);
 
         await PublishAsync(new StockReserved { OrderId = orderId, Amount = MugPrice });
@@ -105,7 +114,40 @@ public sealed class OrderStatePersistenceTests(SqlServerContainerFixture contain
         var afterReservation = await host.WaitForStateAsync(
             orderId, nameof(OrderStateMachine.PaymentPending), CancellationToken);
 
-        Assert.NotEqual(afterStart.RowVersion, afterReservation.RowVersion);
+        Assert.NotEqual(afterStart.RowVersion, afterPricing.RowVersion);
+        Assert.NotEqual(afterPricing.RowVersion, afterReservation.RowVersion);
+    }
+
+    /// <summary>
+    /// **El argumento de 4.9 hecho assert**: el estado del join se lee en la fila tal cual, sin
+    /// cruzar nada.
+    ///
+    /// Aquí Inventory contestó antes que Catalog, y la columna dice exactamente eso —
+    /// <c>PricingPendingStockReserved</c>, "falta Catalog, el stock ya está apartado". Es lo que
+    /// se perdía con la alternativa descartada: un <c>bool StockIsReserved</c> en otra columna
+    /// habría dejado <c>CurrentState</c> diciendo <c>PricingPending</c> en dos situaciones
+    /// distintas, y para distinguirlas habría que leer las dos columnas y saber cómo se
+    /// combinan.
+    ///
+    /// Es también la razón por la que <c>CurrentState</c> es <c>string</c> y no <c>int</c>
+    /// (2.1) y por la que los estados no se finalizan (4.5): la fila tiene que poder leerse.
+    /// </summary>
+    [Fact]
+    public async Task ParallelJoin_IsReadableInTheRow()
+    {
+        var orderId = Guid.NewGuid();
+
+        await PublishAsync(OrderCreated(orderId));
+        await PublishAsync(new StockReserved { OrderId = orderId, Amount = MugPrice });
+
+        var waiting = await host.WaitForStateAsync(
+            orderId, nameof(OrderStateMachine.PricingPendingStockReserved), CancellationToken);
+
+        Assert.Equal(orderId, waiting.CorrelationId);
+
+        // Y el pedido sigue vivo: no se ha confirmado ni cancelado a la espera de Catalog.
+        Assert.Empty(Published<OrderConfirmed>());
+        Assert.Empty(Published<OrderCancelled>());
     }
 
     /// <summary>
@@ -131,15 +173,17 @@ public sealed class OrderStatePersistenceTests(SqlServerContainerFixture contain
         await PublishAsync(OrderCreated(orderId));
 
         var beforeRestart = await host.WaitForStateAsync(
-            orderId, nameof(OrderStateMachine.StockPending), CancellationToken);
+            orderId, nameof(OrderStateMachine.PricingPending), CancellationToken);
 
         await host.RestartBusAsync();
 
         // El proceso nuevo no ha visto nunca el OrderCreated de este pedido.
+        await PublishAsync(new OrderPricingValidated { OrderId = orderId });
         await PublishAsync(new StockReserved { OrderId = orderId, Amount = MugPrice });
         await PublishAsync(PaymentCompleted(orderId));
         await SettleAsync();
 
+        Assert.Empty(Published<Fault<OrderPricingValidated>>());
         Assert.Empty(Published<Fault<StockReserved>>());
         Assert.Empty(Published<Fault<PaymentCompleted>>());
 
