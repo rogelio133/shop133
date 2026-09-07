@@ -103,6 +103,17 @@ public sealed class StockReservation
     public DateTimeOffset CreatedAt { get; private set; }
 
     /// <summary>
+    /// Cuándo se devolvieron las unidades, o <c>null</c> si la reserva sigue viva.
+    /// Lo sella <see cref="Release"/> desde 4.4.
+    ///
+    /// **Nullable a propósito: <c>null</c> significa reserva viva.** No hay un enum
+    /// de estado con dos valores porque la fecha ya dice las dos cosas —si hay
+    /// sello, se liberó— y un enum al lado obligaría a mantenerlos de acuerdo.
+    /// Mismo criterio que <c>Payment</c>, que no tiene un bool además de su Status.
+    /// </summary>
+    public DateTimeOffset? ReleasedAt { get; private set; }
+
+    /// <summary>
     /// Las líneas, de solo lectura desde fuera.
     ///
     /// <c>AsReadOnly()</c> y no <c>=&gt; _lines</c> a secas: devolver el List
@@ -112,4 +123,38 @@ public sealed class StockReservation
     /// AsReadOnly() envuelve en un ReadOnlyCollection cuyo Add lanza.
     /// </summary>
     public IReadOnlyList<StockReservationLine> Lines => _lines.AsReadOnly();
+
+    /// <summary>
+    /// Marca la reserva como liberada. No toca los <c>StockItem</c> — de devolver
+    /// las unidades se encarga el consumer, llamando a <c>StockItem.Release(...)</c>
+    /// por cada línea; esta entidad solo sabe de su propia fila.
+    ///
+    /// **Lanza si ya estaba liberada, y eso es intencionadamente hostil.** Es la
+    /// misma disciplina que <c>Order.Confirm()</c>/<c>Cancel()</c> de 4.3:
+    /// reconocer un duplicado es trabajo del *consumer*, que mira
+    /// <see cref="ReleasedAt"/> y vuelve antes de tocar la entidad. Si esta
+    /// excepción salta, o falló aquella guarda o InventoryDb y la saga discrepan —
+    /// las dos cosas son incoherencias que hay que ver, no absorber. Dejar pasar la
+    /// segunda llamada mezclaría el duplicado legítimo con el fallo real, y aquí el
+    /// fallo real significa haber soltado el stock dos veces.
+    ///
+    /// *Descartado* borrar la fila en vez de marcarla, que sería más simple y
+    /// daría idempotencia "por ausencia". Tres motivos: destruye la evidencia de
+    /// que la compensación ocurrió —que es justo lo que la Fase 4 existe para
+    /// demostrar—; rompe la guarda de negocio de OrderCreatedConsumer, porque un
+    /// OrderCreated reentregado con MessageId nuevo no encontraría reserva y
+    /// **volvería a reservar stock para un pedido cancelado**; y con la fila viva,
+    /// el camino de liberación tiene su propia guarda de negocio por el mismo
+    /// mecanismo que el de reserva, en vez de por uno distinto.
+    /// </summary>
+    public void Release()
+    {
+        if (ReleasedAt is not null)
+        {
+            throw new InvalidOperationException(
+                $"La reserva del pedido {OrderId} ya se liberó el {ReleasedAt:O}.");
+        }
+
+        ReleasedAt = DateTimeOffset.UtcNow;
+    }
 }

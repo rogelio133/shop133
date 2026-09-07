@@ -78,6 +78,23 @@ public sealed class Product
     /// La <see cref="CategoryId"/> también se puede cambiar (1.4): un producto
     /// mal clasificado se recoloca, y es una operación de catálogo tan normal
     /// como corregirle el precio.
+    ///
+    /// ── Desde 4.8 lleva la contabilidad del precio anterior ──
+    ///
+    /// Es el único sitio donde <see cref="PreviousPrice"/> y
+    /// <see cref="PriceChangedAt"/> se escriben, y por eso la lógica está aquí y
+    /// no en <see cref="Apply"/>: el contrato de aquel método —validar en locales
+    /// y asignar en bloque— es justo lo que no se puede debilitar. Poniendo la
+    /// contabilidad **después** de que <c>Apply</c> vuelva, hereda su garantía de
+    /// todo-o-nada en vez de romperla: un <c>Update</c> que lance no puede dejar
+    /// el <c>PreviousPrice</c> movido con el <c>Price</c> viejo, que sería la
+    /// mitad de un cambio y volvería auténtico un precio que nunca existió.
+    ///
+    /// *Descartado* pasarle un flag a <see cref="Apply"/> para distinguir alta de
+    /// modificación: le daría un parámetro cuyo significado es "quién me llamó".
+    /// Con esta forma el constructor público no cambia y **un producto nuevo nace
+    /// con las dos columnas a null gratis**, que es exactamente lo que quiere
+    /// decir "este producto nunca ha cambiado de precio".
     /// </summary>
     public void Update(
         string sku,
@@ -88,7 +105,78 @@ public sealed class Product
         int categoryId,
         string? imageUrl = null)
     {
+        // Se captura ANTES: Apply es quien reemplaza Price.
+        var priceBefore = Price;
+
         Apply(sku, name, description, price, stock, categoryId, imageUrl);
+
+        // decimal != compara valor numérico, no escala, así que un PUT que
+        // reenvía 249.0 sobre un 249.00 almacenado **no** es un cambio de precio
+        // y no quema la ventana. Es el comportamiento correcto y merece decirse
+        // porque 3.3 midió que los ceros finales se pierden en tránsito: una foto
+        // de 249.00 llega al consumer como 249.
+        if (price != priceBefore)
+        {
+            PreviousPrice = priceBefore;
+            PriceChangedAt = DateTimeOffset.UtcNow;
+        }
+    }
+
+    /// <summary>
+    /// ¿Es auténtico este precio unitario? Lo es si coincide con el precio actual,
+    /// o si coincide con <see cref="PreviousPrice"/> y el cambio ocurrió dentro de
+    /// la ventana de checkout.
+    ///
+    /// **La pregunta que contesta no es "¿es este el precio de hoy?".** Todo el
+    /// <c>///</c> de <c>Shop133.Contracts.OrderLine</c> existe para afirmar que el
+    /// precio de un pedido es una foto congelada, y comparar contra el precio
+    /// actual rechazaría un pedido legítimo cuyo precio cambió a mitad del
+    /// checkout. Lo que se valida es que el precio de la foto sea un precio que
+    /// este catálogo **llegó a ofrecer**, y hace poco.
+    ///
+    /// ── Por qué es un predicado en la entidad y no cuatro cláusulas en el
+    ///    consumer ──
+    ///
+    /// Precedente <c>StockItem.CanReserve</c> de Inventory: un predicado puro que
+    /// nunca lanza, cuyo llamante decide qué publicar. Aquí compra algo que aquel
+    /// caso no tenía: el código que **escribe** las dos columnas
+    /// (<see cref="Update"/>) y el que las **lee** acaban en el mismo archivo, así
+    /// que las dos mitades de la ventana no pueden divergir. Escrito en el
+    /// consumer, sí podrían.
+    ///
+    /// No tiene gemelo que lance al estilo de <c>StockItem.Reserve</c>: allí el
+    /// par existía porque después de comprobar había que mutar. Aquí no muta nada
+    /// — validar un precio es una lectura.
+    ///
+    /// ── La limitación, que hay que decir en voz alta ──
+    ///
+    /// Hay **exactamente un paso de historia**. Dos cambios seguidos
+    /// (249 → 199 → 179) invalidan una foto legítima de 249 tomada hace dos
+    /// minutos: el cliente recibe una cancelación por un pedido correcto.
+    ///
+    /// *Descartada* una tabla <c>ProductPriceHistory</c> con vigencias, que sería
+    /// la respuesta completa: entidad, configuración, migración, 50 filas de seed
+    /// y una política de purga, para ensanchar una ventana que el proyecto no
+    /// tiene ninguna evidencia de que sea estrecha. Si algún día la hay, es la
+    /// forma de arreglarlo.
+    ///
+    /// Lee <c>DateTimeOffset.UtcNow</c> directamente, con el precedente del
+    /// constructor de <c>ProcessedMessage</c>, cuyo <c>///</c> descarta
+    /// explícitamente un <c>TimeProvider</c> inyectado. La consecuencia es que un
+    /// test no puede fingir que el reloj avanzó — tiene que mover
+    /// <see cref="PriceChangedAt"/> en la base.
+    /// </summary>
+    public bool IsAuthenticPrice(decimal unitPrice, TimeSpan window)
+    {
+        if (unitPrice == Price)
+        {
+            return true;
+        }
+
+        return PreviousPrice is { } previous
+            && PriceChangedAt is { } changedAt
+            && unitPrice == previous
+            && DateTimeOffset.UtcNow - changedAt <= window;
     }
 
     /// <summary>
@@ -198,6 +286,36 @@ public sealed class Product
 
     /// <summary>Precio de venta. Siempre mayor que cero.</summary>
     public decimal Price { get; private set; }
+
+    /// <summary>
+    /// El precio que tenía antes del último cambio, o <c>null</c> si nunca ha
+    /// cambiado (4.8). Lo escribe <see cref="Update"/> y lo lee
+    /// <see cref="IsAuthenticPrice"/>; nadie más lo toca.
+    ///
+    /// **No es un histórico**: es un solo paso hacia atrás, y solo sirve para
+    /// reconocer como auténtica la foto de un pedido que empezó su checkout justo
+    /// antes de un cambio de precio. Ver la limitación en
+    /// <see cref="IsAuthenticPrice"/>.
+    ///
+    /// **Deliberadamente no se publica en <c>ProductResponse</c>.** Exponerla le
+    /// daría a un cliente la cifra exacta que necesita para forjar una foto que
+    /// pase por auténtica, que es lo contrario de para lo que existe 4.8.
+    /// </summary>
+    public decimal? PreviousPrice { get; private set; }
+
+    /// <summary>
+    /// Cuándo cambió el precio por última vez, o <c>null</c> si nunca cambió.
+    /// Siempre en UTC. Es la otra mitad de <see cref="PreviousPrice"/>: sin fecha,
+    /// el precio anterior sería auténtico para siempre y la ventana no existiría.
+    ///
+    /// <c>DateTimeOffset</c> y no <c>DateTime</c>, como en todas las marcas de
+    /// tiempo del proyecto: mapea a <c>datetimeoffset</c> sin ambigüedad de
+    /// <c>Kind</c>.
+    ///
+    /// Tampoco se publica en <c>ProductResponse</c>, por lo mismo que la anterior
+    /// — con las dos, forjar una foto auténtica sería trivial.
+    /// </summary>
+    public DateTimeOffset? PriceChangedAt { get; private set; }
 
     /// <summary>
     /// Unidades que el catálogo anuncia. Ver la nota de la clase: no es el

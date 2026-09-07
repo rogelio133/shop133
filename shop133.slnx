@@ -17,6 +17,7 @@
   </Folder>
   <Folder Name="/src/Services/Notifications/">
     <Project Path="src/Services/Notifications/Notifications.API/Notifications.API.csproj" />
+    <Project Path="src/Services/Notifications/Notifications.Infrastructure/Notifications.Infrastructure.csproj" />
   </Folder>
   <Folder Name="/src/Services/Orders/">
     <Project Path="src/Services/Orders/Orders.API/Orders.API.csproj" />

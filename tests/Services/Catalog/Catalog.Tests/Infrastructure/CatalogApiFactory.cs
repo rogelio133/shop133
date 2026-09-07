@@ -1,7 +1,10 @@
 using Catalog.Infrastructure.Persistence;
 
+using MassTransit;
+
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -64,7 +67,94 @@ public sealed class CatalogApiFactory : WebApplicationFactory<Program>, IAsyncLi
         // construye. Dando el connection string correcto tampoco hace falta
         // reregistrar nada — se prueba el AddDbContext real del servicio.
         builder.UseSetting("ConnectionStrings:CatalogDb", container.ConnectionStringFor(databaseName));
+
+        // Añadida en 4.8, cuando Program.cs empezó a exigir el URI del broker.
+        // Sin esta línea la suite entera —los 19 tests de 1.7— falla en el
+        // constructor con "Falta la configuración 'ConnectionStrings:RabbitMq'".
+        //
+        // Es la regla que dejó escrita 3.1 y que ya cobró una vez en Orders: cada
+        // guarda nueva en un Program.cs es una línea nueva en la fábrica de su
+        // suite, y cada guarda que se va se lleva la suya. Nada más que esta suite
+        // detecta el desajuste.
+        //
+        // **El valor es falso a propósito**, copiando el de OrdersApiFactory. El
+        // bus de RabbitMQ que registra Program.cs se desmonta justo debajo, así que
+        // aquí no hay ningún broker al que conectarse: la clave solo tiene que
+        // existir para que la guarda pase. Un URI verosímil sería peor — si algún
+        // día el desmontaje se rompiera, la suite se conectaría al RabbitMQ de
+        // desarrollo, declararía los exchanges reales y ligaría una cola
+        // order-created-pricing de verdad, sin que nada lo delatara. Con este host
+        // inventado, se cuelga y se investiga.
+        builder.UseSetting("ConnectionStrings:RabbitMq", "amqp://el-harness-sustituye-esto:5672");
+
+        // ── El bus de RabbitMQ, fuera; el harness en memoria, dentro ──
+        //
+        // Copiado de OrdersApiFactory, donde 3.7 lo estrenó. Hay que desmontar en
+        // vez de sustituir porque no se llega antes: Program.cs lee su guarda y
+        // registra AddMassTransit *antes* de app.Build(), y ConfigureTestServices
+        // corre después.
+        //
+        // **Y conviene ser preciso sobre por qué hace falta, porque "si no, los
+        // tests fallan" es FALSO.** 3.1 midió que un bus apuntando a un host
+        // inexistente no revienta: loguea "warn: Connection Failed" y reintenta con
+        // backoff. Con solo la línea de arriba, los 19 tests probablemente pasarían
+        // — cada uno con un bucle de reconexión de fondo. Las razones honestas son
+        // otras tres: elimina la POSIBILIDAD de tocar un broker real, evita que el
+        // consumer de 4.8 quede registrado-pero-inerte dentro del host de test, y
+        // mantiene lo que CLAUDE.md afirma de todo el repositorio desde 3.7 —
+        // ninguna suite necesita RabbitMQ, comprobable parando el contenedor.
+        //
+        // **La verdad incómoda**: en Orders este desmontaje se pagó solo, porque
+        // permitió por fin afirmar en un test que OrderCreated se publicaba. Aquí
+        // no. Catalog.API no publica nada por HTTP —ningún controller toca
+        // IPublishEndpoint, y 4.8 no lo cambia—, así que estas líneas no habilitan
+        // ni una aserción nueva en las 19 pruebas de endpoint. Es puramente un
+        // satisfactor de guardas, y las pruebas del consumer viven en su propio
+        // host (CatalogConsumerHost), que no monta el API.
+        //
+        // *Descartado* un interruptor de transporte en Program.cs: metería código
+        // de producción que existe solo para los tests y dejaría al servicio poder
+        // arrancar sin hablar con el broker sin que nada avise.
+        // *Descartado* Testcontainers.RabbitMq: un paquete más y ~10 s por
+        // ensamblado para no poder afirmar nada que el harness no afirme ya.
+        builder.ConfigureTestServices(services =>
+        {
+            foreach (var descriptor in services.Where(IsMassTransit).ToList())
+            {
+                services.Remove(descriptor);
+            }
+
+            services.AddMassTransitTestHarness();
+        });
     }
+
+    /// <summary>
+    /// Un registro puesto por MassTransit, reconocido por el ensamblado en el que
+    /// vive su tipo de servicio o su implementación.
+    ///
+    /// Se filtra por ensamblado y no por una lista de tipos concretos porque
+    /// <c>AddMassTransit</c> registra decenas y la lista quedaría desfasada en la
+    /// siguiente versión menor.
+    ///
+    /// **Segunda copia literal, y no se extrae.** La otra está en
+    /// <c>OrdersApiFactory</c> desde 3.7; la regla de 2.4 es que dos ocurrencias no
+    /// son un patrón, y aquí hay además un obstáculo mecánico: el sitio natural
+    /// sería Shop133.TestUtilities, cuyo .csproj declara por escrito que solo entra
+    /// "lo que las cuatro suites usan igual" y que tiene **cero ProjectReference** a
+    /// propósito. Inventory.Tests y Payments.Tests no desmontan ningún bus —sus
+    /// hosts construyen un ServiceCollection pelado—, así que esto lo usan dos de
+    /// cuatro; y estos helpers necesitan <c>ServiceDescriptor</c>, que no viene en
+    /// el reference pack de Microsoft.NETCore.App, así que extraerlos obligaría a
+    /// declarar un paquete nuevo bajo tests/ para compartir algo que la mitad de las
+    /// suites no usa. Una tercera copia obliga a releerlo.
+    /// </summary>
+    private static bool IsMassTransit(ServiceDescriptor descriptor) =>
+        BelongsToMassTransit(descriptor.ServiceType)
+        || BelongsToMassTransit(descriptor.ImplementationType)
+        || BelongsToMassTransit(descriptor.ImplementationInstance?.GetType());
+
+    private static bool BelongsToMassTransit(Type? type) =>
+        type?.Assembly.GetName().Name?.StartsWith("MassTransit", StringComparison.Ordinal) is true;
 
     /// <summary>
     /// Crea la base y le aplica las tres migraciones. La última,

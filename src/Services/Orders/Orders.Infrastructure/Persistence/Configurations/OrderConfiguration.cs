@@ -56,6 +56,13 @@ internal sealed class OrderConfiguration : IEntityTypeConfiguration<Order>
         //
         // La pregunta la dejó abierta la sección Pendiente de docs/fase_1_2.md
         // para 4.5, que es cuando OrdersDb reciba escrituras de verdad.
+        //
+        // Releída en 4.5 con OrderStates delante —una tabla con la misma forma de
+        // clave y muchas más escrituras por pedido— y la respuesta es la misma:
+        // se queda clustered. El razonamiento completo está en
+        // OrderStateConfiguration, para no tenerlo a medias en dos archivos. Lo
+        // único que cambia es que ahora la pregunta se puede *medir*, y eso pasa
+        // a 8.2 con el resto de la infraestructura real.
 
         builder.Property(order => order.CustomerEmail)
             .IsRequired()

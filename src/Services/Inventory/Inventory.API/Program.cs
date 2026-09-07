@@ -73,6 +73,17 @@ builder.Services.AddMassTransit(x =>
     // — hasta 3.3 ese fanout no tenía colas y el mensaje se publicaba al vacío.
     x.AddConsumer<OrderCreatedConsumer>();
 
+    // El segundo, de 4.4, y con él Inventory pasa a tener dos colas. Ésta se llama
+    // "release-stock" por el mismo formatter de abajo, y ese nombre **no es un
+    // detalle interno**: la OrderStateMachine manda el comando con un Send a
+    // queue:release-stock, o sea que lo tiene escrito. Cambiar el formatter, o
+    // renombrar el consumer, deja los comandos apilándose en una cola que nadie
+    // lee, sin error y sin aviso.
+    //
+    // Es también el primer consumer de un COMANDO del proyecto: los otros cuatro
+    // reaccionan a hechos, a éste se le manda hacer algo.
+    x.AddConsumer<ReleaseStockConsumer>();
+
     // Fijado en 3.1 con cero consumers, precisamente porque después no salía
     // gratis: el formatter decide el nombre de la cola de cada consumer, y
     // cambiarlo hoy dejaría colas huérfanas en el broker que nadie vacía.
