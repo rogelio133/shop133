@@ -53,5 +53,6 @@ Documentos de procedimiento, no ligados a un punto del roadmap. No siguen la con
 | 4.8 | Catalog.API estrena MassTransit y valida la foto de precios del pedido | 2026-09-04 | [fase_4_8.md](fase_4_8.md) |
 | 4.9 | `PricingPending` en la saga y su primera rama paralela | 2026-09-07 | [fase_4_9.md](fase_4_9.md) |
 | 5.1 | Rutas del Gateway con YARP | 2026-09-07 | [fase_5_1.md](fase_5_1.md) |
+| 5.2 | Rate limiting básico en el Gateway | 2026-09-08 | [fase_5_2.md](fase_5_2.md) |
 
 El punto **0.1** (crear solución y estructura de carpetas) se completó antes de que existiera esta convención y no se documentó retroactivamente.

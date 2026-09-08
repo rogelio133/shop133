@@ -63,4 +63,41 @@ GET {{Gateway_HostAddress}}/api/inventory/anything
 # El MapGet("/") de la plantilla se borró en 5.1. La sonda de vida es /health, 8.4.
 GET {{Gateway_HostAddress}}/
 
+### El 429 del rate limiting (5.2)
+# Repite este GET más veces que RateLimiting:CatalogRead:PermitLimit (60 por
+# defecto) dentro de la misma ventana de 60 s y el siguiente sale con 429, cabecera
+# Retry-After y cuerpo application/problem+json.
+#
+# Para verlo en dos peticiones en vez de en sesenta, arranca el Gateway con el cupo
+# bajado — que es exactamente lo que hará 5.4:
+#
+#   $env:RateLimiting__CatalogRead__PermitLimit = "2"
+#   dotnet run --project src/Gateway/Shop133.Gateway
+#
+# OJO con la clave de partición: es la IP de la conexión, y "localhost" resuelve a
+# ::1 y a 127.0.0.1, que son DOS claves distintas. Un cliente que alterne parece dos
+# y gasta el doble de cupo. Por eso aquí se usa el literal.
+GET http://127.0.0.1:5104/api/catalog/products
+Accept: application/json
+
+### El cupo de escritura es OTRO cubo, mucho más estricto
+# 10 por minuto frente a los 60 de lectura: un GET al catálogo lee una tabla, este
+# POST arranca la saga entera. Agotar uno NO agota el otro — es lo que prueba que
+# las dos políticas de 5.2 no son decorativas.
+POST http://127.0.0.1:5104/api/orders
+Content-Type: application/json
+
+{
+  "customerEmail": "cliente@example.com",
+  "items": [
+    {
+      "productId": 1,
+      "productSku": "TAZA-001",
+      "productName": "Taza Talavera Puebla",
+      "quantity": 1,
+      "unitPrice": 249.00
+    }
+  ]
+}
+
 ###

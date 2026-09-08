@@ -260,6 +260,16 @@ Three things the test host needs that are not obvious. **Two `UseSetting` calls,
 
 Three things that cost time. **`Ignore` takes the event, not a lambda** — `Event(() => OrderCreated, …)` and `Ignore(OrderCreated)` sit in the same constructor with different shapes. **The queue name comes from the *instance* type**, so `OrderState` → `order-state`, not `order-state-machine`. And the line proving the saga is wired is **not** the consumer one: `Configured endpoint order-state, Saga: …, State Machine: …`. Without it the registration never reached `ConfigureEndpoints` and the message is lost in silence.
 
+**`5.2` is done — the single door now has a throttle** — see [docs/fase_5_2.md](docs/fase_5_2.md). Fixed-window rate limiting per client IP, declared per route in `appsettings.json` and registered in `Program.cs`. **No package** — `Microsoft.AspNetCore.RateLimiting` is in the shared framework and `Yarp.ReverseProxy` 2.3.0 already carries `RouteConfig.RateLimiterPolicy` (checked in the package's XML before writing a line). Three files of `src/`, all in the Gateway; **no service, no contract, no migration, no `.csproj`**. The architecture suite stays at **17** and the repo at **105** (precedent of `3.3`/`3.5`/`4.5`/`5.1`: say so rather than invent a rule that never matches).
+
+**Two quotas and not one, because the limit protects the COST.** `catalog-read` 60/60 s and `orders-write` **10**/60 s: a `GET /products` reads a 50-row table, a `POST /orders` starts the whole saga — five services, twelve messages, five databases. Measured rather than asserted: with the read quota exhausted the `POST` still returns `201`, so they really are two buckets. *Rejected* one shared policy (60 orders a minute is 60 sagas a minute). *Rejected* sliding window (fairer, but to know when a permit returns you must know which segment spent it) and token bucket (the threshold depends on elapsed time, which would make `5.4`'s test flaky). Fixed window's known flaw — up to 2N requests straddling two windows — is written down rather than hidden.
+
+**A `GlobalLimiter` the title does not ask for, on the criterion of `5.1`'s guard.** The two policies cover today's two routes; a route added tomorrow that forgets its `RateLimiterPolicy` would be born **unlimited with no error and no log**. Verified by breaking it on purpose with a temporary third route carrying no policy. **The detail to keep in front of you: when a route declares a policy, BOTH apply** (endpoint + global), so the global quota must stay *above* the other two — a lower one would be the real limiter and would make the two policies decorative, with nothing to give it away. Documented and **unwatched**; a clear candidate for `5.4`.
+
+**Three measurements that correct intuition.** `RateLimiterOptions.RejectionStatusCode` defaults to **`503`, not `429`** — set it by hand or the item ships a working limiter with the wrong code. `Retry-After` from the lease reports **the whole window, not what is left of it** (`60` on a rejection mid-window), so it is conservative: a test that waits it out will over-wait. And the prediction that an unknown policy name would fail on the first request came out **backwards** — YARP validates policy names when loading the configuration and **the Gateway does not start** (`Unable to load or apply the proxy configuration`). That is better than expected and is why this item adds **no** guard of its own for it: `5.1`'s guard exists against a *silent* failure, and this one is anything but. `QueueLimit = 0` on purpose — a limit that queues is a delay, not a limit — and the `429` carries `application/problem+json` with a `traceId`, matching what the five services have produced since `2.3`.
+
+**PowerShell 5.1 corrupts a UTF-8 file on a `Get-Content -Raw` + `Set-Content` round-trip** — `está` came back as `estÃ¡` **plus an added BOM**, in a file the rest of the repo writes without one. Third variant of a theme this repo has been noting since `3.4` (BOM-less JSON for RabbitMQ) and `4.8` (`curl.exe` with inline JSON). **To touch a repo file, use the editing tool; PowerShell only to read it.** Also: nothing limits whoever reaches a service *bypassing* the Gateway — the five `.API` still listen on their ports with no limit at all, the same surface `1.5` left open and `8.1` has to close.
+
 **Phase 5 is in progress on `feature/fase-5-gateway`. `5.1` is done — the Gateway exists and the whole saga now runs behind one door** — see [docs/fase_5_1.md](docs/fase_5_1.md). `Shop133.Gateway` stops being the `dotnet new web` template from `0.1` and gains its first package ever, `Yarp.ReverseProxy` **2.3.0** (MIT). **It still has zero `ProjectReference`, and that is now an executable rule**: the architecture suite goes 16 → **17**, the repo 104 → **105**. No migration, no contract, no consumer, no service `.csproj`.
 
 **Two routes of the five the title suggests, and the absence is the decision.** `Inventory.API`, `Payments.API` and `Notifications.API` have **no `Controllers/` folder at all** — their whole surface is RabbitMQ consumers — so a route to them could only return 404. *Rejected* declaring them anyway: a route that can only fail is the same **filter that never matches** `3.2` refused when adding architecture rules, and `5.4` could not verify it. They arrive when one of them gains a controller.
@@ -405,7 +415,7 @@ Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed su
 | 2 | Orders.API (synchronous) | **Code complete** — 2.1–2.4 done; awaiting the PRs to `develop`/`main` and the `fase-2` tag |
 | 3 | MassTransit + RabbitMQ messaging | **Code complete** — 3.1–3.7 done; awaiting the PRs to `develop`/`main` and the `fase-3` tag |
 | 4 | Saga + compensations | **Code complete** — 4.1–4.9 done; awaiting the PRs to `develop`/`main` and the `fase-4` tag |
-| 5 | YARP Gateway | **In progress** on `feature/fase-5-gateway` — 5.1 done; 5.2–5.4 pending |
+| 5 | YARP Gateway | **In progress** on `feature/fase-5-gateway` — 5.1, 5.2 done; 5.3–5.4 pending |
 | 6 | Frontend (MVC + Bootstrap 5) | Not started |
 | 7 | Observability | Not started |
 | 8 | Optional extras (auth, real-infra integration tests, CI/CD, E2E) | Not started |
@@ -646,12 +656,36 @@ dotnet run --project src/Services/Notifications/Notifications.API  # 5043
 
 # El Gateway (5.1). No tiene contenedor: sus destinos son los puertos del IDE de
 # Catalog (5124) y Orders (5189), asi que esos dos tienen que estar levantados.
-# No necesita User Secrets — su unica configuracion es la seccion ReverseProxy de
-# appsettings.json, que SI lleva comentarios // (el proveedor JSON parsea con
-# JsonCommentHandling.Skip). Si esa seccion falta o esta vacia, Program.cs revienta
-# antes de app.Build(): sin la guarda, YARP arrancaria con cero rutas y devolveria
-# 404 a todo en silencio.
+# No necesita User Secrets — su configuracion son dos secciones de appsettings.json,
+# que SI lleva comentarios // (el proveedor JSON parsea con JsonCommentHandling.Skip).
+# Program.cs revienta antes de app.Build() si falta cualquiera de las dos:
+#  - ReverseProxy:Routes (5.1) — sin la guarda YARP arrancaria con cero rutas y
+#    devolveria 404 a todo en silencio.
+#  - RateLimiting:{CatalogRead,OrdersWrite,Global} (5.2) — un PermitLimit ausente
+#    se lee como 0, y un cupo de 0 permisos rechaza TODO con 429 sin decir por que.
 dotnet run --project src/Gateway/Shop133.Gateway            # 5104
+
+# Rate limiting (5.2): ventana fija POR IP DEL CLIENTE, declarada por ruta.
+#   /api/catalog/*  -> catalog-read   60 / 60 s
+#   /api/orders/*   -> orders-write   10 / 60 s   (cada POST arranca la saga entera)
+#   lo demas        -> GlobalLimiter 120 / 60 s   (red de seguridad)
+# Al superar el cupo: 429 + Retry-After + application/problem+json con traceId.
+#
+# OJO con la clave de particion: es la IP de la conexion, y "localhost" resuelve a
+# ::1 y a 127.0.0.1, que son DOS cubos distintos — un cliente que alterne parece
+# dos y gasta el doble de cupo. Usa el literal 127.0.0.1 al medir (es la misma
+# dualidad que 2.3 midio en los rechazos de conexion).
+#
+# Para ver el 429 en dos peticiones en vez de en sesenta, baja el cupo por entorno
+# — que es lo que hara 5.4:
+#   $env:RateLimiting__OrdersWrite__PermitLimit = "2"
+#
+# Y dos cosas que no son evidentes: el codigo de rechazo por defecto es 503, NO 429
+# (se pone a mano en Program.cs), y cuando una ruta declara politica se aplican LAS
+# DOS (la suya y la global), asi que bajar Global por debajo de las otras dejaria a
+# esas dos decorativas sin que nada avise. Nada lo vigila; candidato para 5.4.
+# Un "RateLimiterPolicy" con un nombre no registrado NO arranca el Gateway: YARP
+# valida los nombres al cargar la configuracion (medido en 5.2).
 
 # La superficie publica desde 5.1 — SOLO estas dos. Inventory, Payments y
 # Notifications no tienen ni carpeta Controllers/, asi que no se les declara ruta:
