@@ -260,6 +260,16 @@ Three things the test host needs that are not obvious. **Two `UseSetting` calls,
 
 Three things that cost time. **`Ignore` takes the event, not a lambda** — `Event(() => OrderCreated, …)` and `Ignore(OrderCreated)` sit in the same constructor with different shapes. **The queue name comes from the *instance* type**, so `OrderState` → `order-state`, not `order-state-machine`. And the line proving the saga is wired is **not** the consumer one: `Configured endpoint order-state, Saga: …, State Machine: …`. Without it the registration never reached `ConfigureEndpoints` and the message is lost in silence.
 
+**`5.3` is done — the third thing rule 3 centralises here is in place, and the title's parenthesis is false** — see [docs/fase_5_3.md](docs/fase_5_3.md). One CORS policy (`frontend`), declared per route in `appsettings.json` with `"CorsPolicy"` exactly like `5.2`'s `"RateLimiterPolicy"`, plus a `Cors:AllowedOrigins` guard. **No package** — `Microsoft.AspNetCore.Cors` is in the shared framework and YARP 2.3.0 already carries `RouteConfig.CorsPolicy` (checked in the package's XML first). Two files of `src/`, both in the Gateway; **no service was touched** — unlike `5.1`, there was no CORS anywhere to remove. The architecture suite stays at **17** and the repo at **105** (precedent of `3.3`/`3.5`/`4.5`/`5.1`/`5.2`).
+
+**The title says "so the Frontend only talks to the Gateway", and `Shop133.Web` does not pass through CORS at all.** It is server-rendered MVC, so its calls to the Gateway (`6.6`'s `IHttpClientFactory`) are server-to-server — CORS is applied by the *browser*, not by the process making the call. What actually needs it is `6.5`'s browser JavaScript (the order-status polling) and `6.7`. It is delivered anyway because rule 3 says this is where it goes and `6.5` will want it; what is not done is pretending Phase 6 cannot start without it.
+
+**The decision worth reading is the one NOT copied from `5.2`: there is no safety net.** That item added a `GlobalLimiter` the title never asked for, because a route forgetting `RateLimiterPolicy` would be born **unlimited and silent**. Here that argument does not transfer, and it was measured by breaking it: a route without `CorsPolicy` forwards the preflight to the service, which answers **`405`**, and its responses carry **zero** `Access-Control` headers. The failure is loud, so a default policy buys nothing and would leave a half-state (simple requests with headers, `OPTIONS` dying in a backend that knows nothing about CORS). **The rule: a safety net is added against a silent failure, not for symmetry with the previous item.**
+
+**`UseCors()` goes BEFORE `UseRateLimiter()`, and the inverse experiment came out worse than predicted.** Right order: the `429` of `5.2` carries `Access-Control-Allow-Origin`, so browser JS can read the status and `Retry-After`; and the preflight is short-circuited by CORS, so it spends no quota. Inverted, with `OrdersWrite:PermitLimit=1`, the `OPTIONS` eats the only permit and **the `POST` behind it gets `429`** — a browser cannot create a single order while a `curl` on the same quota creates it. **The client that respects CORS is punished for asking.** The least obvious deliverable is `WithExposedHeaders("Location", "Retry-After")`: browsers only let JS read six response headers, so without it `6.5` cannot read the `201`'s `Location` (still pointing at the backend without the prefix — `5.1`'s ownerless debt, re-read and **not** settled) nor a browser client the `429`'s `Retry-After`. And the measurement that sums the item up: **CORS is not authorization** — a foreign `Origin` still gets `200` with the whole body, only without the header that lets its JavaScript read it. Access control is `8.1`.
+
+**Two things that cost time, both PowerShell.** `$env:X = ""` **deletes** the variable instead of emptying it, so an attempt to override a route's `CorsPolicy` to empty silently did nothing and produced a *false* measurement ("it works the same without the line") that nearly reached the document — the real breakage had to be done by renaming the key in `appsettings.json`. And an environment variable whose name contains a hyphen (route ids do: `catalog-route`) cannot be written as `$env:Name`; it needs `${env:...}` or it is a parse error. **What is left unwatched**: nothing checks that both routes declare `CorsPolicy` — the architecture tests read `.csproj` files and paths, never `appsettings.json`. Candidate for `5.4`, alongside `5.2`'s global-quota ordering.
+
 **`5.2` is done — the single door now has a throttle** — see [docs/fase_5_2.md](docs/fase_5_2.md). Fixed-window rate limiting per client IP, declared per route in `appsettings.json` and registered in `Program.cs`. **No package** — `Microsoft.AspNetCore.RateLimiting` is in the shared framework and `Yarp.ReverseProxy` 2.3.0 already carries `RouteConfig.RateLimiterPolicy` (checked in the package's XML before writing a line). Three files of `src/`, all in the Gateway; **no service, no contract, no migration, no `.csproj`**. The architecture suite stays at **17** and the repo at **105** (precedent of `3.3`/`3.5`/`4.5`/`5.1`: say so rather than invent a rule that never matches).
 
 **Two quotas and not one, because the limit protects the COST.** `catalog-read` 60/60 s and `orders-write` **10**/60 s: a `GET /products` reads a 50-row table, a `POST /orders` starts the whole saga — five services, twelve messages, five databases. Measured rather than asserted: with the read quota exhausted the `POST` still returns `201`, so they really are two buckets. *Rejected* one shared policy (60 orders a minute is 60 sagas a minute). *Rejected* sliding window (fairer, but to know when a permit returns you must know which segment spent it) and token bucket (the threshold depends on elapsed time, which would make `5.4`'s test flaky). Fixed window's known flaw — up to 2N requests straddling two windows — is written down rather than hidden.
@@ -415,7 +425,7 @@ Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed su
 | 2 | Orders.API (synchronous) | **Code complete** — 2.1–2.4 done; awaiting the PRs to `develop`/`main` and the `fase-2` tag |
 | 3 | MassTransit + RabbitMQ messaging | **Code complete** — 3.1–3.7 done; awaiting the PRs to `develop`/`main` and the `fase-3` tag |
 | 4 | Saga + compensations | **Code complete** — 4.1–4.9 done; awaiting the PRs to `develop`/`main` and the `fase-4` tag |
-| 5 | YARP Gateway | **In progress** on `feature/fase-5-gateway` — 5.1, 5.2 done; 5.3–5.4 pending |
+| 5 | YARP Gateway | **In progress** on `feature/fase-5-gateway` — 5.1, 5.2, 5.3 done; 5.4 pending |
 | 6 | Frontend (MVC + Bootstrap 5) | Not started |
 | 7 | Observability | Not started |
 | 8 | Optional extras (auth, real-infra integration tests, CI/CD, E2E) | Not started |
@@ -656,13 +666,17 @@ dotnet run --project src/Services/Notifications/Notifications.API  # 5043
 
 # El Gateway (5.1). No tiene contenedor: sus destinos son los puertos del IDE de
 # Catalog (5124) y Orders (5189), asi que esos dos tienen que estar levantados.
-# No necesita User Secrets — su configuracion son dos secciones de appsettings.json,
+# No necesita User Secrets — su configuracion son tres secciones de appsettings.json,
 # que SI lleva comentarios // (el proveedor JSON parsea con JsonCommentHandling.Skip).
-# Program.cs revienta antes de app.Build() si falta cualquiera de las dos:
+# Program.cs revienta antes de app.Build() si falta cualquiera de las tres:
 #  - ReverseProxy:Routes (5.1) — sin la guarda YARP arrancaria con cero rutas y
 #    devolveria 404 a todo en silencio.
 #  - RateLimiting:{CatalogRead,OrdersWrite,Global} (5.2) — un PermitLimit ausente
 #    se lee como 0, y un cupo de 0 permisos rechaza TODO con 429 sin decir por que.
+#  - Cors:AllowedOrigins (5.3) — una lista vacia deja una politica que no engancha
+#    con ningun origen, y el navegador bloquea culpando a CORS sin que el Gateway
+#    diga nada. La guarda tambien rechaza un origen con BARRA FINAL: la cabecera
+#    Origin nunca la lleva y la comparacion es literal, asi que no engancha jamas.
 dotnet run --project src/Gateway/Shop133.Gateway            # 5104
 
 # Rate limiting (5.2): ventana fija POR IP DEL CLIENTE, declarada por ruta.
@@ -685,7 +699,32 @@ dotnet run --project src/Gateway/Shop133.Gateway            # 5104
 # DOS (la suya y la global), asi que bajar Global por debajo de las otras dejaria a
 # esas dos decorativas sin que nada avise. Nada lo vigila; candidato para 5.4.
 # Un "RateLimiterPolicy" con un nombre no registrado NO arranca el Gateway: YARP
-# valida los nombres al cargar la configuracion (medido en 5.2).
+# valida los nombres al cargar la configuracion (medido en 5.2). Lo mismo vale para
+# "CorsPolicy" (medido en 5.3): "CORS policy 'x' not found for route 'catalog-route'".
+
+# CORS (5.3): UNA politica, "frontend", declarada por ruta con "CorsPolicy" igual
+# que su "RateLimiterPolicy". Origenes en Cors:AllowedOrigins — los dos perfiles de
+# Shop133.Web (5025 y 7227), lista estricta e igual en Development que en Production.
+#
+# ORDEN DEL PIPELINE: UseCors() va ANTES de UseRateLimiter(), y no es cosmetico
+# (las dos consecuencias estan medidas en 5.3). Invertido: el 429 sale SIN cabeceras
+# CORS —el navegador solo ve un error de red opaco— y el preflight se gasta un
+# permiso, asi que con PermitLimit=1 un navegador no crea NI UN pedido mientras un
+# curl con el mismo cupo lo crea. El cliente que respeta CORS sale penalizado.
+#
+# NO hay red de seguridad al estilo del GlobalLimiter, a proposito: una ruta sin
+# "CorsPolicy" reenvia el preflight al servicio, que contesta 405, y sus respuestas
+# salen con CERO cabeceras Access-Control. El fallo es RUIDOSO, y una red de
+# seguridad se anade contra un fallo silencioso, no por simetria con 5.2.
+#
+# Al medir con curl: un OPTIONS sin "Access-Control-Request-Method" NO es preflight
+# — se reenvia al servicio y devuelve 405; solo con esa cabecera contesta 204. Y un
+# Origin ajeno recibe 200 CON EL CUERPO ENTERO, solo que sin Access-Control-*: CORS
+# no es autorizacion, lo aplica el navegador. El control de acceso es 8.1.
+#
+# WithExposedHeaders("Location", "Retry-After") no es opcional: el navegador solo
+# deja leer seis cabeceras de respuesta, asi que sin eso 6.5 no puede leer el
+# Location del 201 ni un cliente de navegador el Retry-After del 429.
 
 # La superficie publica desde 5.1 — SOLO estas dos. Inventory, Payments y
 # Notifications no tienen ni carpeta Controllers/, asi que no se les declara ruta:

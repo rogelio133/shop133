@@ -1,4 +1,4 @@
-// shop133 — API Gateway (puntos 5.1 y 5.2)
+// shop133 — API Gateway (puntos 5.1, 5.2 y 5.3)
 //
 // Es la puerta única del sistema: la regla 3 de CLAUDE.md dice que Shop133.Web
 // nunca guarda la URL base de un servicio concreto, así que a partir de la Fase 6
@@ -9,7 +9,8 @@
 // docs/fase_5_1.md. Los cupos del rate limiting de 5.2 viven al lado, en la
 // sección "RateLimiting", por el mismo motivo y con un motivo extra: 5.4 necesita
 // poder bajarlos por variable de entorno para provocar el 429 sin mandar sesenta
-// peticiones.
+// peticiones. Los orígenes de CORS (5.3) viven en la sección "Cors" por el mismo
+// criterio: cambian con el despliegue, no con el código.
 
 using System.Threading.RateLimiting;
 
@@ -38,6 +39,116 @@ if (!reverseProxySection.GetSection("Routes").GetChildren().Any())
         "Gateway y vive en appsettings.json (no es un secreto: son rutas y hosts, no credenciales). " +
         "Sin ella YARP arrancaría con cero rutas y devolvería 404 a todo, en silencio.");
 }
+
+// --- CORS (5.3) --------------------------------------------------------------
+//
+// Va aquí por la misma regla 3 de CLAUDE.md que puso aquí el rate limiting: el
+// Gateway es lo único que el navegador alcanza, así que declarar la política en
+// los cinco servicios sería escribirla cinco veces y dejarla sin efecto para quien
+// entre por la puerta.
+//
+// Lo que este punto NO es, dicho antes de que alguien lo dé por hecho: Shop133.Web
+// es MVC renderizado en servidor, así que sus llamadas al Gateway (el
+// IHttpClientFactory de 6.6) son servidor-a-servidor y NO pasan por CORS — CORS lo
+// aplica el navegador, no el servidor que llama. Quien lo necesita de verdad es el
+// JavaScript de 6.5 (el polling del estado del pedido) y 6.7.
+//
+// Y el corolario, que se mide en la verificación 4 de docs/fase_5_3.md: **CORS no
+// es autorización**. Una petición con un Origin ajeno sigue devolviendo 200 con el
+// cuerpo entero; lo único que falta es la cabecera que autoriza al navegador a
+// dejar que su JavaScript lo lea. Un curl —o cualquier cliente que no sea un
+// navegador— se lo salta por completo. Quien controla el acceso es 8.1.
+
+const string FrontendCorsPolicy = "frontend";
+
+// Guarda con la misma forma que las otras dos de este archivo, y por el mismo
+// criterio: lo que hay que hacer imposible es el fallo silencioso.
+//
+// Sin ella, una sección ausente da una lista vacía, la política no engancha con
+// ningún origen y el navegador bloquea la petición culpando a CORS — sin una sola
+// línea en el log del Gateway, que es el único sitio donde está la causa.
+//
+// La barra final se comprueba porque es EL fallo clásico de CORS: la cabecera
+// Origin nunca la lleva y la comparación es literal, así que "http://localhost:5025/"
+// no engancha jamás y todo se ve exactamente igual que si la configuración
+// estuviera bien.
+static string[] ReadAllowedOrigins(IConfiguration configuration)
+{
+    var origins = configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
+
+    if (origins.Length == 0)
+    {
+        throw new InvalidOperationException(
+            "Falta la configuración 'Cors:AllowedOrigins' o está vacía. Es la lista de orígenes " +
+            "del navegador que pueden llamar al Gateway y vive en appsettings.json (no es un " +
+            "secreto: son URLs públicas). Sin ella la política no engancharía con ningún origen y " +
+            "el navegador bloquearía cada petición sin que el Gateway dijera nada.");
+    }
+
+    foreach (var origin in origins)
+    {
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out _) || origin.EndsWith('/'))
+        {
+            throw new InvalidOperationException(
+                $"El origen '{origin}' de 'Cors:AllowedOrigins' no es válido: tiene que ser una URL " +
+                "absoluta (esquema + host + puerto) y NO puede acabar en '/'. La cabecera Origin que " +
+                "manda el navegador nunca lleva barra final y la comparación es literal, así que un " +
+                "origen con barra no engancha nunca y el fallo se ve idéntico a no haber configurado nada.");
+        }
+    }
+
+    return origins;
+}
+
+var allowedOrigins = ReadAllowedOrigins(builder.Configuration);
+
+builder.Services.AddCors(options =>
+{
+    // Una política con nombre, declarada por ruta en appsettings.json con
+    // "CorsPolicy" — igual que "RateLimiterPolicy" en 5.2, para que todo lo
+    // transversal de una ruta se lea en el mismo sitio.
+    //
+    // *Descartada* una política por defecto (AddDefaultPolicy) como red de
+    // seguridad al estilo del GlobalLimiter de 5.2, y el motivo invierte aquel
+    // argumento: olvidar el RateLimiterPolicy dejaba una ruta sin límite EN
+    // SILENCIO, mientras que olvidar el CorsPolicy hace que el navegador bloquee
+    // la petición y lo grite en la consola. Encima YARP no engancha el preflight
+    // en una ruta sin CorsPolicy, así que una política por defecto solo dejaría un
+    // estado a medias: peticiones simples con cabeceras y OPTIONS reenviado a un
+    // backend que no sabe nada de CORS.
+    options.AddPolicy(FrontendCorsPolicy, policy => policy
+        // Lista estricta, la misma en Development y en Production: lo que se
+        // prueba a diario tiene que ser lo que se despliega. *Descartado* un
+        // AllowAnyOrigin de conveniencia en appsettings.Development.json, que
+        // además es incompatible con el AllowCredentials() que 8.1 puede querer.
+        .WithOrigins(allowedOrigins)
+
+        // Qué se puede llamar lo decide la tabla de enrutado, no esta política:
+        // CORS es una regla sobre QUIÉN (el origen), no sobre QUÉ.
+        .AllowAnyMethod()
+
+        // Content-Type: application/json en POST /api/orders ya obliga al
+        // preflight; y el día que 8.1 traiga el JWT, Authorization ya está cubierto.
+        .AllowAnyHeader()
+
+        // La parte menos obvia del punto. Por defecto el navegador solo deja que
+        // el JavaScript lea seis cabeceras de respuesta (la safelist), y ni
+        // Location ni Retry-After están entre ellas:
+        //
+        //   - Location es lo que 6.5 necesita del 201 de POST /api/orders para
+        //     saber qué pedido acaba de crear. Sigue apuntando al backend sin el
+        //     prefijo público —la deuda sin dueño de 5.1—, pero al menos ahora se
+        //     puede leer, que no es lo mismo que estar bien.
+        //   - Retry-After es lo que el 429 de 5.2 contesta, y sin exponerlo un
+        //     cliente de navegador ve el rechazo pero no cuánto tiene que esperar.
+        .WithExposedHeaders("Location", "Retry-After")
+
+        // El preflight de un POST se repetiría en cada petición. Diez minutos es
+        // un número conservador: los navegadores lo recortan por su cuenta
+        // (Chrome lo capa en 2 h) y una política que cambia se despliega con el
+        // Gateway, no en caliente.
+        .SetPreflightMaxAge(TimeSpan.FromMinutes(10)));
+});
 
 // --- Rate limiting (5.2) -----------------------------------------------------
 //
@@ -180,6 +291,26 @@ builder.Services.AddReverseProxy()
     .LoadFromConfig(reverseProxySection);
 
 var app = builder.Build();
+
+// ANTES de UseRateLimiter, y el orden no es cosmético — las dos consecuencias
+// están medidas en docs/fase_5_3.md:
+//
+//  1. El 429 de 5.2 sale CON las cabeceras CORS, así que el JavaScript del
+//     navegador puede leer el código y el Retry-After. Al revés, el middleware de
+//     CORS ni siquiera llega a ejecutarse y el navegador solo ve un error de red
+//     opaco: el límite seguiría funcionando y sería indiagnosticable desde el
+//     cliente, que es justo lo contrario de lo que el 429 existe para decirle.
+//  2. El preflight (OPTIONS) lo contesta aquí el middleware de CORS y corta, así
+//     que no gasta cupo ni llega al servicio de destino. Medido al revés, y sale
+//     peor de lo que parece: con el orden invertido y OrdersWrite:PermitLimit=1 el
+//     preflight se gasta el único permiso y el POST que venía detrás recibe 429
+//     —o sea que un navegador no consigue crear NI UN pedido—, mientras que un
+//     curl con el mismo cupo lo crea sin problema. El cliente que respeta CORS
+//     saldría penalizado por preguntar.
+//
+// Sin argumentos: la política la declara cada ruta en appsettings.json y YARP la
+// traduce a metadata del endpoint, igual que hace con "RateLimiterPolicy".
+app.UseCors();
 
 // Antes de MapReverseProxy: es lo que aplica la política que cada ruta declara en
 // appsettings.json con "RateLimiterPolicy" (YARP la traduce a metadata del
