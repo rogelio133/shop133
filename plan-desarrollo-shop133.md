@@ -244,10 +244,18 @@ Van numerados al final porque los números son la clave entre commit, roadmap y 
 
 ## Fase 5 — API Gateway con YARP (3-4 días)
 
-- [ ] **5.1** Configurar rutas: `/api/catalog/*`, `/api/orders/*`, etc. hacia cada servicio
+- [x] **5.1** Configurar rutas: `/api/catalog/*`, `/api/orders/*`, ~~etc. hacia cada servicio~~ — solo dos de los cinco, ver la nota de abajo — [doc](docs/fase_5_1.md)
 - [ ] **5.2** Agregar rate limiting básico
 - [ ] **5.3** Centralizar CORS aquí (para que el Frontend solo hable con el Gateway)
 - [ ] **5.4** Smoke de enrutado: cada ruta de 5.1 alcanza su servicio y el rate limiting de 5.2 devuelve `429` al superar el umbral
+
+**Sobre 5.1 — se entregan dos rutas de las cinco que sugiere el título, y la que falta es una decisión (decidido el 2026-09-07).** `Inventory.API`, `Payments.API` y `Notifications.API` **no tienen ni carpeta `Controllers/`**: toda su superficie son consumers de RabbitMQ, así que una ruta hacia ellos solo podría devolver 404. *Descartado* declararlas igual para cumplir el título: una ruta que solo puede fallar es el mismo **filtro que nunca engancha** que `3.2` rechazó al añadir reglas de arquitectura, y `5.4` no podría verificarla. Entran el día que alguno gane un controller — el criterio de `3.2`, *un contrato se revisa cuando aparece el consumidor que lo necesita*, aplicado a una ruta.
+
+**Lo que el título no menciona y es lo que más cuesta: `5.1` le quita `UseHttpsRedirection()` a Catalog.API y a Orders.API, revirtiendo una decisión escrita de `1.6`.** Aquel punto dejó la línea guardada y anotó *"descartado también borrar la línea"*, cerrando con la frase que este punto cumple: *"desde la Fase 5 la terminación TLS es trabajo del Gateway, no de cada servicio"*. Con los siete `.csproj.user` en el perfil `https`, el salto HTTP del Gateway recibía un `307` con `Location: https://localhost:7024/products` — el enrutado roto y, peor, **la dirección real del servicio devuelta al cliente a través del Gateway**, que es justo el fallo que la regla 3 existe para impedir. Se escribe como reversión, con el precedente de `3.3` sobre la decisión 4 de `2.3`.
+
+**Y el detalle que costó un 404: el transform no es el mismo en las dos rutas.** Para Catalog el prefijo público es un espacio de nombres que el servicio desconoce (`/api/catalog/products` → `/products`), pero para Orders **el último segmento del prefijo es a la vez el recurso** del servicio, así que quitar `/api/orders` deja el path vacío y Orders.API devuelve 404 sin un solo mensaje. Se quita solo `/api`. La regla: *el transform se deriva de la relación entre el prefijo público y los paths que el servicio sirve de verdad, y esa relación es distinta en cada servicio.*
+
+La suite de arquitectura pasa de 16 a **17** con `Gateway_ReferencesNoProject`, la mitad de la regla 3 que no vigilaba nadie: `Frontend_DoesNotReference_ServicesOrGateway` existe desde `0.6`, pero nada impedía que el Gateway ganara un `ProjectReference` a un servicio y compilara contra su `DbContext`. El repositorio pasa a **105** tests. La deuda de `1.5` (qué expone el Gateway) queda **releída y medida, no saldada**: el documento OpenAPI de Catalog llega a través del Gateway pero declara sus paths sin el prefijo y trae un `servers` apuntando al backend. Ver [fase_5_1.md](docs/fase_5_1.md).
 
 ---
 

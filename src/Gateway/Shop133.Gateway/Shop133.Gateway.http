@@ -1,0 +1,66 @@
+@Gateway_HostAddress = http://localhost:5104
+
+# Requiere, además del Gateway, Catalog.API en 5124 y Orders.API en 5189.
+# El Gateway no tiene contenedor (5.1): sus destinos son los puertos del IDE.
+
+### Catálogo completo — llega a Catalog.API quitando el prefijo /api/catalog
+GET {{Gateway_HostAddress}}/api/catalog/products
+Accept: application/json
+
+### Un producto
+GET {{Gateway_HostAddress}}/api/catalog/products/1
+Accept: application/json
+
+### Las 5 categorías del seed de 1.4
+GET {{Gateway_HostAddress}}/api/catalog/categories
+Accept: application/json
+
+### El documento OpenAPI de Catalog, a través del Gateway
+# La relectura que 1.5 encargó a la Fase 5. Llega —el catch-all lo reenvía— pero
+# el documento declara sus paths como "/products", NO como "/api/catalog/products":
+# un cliente generado desde aquí llamaría al sitio equivocado. Se mide y se
+# documenta; arreglarlo metiéndole a Catalog su prefijo público sería justo lo que
+# 2.3 avisó de no hacer. Ver docs/fase_5_1.md.
+GET {{Gateway_HostAddress}}/api/catalog/openapi/v1.json
+Accept: application/json
+
+### La UI de Scalar de Catalog, a través del Gateway
+GET {{Gateway_HostAddress}}/api/catalog/scalar
+
+### Camino feliz completo, entrando por la puerta única
+# El 201 sale de Orders.API y su cabecera Location apunta al SERVICIO
+# (localhost:5189/orders/...) y sin el prefijo /api/orders: el servicio no conoce
+# su prefijo público y el Gateway no puede deducirlo. Medido y sin dueño en el
+# roadmap; ver la sección Pendiente de docs/fase_5_1.md.
+POST {{Gateway_HostAddress}}/api/orders
+Content-Type: application/json
+
+{
+  "customerEmail": "cliente@example.com",
+  "items": [
+    {
+      "productId": 1,
+      "productSku": "TAZA-001",
+      "productName": "Taza Talavera Puebla",
+      "quantity": 2,
+      "unitPrice": 249.00
+    }
+  ]
+}
+
+### Estado del pedido: pega aquí el id que devolvió el 201
+# Es lo que consumirá la página de 6.5. Un par de segundos después del POST la
+# saga entera (precio, stock, cobro) ha corrido detrás del Gateway.
+GET {{Gateway_HostAddress}}/api/orders/00000000-0000-0000-0000-000000000000
+Accept: application/json
+
+### Ruta que NO existe a propósito: 404 del Gateway, no del servicio
+# Inventory, Payments y Notifications no tienen superficie HTTP, así que 5.1 no
+# les declara ruta. Ver el comentario de appsettings.json.
+GET {{Gateway_HostAddress}}/api/inventory/anything
+
+### La raíz del Gateway también es 404: solo es dueño de /api/*
+# El MapGet("/") de la plantilla se borró en 5.1. La sonda de vida es /health, 8.4.
+GET {{Gateway_HostAddress}}/
+
+###

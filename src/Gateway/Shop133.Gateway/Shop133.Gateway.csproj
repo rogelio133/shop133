@@ -6,4 +6,24 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!--
+      YARP, el reverse proxy de Microsoft. Único paquete del punto 5.1 y único
+      paquete de este proyecto.
+
+      Sobre la versión, y es la diferencia con MassTransit: aquí NO hay licencia
+      que vigilar. 2.3.0 es la última publicada, es MIT, y no existe una rama 3.x
+      en nuget.org, así que la trampa que 3.1 documentó para MassTransit (un
+      "dotnet add package" sin versión instalando la de pago) no se puede dar.
+      Por eso PackageRulesTests no gana una regla para YARP: sería un filtro que
+      nunca engancha, que es justo lo que 3.2 rechazó.
+
+      Su asset más nuevo es lib/net8.0, no lib/net10.0. Sobre net10.0 resuelve el
+      de net8.0 y eso es normal y correcto: no obliga a nada y no es motivo para
+      buscar una versión "más nueva". Misma nota que CLAUDE.md lleva para
+      MassTransit. Arrastra System.IO.Hashing como dependencia transitiva.
+    -->
+    <PackageReference Include="Yarp.ReverseProxy" Version="2.3.0" />
+  </ItemGroup>
+
 </Project>
