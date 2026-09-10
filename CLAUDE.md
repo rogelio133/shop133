@@ -260,6 +260,58 @@ Three things the test host needs that are not obvious. **Two `UseSetting` calls,
 
 Three things that cost time. **`Ignore` takes the event, not a lambda** — `Event(() => OrderCreated, …)` and `Ignore(OrderCreated)` sit in the same constructor with different shapes. **The queue name comes from the *instance* type**, so `OrderState` → `order-state`, not `order-state-machine`. And the line proving the saga is wired is **not** the consumer one: `Configured endpoint order-state, Saga: …, State Machine: …`. Without it the registration never reached `ConfigureEndpoints` and the message is lost in silence.
 
+**`5.4` is done and Phase 5 is code complete — the Gateway finally has tests, and they need no Docker at all** — see [docs/fase_5_4.md](docs/fase_5_4.md). `tests/Gateway/Shop133.Gateway.Tests` (new project, approved) holds **26 tests, all `Category=Fast`**, running in **0.8 s**: routing (9), rate limiting (5), CORS (9) and two config invariants (3). The repo goes 105 → **131**. **The architecture suite stays at 17** and **no package new to the repo enters** — `xunit.v3` 4.0.0 and `Microsoft.AspNetCore.Mvc.Testing` 10.0.11 were already pinned at those versions. **One line of `src/`**: `public partial class Program { }` at the foot of the Gateway's `Program.cs`, precedent `1.7`/`2.3`.
+
+**It is the second `Fast` service suite after `OrderStateMachineTests` and the first in the project needing neither a database nor a broker.** That is not a bend of testing rule 1 for the same reason `4.7` was not: the rule bars faking a relational database with EF's InMemory provider, and the Gateway has no database to fake.
+
+**The shape is mixed and that is the decision: the Gateway enters through `WebApplicationFactory`'s in-memory `TestServer`, but YARP's forwarding goes out over a real socket**, so the destinations must be real Kestrel — a ~40-line `BackendStub` on `http://127.0.0.1:0` that records the path it received. Settled with the first test before writing the other twenty-five; the log says `Proxying to http://127.0.0.1:50606/orders HTTP/2 RequestVersionOrLower` → `Received HTTP/1.1 response 200`, the same downgrade `5.1` proved against real backends. *Rejected* resurrecting `WireMock.Net` (deleted in `3.3` with the synchronous debt): recording a path is two lines, not a mocking framework. *Rejected* pointing at the real services, which would need two hand-started processes plus SQL Server and RabbitMQ and could never run in CI (`8.3`).
+
+**Two of the five deliberate breakages are the ones worth carrying.** Swapping the two `PathRemovePrefix` gives the message that sums the item up — `Expected: "/orders" / Actual: "/"`, `5.1`'s 404 turned into an assertion. And **dropping the global quota below a route quota leaves 25 of the 26 tests green**: the only one that notices is the new config invariant, which is exactly the hole `5.2` described as *"todo seguiría pareciendo correcto"*, measured instead of asserted. Inverting `UseCors`/`UseRateLimiter` fails **only** two tests and nothing else — which is precisely what makes that order dangerous.
+
+**The two config invariants live in this suite, not the architecture one**, read off the Gateway's already-bound `IConfiguration` with a factory that overrides nothing. That suite reads `.csproj` files and paths **and nothing else** — verified, zero `appsettings` matches across its four rule files — so a JSON reader there would be a new capability in `ProjectGraph` and would reverse what this file says those rules are. Their value is not today's two routes but **the third someone adds tomorrow**: they enumerate whatever routes exist.
+
+**What is deliberately NOT exercised, said aloud: the rate limiter's per-IP partitioning.** With no inbound socket there is no `RemoteIpAddress`, so `ClientPartitionKey` returns `"unknown"` for the whole process and every request shares one bucket. That is also why **each test builds its own factory** — two tests sharing one would inherit each other's 429s. And **the stub proves the Gateway *sends* `/products`, not that Catalog.API *serves* it**: renaming a controller's route would leave the suite green. Only the by-hand verification joins the two halves, and that link belongs to `8.6`.
+
+**Three things that cost time.** `MapFallback` is **not** usable for a proxy stub — its pattern carries the `:nonfile` constraint, so a path that looks like a file does not match and the stub 404s as if the Gateway had misrouted; use `app.Map("/{**catch-all}")`. **`curl.exe -o $null` from PowerShell does not discard the body** — `$null` expands to an empty string, so curl writes the response to stdout and a status-code measurement ends up grouping 14 kB JSON bodies; the literal that works is `-o NUL`. And when measuring a fixed window by hand, **the loop that checks the window reopened spends a permit**, so the first 429 lands on request 60, not 61.
+
+**`5.3` is done — the third thing rule 3 centralises here is in place, and the title's parenthesis is false** — see [docs/fase_5_3.md](docs/fase_5_3.md). One CORS policy (`frontend`), declared per route in `appsettings.json` with `"CorsPolicy"` exactly like `5.2`'s `"RateLimiterPolicy"`, plus a `Cors:AllowedOrigins` guard. **No package** — `Microsoft.AspNetCore.Cors` is in the shared framework and YARP 2.3.0 already carries `RouteConfig.CorsPolicy` (checked in the package's XML first). Two files of `src/`, both in the Gateway; **no service was touched** — unlike `5.1`, there was no CORS anywhere to remove. The architecture suite stays at **17** and the repo at **105** (precedent of `3.3`/`3.5`/`4.5`/`5.1`/`5.2`).
+
+**The title says "so the Frontend only talks to the Gateway", and `Shop133.Web` does not pass through CORS at all.** It is server-rendered MVC, so its calls to the Gateway (`6.6`'s `IHttpClientFactory`) are server-to-server — CORS is applied by the *browser*, not by the process making the call. What actually needs it is `6.5`'s browser JavaScript (the order-status polling) and `6.7`. It is delivered anyway because rule 3 says this is where it goes and `6.5` will want it; what is not done is pretending Phase 6 cannot start without it.
+
+**The decision worth reading is the one NOT copied from `5.2`: there is no safety net.** That item added a `GlobalLimiter` the title never asked for, because a route forgetting `RateLimiterPolicy` would be born **unlimited and silent**. Here that argument does not transfer, and it was measured by breaking it: a route without `CorsPolicy` forwards the preflight to the service, which answers **`405`**, and its responses carry **zero** `Access-Control` headers. The failure is loud, so a default policy buys nothing and would leave a half-state (simple requests with headers, `OPTIONS` dying in a backend that knows nothing about CORS). **The rule: a safety net is added against a silent failure, not for symmetry with the previous item.**
+
+**`UseCors()` goes BEFORE `UseRateLimiter()`, and the inverse experiment came out worse than predicted.** Right order: the `429` of `5.2` carries `Access-Control-Allow-Origin`, so browser JS can read the status and `Retry-After`; and the preflight is short-circuited by CORS, so it spends no quota. Inverted, with `OrdersWrite:PermitLimit=1`, the `OPTIONS` eats the only permit and **the `POST` behind it gets `429`** — a browser cannot create a single order while a `curl` on the same quota creates it. **The client that respects CORS is punished for asking.** The least obvious deliverable is `WithExposedHeaders("Location", "Retry-After")`: browsers only let JS read six response headers, so without it `6.5` cannot read the `201`'s `Location` (still pointing at the backend without the prefix — `5.1`'s ownerless debt, re-read and **not** settled) nor a browser client the `429`'s `Retry-After`. And the measurement that sums the item up: **CORS is not authorization** — a foreign `Origin` still gets `200` with the whole body, only without the header that lets its JavaScript read it. Access control is `8.1`.
+
+**Two things that cost time, both PowerShell.** `$env:X = ""` **deletes** the variable instead of emptying it, so an attempt to override a route's `CorsPolicy` to empty silently did nothing and produced a *false* measurement ("it works the same without the line") that nearly reached the document — the real breakage had to be done by renaming the key in `appsettings.json`. And an environment variable whose name contains a hyphen (route ids do: `catalog-route`) cannot be written as `$env:Name`; it needs `${env:...}` or it is a parse error. **What is left unwatched**: nothing checks that both routes declare `CorsPolicy` — the architecture tests read `.csproj` files and paths, never `appsettings.json`. Candidate for `5.4`, alongside `5.2`'s global-quota ordering.
+
+**`5.2` is done — the single door now has a throttle** — see [docs/fase_5_2.md](docs/fase_5_2.md). Fixed-window rate limiting per client IP, declared per route in `appsettings.json` and registered in `Program.cs`. **No package** — `Microsoft.AspNetCore.RateLimiting` is in the shared framework and `Yarp.ReverseProxy` 2.3.0 already carries `RouteConfig.RateLimiterPolicy` (checked in the package's XML before writing a line). Three files of `src/`, all in the Gateway; **no service, no contract, no migration, no `.csproj`**. The architecture suite stays at **17** and the repo at **105** (precedent of `3.3`/`3.5`/`4.5`/`5.1`: say so rather than invent a rule that never matches).
+
+**Two quotas and not one, because the limit protects the COST.** `catalog-read` 60/60 s and `orders-write` **10**/60 s: a `GET /products` reads a 50-row table, a `POST /orders` starts the whole saga — five services, twelve messages, five databases. Measured rather than asserted: with the read quota exhausted the `POST` still returns `201`, so they really are two buckets. *Rejected* one shared policy (60 orders a minute is 60 sagas a minute). *Rejected* sliding window (fairer, but to know when a permit returns you must know which segment spent it) and token bucket (the threshold depends on elapsed time, which would make `5.4`'s test flaky). Fixed window's known flaw — up to 2N requests straddling two windows — is written down rather than hidden.
+
+**A `GlobalLimiter` the title does not ask for, on the criterion of `5.1`'s guard.** The two policies cover today's two routes; a route added tomorrow that forgets its `RateLimiterPolicy` would be born **unlimited with no error and no log**. Verified by breaking it on purpose with a temporary third route carrying no policy. **The detail to keep in front of you: when a route declares a policy, BOTH apply** (endpoint + global), so the global quota must stay *above* the other two — a lower one would be the real limiter and would make the two policies decorative, with nothing to give it away. Documented and **unwatched**; a clear candidate for `5.4`.
+
+**Three measurements that correct intuition.** `RateLimiterOptions.RejectionStatusCode` defaults to **`503`, not `429`** — set it by hand or the item ships a working limiter with the wrong code. `Retry-After` from the lease reports **the whole window, not what is left of it** (`60` on a rejection mid-window), so it is conservative: a test that waits it out will over-wait. And the prediction that an unknown policy name would fail on the first request came out **backwards** — YARP validates policy names when loading the configuration and **the Gateway does not start** (`Unable to load or apply the proxy configuration`). That is better than expected and is why this item adds **no** guard of its own for it: `5.1`'s guard exists against a *silent* failure, and this one is anything but. `QueueLimit = 0` on purpose — a limit that queues is a delay, not a limit — and the `429` carries `application/problem+json` with a `traceId`, matching what the five services have produced since `2.3`.
+
+**PowerShell 5.1 corrupts a UTF-8 file on a `Get-Content -Raw` + `Set-Content` round-trip** — `está` came back as `estÃ¡` **plus an added BOM**, in a file the rest of the repo writes without one. Third variant of a theme this repo has been noting since `3.4` (BOM-less JSON for RabbitMQ) and `4.8` (`curl.exe` with inline JSON). **To touch a repo file, use the editing tool; PowerShell only to read it.** Also: nothing limits whoever reaches a service *bypassing* the Gateway — the five `.API` still listen on their ports with no limit at all, the same surface `1.5` left open and `8.1` has to close.
+
+**Phase 5 is in progress on `feature/fase-5-gateway`. `5.1` is done — the Gateway exists and the whole saga now runs behind one door** — see [docs/fase_5_1.md](docs/fase_5_1.md). `Shop133.Gateway` stops being the `dotnet new web` template from `0.1` and gains its first package ever, `Yarp.ReverseProxy` **2.3.0** (MIT). **It still has zero `ProjectReference`, and that is now an executable rule**: the architecture suite goes 16 → **17**, the repo 104 → **105**. No migration, no contract, no consumer, no service `.csproj`.
+
+**Two routes of the five the title suggests, and the absence is the decision.** `Inventory.API`, `Payments.API` and `Notifications.API` have **no `Controllers/` folder at all** — their whole surface is RabbitMQ consumers — so a route to them could only return 404. *Rejected* declaring them anyway: a route that can only fail is the same **filter that never matches** `3.2` refused when adding architecture rules, and `5.4` could not verify it. They arrive when one of them gains a controller.
+
+**The transform is NOT the same in both routes, and finding that out cost a 404.** For Catalog the public prefix is a namespace the service knows nothing about (`/api/catalog/products` → `/products`, `PathRemovePrefix: /api/catalog`). For Orders **the prefix's last segment is simultaneously the service's resource**, so removing `/api/orders` leaves the path **empty** and Orders.API answers 404 with not one line of log saying why — it has no endpoint at the root. It removes only `/api`. **The rule: a transform is not copied between routes, it is derived from the relation between the public prefix and the paths the service actually serves — and that relation differs per service.**
+
+**`5.1` takes `UseHttpsRedirection()` away from Catalog.API and Orders.API, reversing a decision `1.6` wrote down.** That item left the line guarded and noted *"descartado también borrar la línea"*, closing with the sentence this item fulfils: *"desde la Fase 5 la terminación TLS es trabajo del Gateway, no de cada servicio"*. It is not cosmetic, it is measured: all seven `.csproj.user` carry `ActiveDebugProfile = https`, so from the IDE the services listen on both schemes and the middleware **does** find somewhere to redirect. The Gateway's plain-HTTP hop was getting `307` with `Location: https://localhost:7024/products` — routing broken and, worse, **the service's real address handed to the client through the Gateway**, exactly what rule 3 exists to prevent. Nothing is lost: YARP sends `X-Forwarded-Proto`, and Kestrel still listens on https, so only the *forcing* disappears. Written up as a reversal, precedent `3.3` over `2.3`'s decision 4. The other three services are **not** touched — they have no route, so nobody proxies to them.
+
+**A relative `Location` survives a proxy; an absolute one leaks the backend.** Both appeared in the same verification and the contrast is the lesson. Scalar's `302` sends `Location: scalar/` — relative — so the browser resolves it against the Gateway and the UI works end to end at `/api/catalog/scalar/`. The `307` above sent an absolute URL and no proxy can save that. **Check every `Location` a service emits from behind a Gateway.** The one that cannot be fixed here: `POST /api/orders` returns `201` with `Location: http://localhost:5189/orders/{id}` — the service does not know its public prefix and YARP has no built-in `Location` rewrite. Measured, documented, **ownerless**; it bites in `6.5`.
+
+**`1.5`'s debt is re-read and measured, not settled.** The catch-all forwards `/api/catalog/openapi/v1.json` and `/scalar` with no explicit exception. The document arrives and works, but declares its paths as `/products` (not `/api/catalog/products`) **and carries `servers: [{"url":"http://localhost:5124/"}]`** pointing at the backend — so Scalar's try-it button would bypass the Gateway entirely. `RequestHeaderOriginalHost: true` would move that to the Gateway's host but still without the `/api/catalog`: half a fix. Deciding what is exposed outward is `5.3`/`8.1`.
+
+**`Gateway_ReferencesNoProject` is the half of rule 3 nobody was watching.** `Frontend_DoesNotReference_ServicesOrGateway` has existed since `0.6`; nothing stopped the Gateway itself gaining a `ProjectReference` and compiling against a service's `DbContext`. The rule is **zero** references, `Shop133.Contracts` included — the Gateway forwards bytes and never deserializes a message — which is what separates it from the five services. Broken on purpose before being trusted (precedent `3.2`). **No package rule is added for YARP and that is said in writing** (precedent `3.3`/`3.5`/`4.5`): 2.x is MIT and **there is no 3.x on nuget.org**, so MassTransit's commercial trap cannot happen and the rule would never match.
+
+**`appsettings.json` accepts `//` comments** — the JSON configuration provider parses with `JsonCommentHandling.Skip`. Not strict JSON, so a schema validator may complain, but ASP.NET Core ignores them silently; verified by booting the Gateway with them in place. That is where the routing decisions live, next to the values they explain. The routing table is loaded with `LoadFromConfig`, so every destination is overridable as `ReverseProxy__Clusters__catalog__Destinations__primary__Address` — the `1.6` pattern, ready for the day the Gateway gets an image.
+
+**The Gateway has no container and no `MapGet("/")`.** Only `catalog-api` is containerised, so from inside Docker the Gateway would reach one of its two destinations; it runs from the IDE on **5104**. The template's root endpoint is deleted — the Gateway owns only `/api/*`, a 404 at the root is correct, and the liveness probe is `8.4`'s `/health`. `launchBrowser` therefore drops to `false` like the five services.
+
 **Phase 3 was in progress on `feature/fase-3-messaging`. `3.1` is done** — see [docs/fase_3_1.md](docs/fase_3_1.md). `MassTransit.RabbitMQ` **8.5.10** (Apache-2.0) lives in `Orders.API`, `Inventory.API` and `Payments.API`, and **only the transport is declared** — it drags the core, same reasoning as the SQL Server provider. **The v9 trap is live, not theoretical**: 9.2.0 is published, so `dotnet add package MassTransit.RabbitMQ` without a version installs the commercial one. That warning is now executable — `PackageRulesTests.MassTransitPackages_StayOnMajorVersion8` reads the `Version` attribute out of every `src/` `.csproj` and fails on anything not `8.`, so the suite went to **13 tests** (14 since `3.2`). It lives in its own file and not in `LayeringRulesTests`, whose `EfCorePackages_LiveOnlyIn_InfrastructureProjects` also inspects packages but does so to assert rule 5; a licence rule is not a layering rule. `ProjectGraph.PackageReferences` therefore changed type from `IReadOnlyList<string>` to `IReadOnlyList<PackageReferenceInfo>` (id + version), and an **empty version counts as a violation** — it would mean the version was left to somewhere else. Nothing under `Shop133.Contracts` or `Orders.Domain` was touched: the `OrderStateMachine`'s dependency arrives with the state machine in `4.1`, not before.
 
 The broker URI is **one key, `ConnectionStrings:RabbitMq`**, in User Secrets (`amqp://guest:guest@localhost:5672`), guarded in `Program.cs` exactly like `ConnectionStrings:OrdersDb`; `cfg.Host(new Uri(...))` reads the credentials from the URI's userinfo, so no `h.Username()`/`h.Password()`. `Inventory.API` and `Payments.API` had no `UserSecretsId` and got one from `dotnet user-secrets init`. The guard matters more here than in `2.2`: without it a missing key does not fail at registration but when the **hosted service starts the bus**, in a message that never mentions configuration. `SetKebabCaseEndpointNameFormatter()` and `cfg.ConfigureEndpoints(context)` are both set **now, with zero consumers** — the first because the formatter names every consumer's queue and changing it in `3.4` would strand orphan queues in the broker, the second because without it registering an `IConsumer` creates no receive endpoint and the message is lost **silently**. The `AddMassTransit` block is a **literal copy in all three services**, deliberately: extracting it needs a project all three reference, and `Shop133.Contracts` must stay at zero packages. Same precedent as `SqlServerContainerFixture` in `2.4` — `3.4`/`3.5` will touch two of the copies, and that is when extraction gets decided with a diff in hand.
@@ -387,7 +439,7 @@ Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed su
 | 2 | Orders.API (synchronous) | **Code complete** — 2.1–2.4 done; awaiting the PRs to `develop`/`main` and the `fase-2` tag |
 | 3 | MassTransit + RabbitMQ messaging | **Code complete** — 3.1–3.7 done; awaiting the PRs to `develop`/`main` and the `fase-3` tag |
 | 4 | Saga + compensations | **Code complete** — 4.1–4.9 done; awaiting the PRs to `develop`/`main` and the `fase-4` tag |
-| 5 | YARP Gateway | Not started |
+| 5 | YARP Gateway | **Code complete** — 5.1–5.4 done; awaiting the PRs to `develop`/`main` and the `fase-5` tag |
 | 6 | Frontend (MVC + Bootstrap 5) | Not started |
 | 7 | Observability | Not started |
 | 8 | Optional extras (auth, real-infra integration tests, CI/CD, E2E) | Not started |
@@ -403,7 +455,7 @@ Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed su
 | ORM | EF Core 10 | SQL Server provider |
 | Database | SQL Server 2022 (Docker) | One database per service |
 | Messaging | **MassTransit 8.x** + RabbitMQ | Pin the major — see below |
-| Gateway | YARP 2.x | |
+| Gateway | YARP 2.x | `Yarp.ReverseProxy` **2.3.0** since `5.1`, MIT. There is no 3.x on nuget.org, so unlike MassTransit there is no commercial-license trap and no package rule guards it. Newest asset is `lib/net8.0` — normal on `net10.0`, not a reason to hunt for a newer version. |
 | Frontend | ASP.NET Core MVC + Bootstrap 5 | |
 | Observability | OpenTelemetry → Jaeger, Serilog | |
 | Containers | Docker + Docker Compose | |
@@ -428,6 +480,7 @@ shop133/
 ├── tests/
 │   ├── Shop133.ArchitectureTests/   The rules in this file, made executable
 │   ├── Shop133.TestUtilities/       SqlServerContainerFixture, shared by the four suites (3.7)
+│   ├── Gateway/           Shop133.Gateway.Tests (routing, rate limiting, CORS — 5.4, no Docker)
 │   └── Services/
 │       ├── Catalog/       Catalog.Tests
 │       ├── Orders/        Orders.Tests (saga + consumers)
@@ -509,9 +562,13 @@ Tests are not a phase. They are numbered items spread across the roadmap — `0.
 
 The reference rules read the **`.csproj` files**, not the compiled assemblies: Roslyn prunes unused references from the manifest, so with service projects still empty an assembly-level check would pass vacuously. `ProjectGraph.cs` is that reader; add new reference rules on top of it. Rules about *types* (records, immutability) use plain reflection, and `NetArchTest` covers the one namespace-dependency assertion.
 
-**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`. Since `4.9`: **34 `Fast`** (16 `Shop133.ArchitectureTests` + 18 `Orders.Tests`) and **70 `Docker`** (29 `Catalog.Tests` + 17 `Orders.Tests` + 15 `Inventory.Tests` + 9 `Payments.Tests`), **104 in total**. Orders went 17 → 10 in `3.3` (the seven that tested the synchronous debt), 10 → 12 in `3.7` (it can finally assert the publish), 12 → 25 in `4.7` and 25 → 35 in `4.9`; Inventory went 9 → 15 in `4.4`; Catalog went 19 → 29 in `4.8`. `4.5` and `4.6` both added **zero** tests.
+**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`. Since `5.4`: **61 `Fast`** (17 `Shop133.ArchitectureTests` + 18 `Orders.Tests` + 26 `Shop133.Gateway.Tests`) and **70 `Docker`** (29 `Catalog.Tests` + 17 `Orders.Tests` + 15 `Inventory.Tests` + 9 `Payments.Tests`), **131 in total**. Orders went 17 → 10 in `3.3` (the seven that tested the synchronous debt), 10 → 12 in `3.7` (it can finally assert the publish), 12 → 25 in `4.7` and 25 → 35 in `4.9`; Inventory went 9 → 15 in `4.4`; Catalog went 19 → 29 in `4.8`. `4.5` and `4.6` both added **zero** tests, `5.1` added only the architecture one, and `5.2`/`5.3` added none at all — which is what `5.4` collects.
+
+**`tests/README.md` had been stale since `4.8`** — it reported 84 tests while the repo was at 105 — and `5.4` corrected it. It is the operational guide to the six test projects and it has to move with them.
 
 **`4.9` rewrote all 13 saga tests rather than only adding to them, and that they went red is the signal**: they published `OrderCreated → StockReserved → …` without passing through Catalog, so once `PricingPending` went in front, `StockReserved` stopped leading to `PaymentPending`. `AssertNoFaults()` went from 6 `Fault<T>` to 8. Its four deliberate breakages are in [docs/fase_4_9.md](docs/fase_4_9.md); the one worth carrying is that **implementing the roadmap's title literally still reaches `Cancelled` with exactly one `OrderCancelled`** — only the `ReleaseStock` count catches the leaked stock, so a final-state assertion would have approved it.
+
+**`Shop133.Gateway.Tests` is the only suite that touches Docker not at all** — no SQL Server, no RabbitMQ, 26 tests in 0.8 s. Its shape is deliberately unlike the four service suites (no `[Collection]`, a factory per test, and real Kestrel stubs at the far end because YARP forwards over a real socket); the differences and the reasons are tabulated in `tests/README.md`.
 
 **`Orders.Tests` is the only suite carrying both categories, and `OrderStateMachineTests` is the first `Fast` suite of a service** — 9 tests in ~10 s with no Docker at all, because it exercises a *process* with `InMemoryRepository()` and needs no database. That does not bend rule 1 above: what that rule bars is faking a relational database with EF's InMemory provider, not testing something that has no database. The 4 tests that do touch `OrdersDb.OrderStates` (`OrderStatePersistenceTests`) are `Docker` like everything else. **Notifications still has no test and no roadmap item owns it**: `4.7` was the state machine, so unlike `3.4`/`3.5` — whose by-hand verification `3.7` picked up — `4.6`'s debt has no scheduled collector. When it is written, the pattern is `Inventory.Tests`/`Payments.Tests` (a `ServiceCollection` around the consumer, no `WebApplicationFactory`) and it is `Category=Docker`, because of `NotificationsDb`.
 
@@ -626,6 +683,87 @@ dotnet run --project src/Services/Payments/Payments.API    # 5156
 # OpenAPI document.
 dotnet run --project src/Services/Notifications/Notifications.API  # 5043
 
+# El Gateway (5.1). No tiene contenedor: sus destinos son los puertos del IDE de
+# Catalog (5124) y Orders (5189), asi que esos dos tienen que estar levantados.
+# No necesita User Secrets — su configuracion son tres secciones de appsettings.json,
+# que SI lleva comentarios // (el proveedor JSON parsea con JsonCommentHandling.Skip).
+# Program.cs revienta antes de app.Build() si falta cualquiera de las tres:
+#  - ReverseProxy:Routes (5.1) — sin la guarda YARP arrancaria con cero rutas y
+#    devolveria 404 a todo en silencio.
+#  - RateLimiting:{CatalogRead,OrdersWrite,Global} (5.2) — un PermitLimit ausente
+#    se lee como 0, y un cupo de 0 permisos rechaza TODO con 429 sin decir por que.
+#  - Cors:AllowedOrigins (5.3) — una lista vacia deja una politica que no engancha
+#    con ningun origen, y el navegador bloquea culpando a CORS sin que el Gateway
+#    diga nada. La guarda tambien rechaza un origen con BARRA FINAL: la cabecera
+#    Origin nunca la lleva y la comparacion es literal, asi que no engancha jamas.
+dotnet run --project src/Gateway/Shop133.Gateway            # 5104
+
+# Rate limiting (5.2): ventana fija POR IP DEL CLIENTE, declarada por ruta.
+#   /api/catalog/*  -> catalog-read   60 / 60 s
+#   /api/orders/*   -> orders-write   10 / 60 s   (cada POST arranca la saga entera)
+#   lo demas        -> GlobalLimiter 120 / 60 s   (red de seguridad)
+# Al superar el cupo: 429 + Retry-After + application/problem+json con traceId.
+#
+# OJO con la clave de particion: es la IP de la conexion, y "localhost" resuelve a
+# ::1 y a 127.0.0.1, que son DOS cubos distintos — un cliente que alterne parece
+# dos y gasta el doble de cupo. Usa el literal 127.0.0.1 al medir (es la misma
+# dualidad que 2.3 midio en los rechazos de conexion).
+#
+# Para ver el 429 en dos peticiones en vez de en sesenta, baja el cupo por entorno
+# — que es lo que hara 5.4:
+#   $env:RateLimiting__OrdersWrite__PermitLimit = "2"
+#
+# Y dos cosas que no son evidentes: el codigo de rechazo por defecto es 503, NO 429
+# (se pone a mano en Program.cs), y cuando una ruta declara politica se aplican LAS
+# DOS (la suya y la global), asi que bajar Global por debajo de las otras dejaria a
+# esas dos decorativas sin que nada avise. Nada lo vigila; candidato para 5.4.
+# Un "RateLimiterPolicy" con un nombre no registrado NO arranca el Gateway: YARP
+# valida los nombres al cargar la configuracion (medido en 5.2). Lo mismo vale para
+# "CorsPolicy" (medido en 5.3): "CORS policy 'x' not found for route 'catalog-route'".
+
+# CORS (5.3): UNA politica, "frontend", declarada por ruta con "CorsPolicy" igual
+# que su "RateLimiterPolicy". Origenes en Cors:AllowedOrigins — los dos perfiles de
+# Shop133.Web (5025 y 7227), lista estricta e igual en Development que en Production.
+#
+# ORDEN DEL PIPELINE: UseCors() va ANTES de UseRateLimiter(), y no es cosmetico
+# (las dos consecuencias estan medidas en 5.3). Invertido: el 429 sale SIN cabeceras
+# CORS —el navegador solo ve un error de red opaco— y el preflight se gasta un
+# permiso, asi que con PermitLimit=1 un navegador no crea NI UN pedido mientras un
+# curl con el mismo cupo lo crea. El cliente que respeta CORS sale penalizado.
+#
+# NO hay red de seguridad al estilo del GlobalLimiter, a proposito: una ruta sin
+# "CorsPolicy" reenvia el preflight al servicio, que contesta 405, y sus respuestas
+# salen con CERO cabeceras Access-Control. El fallo es RUIDOSO, y una red de
+# seguridad se anade contra un fallo silencioso, no por simetria con 5.2.
+#
+# Al medir con curl: un OPTIONS sin "Access-Control-Request-Method" NO es preflight
+# — se reenvia al servicio y devuelve 405; solo con esa cabecera contesta 204. Y un
+# Origin ajeno recibe 200 CON EL CUERPO ENTERO, solo que sin Access-Control-*: CORS
+# no es autorizacion, lo aplica el navegador. El control de acceso es 8.1.
+#
+# WithExposedHeaders("Location", "Retry-After") no es opcional: el navegador solo
+# deja leer seis cabeceras de respuesta, asi que sin eso 6.5 no puede leer el
+# Location del 201 ni un cliente de navegador el Retry-After del 429.
+
+# La superficie publica desde 5.1 — SOLO estas dos. Inventory, Payments y
+# Notifications no tienen ni carpeta Controllers/, asi que no se les declara ruta:
+# solo podria devolver 404 (el "filtro que nunca engancha" de 3.2).
+#   GET  http://localhost:5104/api/catalog/products
+#   GET  http://localhost:5104/api/catalog/products/{id}
+#   GET  http://localhost:5104/api/catalog/categories
+#   POST http://localhost:5104/api/orders
+#   GET  http://localhost:5104/api/orders/{id}
+#
+# OJO con el transform, que NO es el mismo en las dos rutas y costo un 404:
+# catalog quita "/api/catalog" (el prefijo es un espacio de nombres que el
+# servicio desconoce) y orders quita solo "/api" (su ultimo segmento ES el
+# recurso del servicio, asi que quitar "/api/orders" deja el path VACIO y
+# Orders.API devuelve 404 sin un solo mensaje).
+#
+# Y la cabecera Location del 201 de POST /api/orders apunta a localhost:5189 sin
+# el prefijo: el servicio no conoce su prefijo publico y YARP no trae transform
+# de respuesta para reescribirla. Medido, documentado y SIN DUENO — duele en 6.5.
+
 # Inspect the broker without the UI. Since 4.8 there are NINE queues (4.6 left
 # eight; `order-created-pricing` is Catalog's, added by 4.8):
 # `order-created` (Inventory), `stock-reserved` (Payments), `order-state` (the
@@ -727,12 +865,14 @@ dotnet test tests/Shop133.ArchitectureTests        # a single test project
 # from it sidesteps the evaluation entirely. Since 3.7 NO suite needs RabbitMQ.
 # The filter option here is `-trait`/`-class`, NOT `--filter-trait`/`--filter-class`
 # — those belong to `dotnet test`; the runner answers "unknown option" or exit 3.
-dotnet tests\Shop133.ArchitectureTests\bin\Debug\net10.0\Shop133.ArchitectureTests.dll   # 16, no Docker
+dotnet tests\Shop133.ArchitectureTests\bin\Debug\net10.0\Shop133.ArchitectureTests.dll   # 17, no Docker
 dotnet tests\Shop133.ArchitectureTests\bin\Debug\net10.0\Shop133.ArchitectureTests.dll -trait "Category=Fast"
-dotnet tests\Services\Catalog\Catalog.Tests\bin\Debug\net10.0\Catalog.Tests.dll          # 29, Docker, ~140 s
-dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll             # 35, Docker, ~82 s
-dotnet tests\Services\Inventory\Inventory.Tests\bin\Debug\net10.0\Inventory.Tests.dll    # 15, Docker, ~101 s
-dotnet tests\Services\Payments\Payments.Tests\bin\Debug\net10.0\Payments.Tests.dll       #  9, Docker, ~61 s
+# 5.4. The only suite that needs NO Docker at all — no SQL Server and no broker.
+dotnet tests\Gateway\Shop133.Gateway.Tests\bin\Debug\net10.0\Shop133.Gateway.Tests.dll   # 26, no Docker, ~1 s
+dotnet tests\Services\Catalog\Catalog.Tests\bin\Debug\net10.0\Catalog.Tests.dll          # 29, Docker, ~148 s
+dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll             # 35, Docker, ~81 s
+dotnet tests\Services\Inventory\Inventory.Tests\bin\Debug\net10.0\Inventory.Tests.dll    # 15, Docker, ~98 s
+dotnet tests\Services\Payments\Payments.Tests\bin\Debug\net10.0\Payments.Tests.dll       #  9, Docker, ~63 s
 dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll -class "Orders.Tests.CreateOrderTests"
 
 # Since 4.7 the development loop for the saga needs NO Docker at all: the 18 tests of
@@ -793,11 +933,12 @@ dotnet ef database update `
 #   pass `--environment Development`.
 ```
 
-Local UIs: Catalog API reference (Scalar) — `http://localhost:5124/scalar` from the IDE, `http://localhost:5125/scalar` from the container (two ports on purpose, so both can run at once) · RabbitMQ management `http://localhost:15672` (guest/guest) · Jaeger `http://localhost:16686`
+Local UIs: Catalog API reference (Scalar) — `http://localhost:5124/scalar` from the IDE, `http://localhost:5125/scalar` from the container (two ports on purpose, so both can run at once), and since `5.1` also `http://localhost:5104/api/catalog/scalar` through the Gateway (its `302` is relative, so the prefix survives) · RabbitMQ management `http://localhost:15672` (guest/guest) · Jaeger `http://localhost:16686`
 
 ## Environment gotchas
 
 - **PowerShell 5.1 has no `&&`.** Chain with `;` or run commands separately. Backtick (`` ` ``) is the line-continuation character, not backslash.
+- **`curl.exe -o $null` does not discard the body in PowerShell** — `$null` expands to an empty string, so curl sees no output file and writes the response to stdout; a loop measuring status codes ends up collecting 14 kB JSON bodies instead. The literal that works is `-o NUL`. Measured in `5.4`; fourth variant of the PowerShell/`curl.exe` quoting family this file has tracked since `3.4`.
 - **`Invoke-WebRequest` needs `-UseBasicParsing` in PowerShell 5.1.** Without it, it tries to spin up the Internet Explorer engine to parse HTML and dies with *"Windows PowerShell is in NonInteractive mode"*, returning `$null` instead of a readable error. Use `Invoke-RestMethod` for JSON, or `curl.exe` — real curl, installed on Windows 11. Measured in `1.5`.
 - **A new `.cs` file needs no `.csproj` edit — but Visual Studio needs a refresh.** SDK-style projects glob every `**/*.cs` under the project folder implicitly (`Microsoft.NET.Sdk.DefaultItems.props`), so a file created from outside the IDE is already compiled. Verify with `dotnet msbuild <project>.csproj -getItem:Compile`, which lists it. **Never add `<Compile Include="..." />`** to make a file "appear": it is redundant, and alongside the default glob it produces duplicate-item errors (`NETSDK1022`). When Solution Explorer does not show the file, the stale thing is VS's own cache (`.vs/ProjectEvaluation/`), not the project — refresh Solution Explorer, then Unload/Reload the project, then reopen the solution, and as a last resort delete `.vs/` with VS closed (it is gitignored IDE state and regenerates).
 - **Smart App Control is ON in this Windows** (`HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy` → `VerifiedAndReputablePolicyState = 1`). It rejects the **first** load of an unsigned assembly it has never seen while it asks the Intelligent Security Graph, so the run right after restoring a new package can die with `An Application Control policy has blocked this file. (0x800711C7)`. The fix is to run it again. It is not about signing (the repo's own DLLs are unsigned and load fine) and not about a specific package version — chasing it by downgrading just moves the block to whichever assembly is new. **Never turn Smart App Control off to work around it: it cannot be turned back on without reinstalling Windows.** Measured in `1.7`.

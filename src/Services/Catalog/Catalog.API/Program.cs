@@ -168,21 +168,36 @@ var app = builder.Build();
 app.MapOpenApi();
 app.MapScalarApiReference();
 
-// Guardado con IsDevelopment() desde 1.6, y por el motivo contrario al de
-// MapOpenApi() de arriba: el contenedor solo escucha HTTP (ASPNETCORE_HTTP_PORTS
-// = 8080, sin puerto https), asi que sin la guarda el middleware no encuentra a
-// donde redirigir y loguea "Failed to determine the https port for redirect" en
-// CADA peticion — un warning por request en "docker compose logs".
+// SIN UseHttpsRedirection() desde 5.1, y esto REVIERTE lo que decia este mismo
+// comentario. 1.6 lo dejo guardado con IsDevelopment() y escribio aqui
+// "descartado tambien borrar la linea: el perfil https de launchSettings.json
+// sigue existiendo y ahi la redireccion si tiene sentido", cerrando con la frase
+// que este punto viene a cumplir: "desde la Fase 5 la terminacion TLS es trabajo
+// del Gateway, no de cada servicio". Ya estamos en la Fase 5. Se escribe como
+// reversion y no se disimula, con el precedente de 3.3 revirtiendo la decision 4
+// de 2.3.
 //
-// Descartado dejarlo sin guarda y asumir el ruido, y descartado tambien borrar
-// la linea: el perfil "https" de launchSettings.json sigue existiendo y ahi la
-// redireccion si tiene sentido. Desde la Fase 5 la terminacion TLS es trabajo
-// del Gateway, no de cada servicio.
-if (app.Environment.IsDevelopment())
-{
-    app.UseHttpsRedirection();
-}
-
+// El motivo no es estetico, esta medido. Con la linea puesta y el perfil "https"
+// activo (lo esta en los siete .csproj.user), el salto HTTP del Gateway a
+// http://localhost:5124/products recibia:
+//
+//     HTTP/1.1 307 Temporary Redirect
+//     Location: https://localhost:7024/products
+//
+// O sea: el enrutado roto, y ademas la direccion REAL del servicio devuelta al
+// cliente a traves del Gateway — exactamente el fallo que la regla 3 de CLAUDE.md
+// existe para impedir. Un reverse proxy habla con su destino en claro; forzar
+// aqui el upgrade es pelearse con el proxy.
+//
+// El servicio no pierde informacion: YARP manda X-Forwarded-Proto por defecto,
+// asi que sigue sabiendo con que esquema entro la peticion original. Y Kestrel
+// sigue escuchando en https, asi que quien llame directo a
+// https://localhost:7024 no pierde nada — lo unico que desaparece es el FORZADO,
+// que solo servia a quien alcanza el servicio saltandose el Gateway.
+//
+// Efecto colateral que 1.6 buscaba y que sigue cumpliendose: el contenedor de
+// catalog-api ya no puede loguear "Failed to determine the https port for
+// redirect", porque el middleware no esta.
 app.UseAuthorization();
 
 app.MapControllers();

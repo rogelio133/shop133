@@ -110,6 +110,37 @@ public sealed class ServiceBoundaryRulesTests
             "Fuera de lugar: " + string.Join(", ", offenders));
     }
 
+    /// <summary>
+    /// La otra mitad de la regla 3, añadida en 5.1 con YARP delante.
+    ///
+    /// <see cref="Frontend_DoesNotReference_ServicesOrGateway"/> vigila que
+    /// Shop133.Web no referencie un servicio; hasta 5.1 nada vigilaba lo
+    /// simétrico en el Gateway, que es el proyecto que de verdad está en medio.
+    ///
+    /// Merece test por lo mismo que lo merecía el sitio de un consumer: un
+    /// <c>ProjectReference</c> a Catalog.API dejaría al Gateway compilando contra
+    /// <c>CatalogDbContext</c> sin una sola queja, y el atajo de "leo la tabla y
+    /// me ahorro el salto HTTP" quedaría a un using de distancia. Un reverse
+    /// proxy reenvía bytes.
+    ///
+    /// La regla es CERO referencias, ni siquiera <c>Shop133.Contracts</c>, y esa
+    /// exclusión es deliberada: el Gateway nunca deserializa un mensaje, así que
+    /// el día que necesite los contratos lo que ha cambiado es su papel, y eso se
+    /// habla antes de añadir la línea. Nótese que esto lo separa de los cinco
+    /// servicios, que sí lo referencian todos.
+    /// </summary>
+    [Fact]
+    public void Gateway_ReferencesNoProject()
+    {
+        var gateway = ProjectGraph.Get("Shop133.Gateway");
+
+        Assert.True(
+            gateway.ProjectReferences.Count == 0,
+            "El Gateway enruta por HTTP: no referencia ningún proyecto, ni siquiera " +
+            "Shop133.Contracts — reenvía bytes, nunca deserializa un mensaje. " +
+            "Referencias de más: " + string.Join(", ", gateway.ProjectReferences));
+    }
+
     [Fact]
     public void Frontend_DoesNotReference_ServicesOrGateway()
     {
