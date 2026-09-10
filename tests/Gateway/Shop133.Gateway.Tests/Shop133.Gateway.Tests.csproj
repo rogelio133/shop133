@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- Igual que las otras cinco suites: xunit.v3 corre sobre
+         Microsoft.Testing.Platform, así que el proyecto de test es un
+         ejecutable que se lanza a sí mismo. Ver la regla 5b de CLAUDE.md. -->
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.0" />
+    <!--
+      WebApplicationFactory<Program>. Misma versión que Catalog.Tests y
+      Orders.Tests: 5.4 no estrena ni un paquete en el repositorio.
+
+      Trae además el FrameworkReference a Microsoft.AspNetCore.App, que es lo que
+      permite que BackendStub levante su propio WebApplication sin depender de
+      nada más. Ése es el motivo de que este punto NO tenga que resucitar
+      WireMock.Net, el paquete que 3.3 borró con la deuda síncrona: un stub que
+      solo apunta qué path recibió son dos líneas de MapFallback, no un framework
+      de mocking.
+    -->
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.11" />
+    <!--
+      NO entra Testcontainers.MsSql, y es la diferencia con las cuatro suites de
+      servicio: el Gateway no tiene base de datos ni bus. Toda esta suite es
+      Category=Fast — la segunda del repositorio después de OrderStateMachineTests
+      (4.7) y la primera que no necesita NI base de datos NI broker.
+    -->
+  </ItemGroup>
+
+  <!--
+    Una sola referencia, y es la única que este proyecto puede tener: el Gateway
+    no referencia ningún proyecto (regla 3 de CLAUDE.md, ejecutable desde 5.1 con
+    Gateway_ReferencesNoProject), así que aquí no llega nada transitivo — ni
+    siquiera Shop133.Contracts. El Gateway reenvía bytes; nunca deserializa un
+    mensaje, y por eso los stubs de esta suite devuelven JSON escrito a mano en
+    vez de tipos compartidos.
+
+    Referenciar al Gateway desde aquí NO incumple Gateway_ReferencesNoProject:
+    esa regla inspecciona los ProjectReference *del propio Gateway*, y ProjectGraph
+    solo enumera <repo>/src, así que tests/ es invisible para las 17 reglas.
+    Mismo motivo por el que Catalog.Tests puede arrastrar EF Core (1.7).
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\Gateway\Shop133.Gateway\Shop133.Gateway.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -271,8 +271,20 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-app.UseHttpsRedirection();
-
+// SIN UseHttpsRedirection() desde 5.1, igual que Catalog.API y por el mismo
+// motivo medido: con la linea puesta, el salto HTTP del Gateway a
+// http://localhost:5189/orders devolvia un 307 hacia https://localhost:7240 que
+// rompia el enrutado y filtraba al cliente la direccion real del servicio.
+//
+// Aqui la linea venia ademas SIN guarda, al contrario que en Catalog: bajo
+// WebApplicationFactory no habia puerto https que resolver, asi que las 35
+// pruebas de Orders.Tests solo veian el warning "Failed to determine the https
+// port for redirect" una vez por peticion. Quitarla hace desaparecer ese ruido
+// sin cambiar ningun resultado.
+//
+// Desde la Fase 5 la terminacion TLS es del Gateway, no de cada servicio. El
+// argumento completo esta en el comentario equivalente de Catalog.API/Program.cs
+// y en docs/fase_5_1.md.
 app.UseAuthorization();
 
 app.MapControllers();

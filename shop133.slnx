@@ -35,6 +35,9 @@
     <Project Path="tests/Shop133.ArchitectureTests/Shop133.ArchitectureTests.csproj" />
     <Project Path="tests/Shop133.TestUtilities/Shop133.TestUtilities.csproj" />
   </Folder>
+  <Folder Name="/tests/Gateway/">
+    <Project Path="tests/Gateway/Shop133.Gateway.Tests/Shop133.Gateway.Tests.csproj" />
+  </Folder>
   <Folder Name="/tests/Services/" />
   <Folder Name="/tests/Services/Catalog/">
     <Project Path="tests/Services/Catalog/Catalog.Tests/Catalog.Tests.csproj" />

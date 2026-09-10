@@ -1,10 +1,14 @@
 # Tests de shop133 — qué cubre cada suite y cómo ejecutarlas
 
-Guía operativa de los cinco proyectos de `tests/`. El *porqué* de cada decisión está en los documentos de
+Guía operativa de los seis proyectos de `tests/`. El *porqué* de cada decisión está en los documentos de
 [docs/](../docs); esto es lo otro: **qué se está probando y qué hay que teclear para correrlo**.
 
 > Hasta `3.7` este fichero hablaba solo de `Orders.Tests`. Se amplió al cerrar la Fase 3, cuando llegaron
 > `Inventory.Tests` y `Payments.Tests` y los avisos comunes empezaron a repetirse.
+>
+> **Aviso de `5.4`:** hasta ese punto esta tabla declaraba **84** tests (16 / 19 / 25) cuando el
+> repositorio llevaba en **105** desde `4.8`, `4.9` y `5.1`. No lo rompió `5.4`; se corrigió allí de paso y
+> se deja dicho en vez de arreglarlo en silencio. **Al añadir tests, este fichero se actualiza con ellos.**
 
 ---
 
@@ -12,20 +16,23 @@ Guía operativa de los cinco proyectos de `tests/`. El *porqué* de cada decisi�
 
 | Proyecto | Tests | Categoría | Qué prueba |
 |---|---|---|---|
-| [`Shop133.ArchitectureTests`](Shop133.ArchitectureTests) | 16 | `Fast` | Las reglas de [CLAUDE.md](../CLAUDE.md) en forma ejecutable, leyendo los `.csproj` de `src/`. |
-| [`Shop133.TestUtilities`](Shop133.TestUtilities) | — | — | **No es una suite.** La biblioteca con `SqlServerContainerFixture`, que comparten las cuatro de abajo. |
-| [`Services/Catalog/Catalog.Tests`](Services/Catalog/Catalog.Tests) | 19 | `Docker` | Los endpoints CRUD de `1.3`/`1.4` sobre SQL Server real. |
-| [`Services/Orders/Orders.Tests`](Services/Orders/Orders.Tests) | 25 | `Docker` **y** `Fast` | `POST /orders` y que se publica `OrderCreated` (12, `Docker`) · los cuatro escenarios de la saga (9, **`Fast`**) · la persistencia de la saga en `OrdersDb` (4, `Docker`). |
+| [`Shop133.ArchitectureTests`](Shop133.ArchitectureTests) | 17 | `Fast` | Las reglas de [CLAUDE.md](../CLAUDE.md) en forma ejecutable, leyendo los `.csproj` de `src/`. |
+| [`Shop133.TestUtilities`](Shop133.TestUtilities) | — | — | **No es una suite.** La biblioteca con `SqlServerContainerFixture`, que comparten las cuatro de servicio. |
+| [`Gateway/Shop133.Gateway.Tests`](Gateway/Shop133.Gateway.Tests) | 26 | `Fast` | El enrutado de `5.1` (9), el rate limiting de `5.2` (5), el CORS de `5.3` (9) y dos invariantes de `appsettings.json` que nada vigilaba (3). |
+| [`Services/Catalog/Catalog.Tests`](Services/Catalog/Catalog.Tests) | 29 | `Docker` | Los endpoints CRUD de `1.3`/`1.4` sobre SQL Server real, más `OrderCreatedPricingConsumer` (`4.8`). |
+| [`Services/Orders/Orders.Tests`](Services/Orders/Orders.Tests) | 35 | `Docker` **y** `Fast` | `POST /orders` y que se publica `OrderCreated` (13, `Docker`) · los escenarios de la saga (18, **`Fast`**) · la persistencia de la saga en `OrdersDb` (4, `Docker`). |
 | [`Services/Inventory/Inventory.Tests`](Services/Inventory/Inventory.Tests) | 15 | `Docker` | `OrderCreatedConsumer` (reserva, rechazos, atomicidad, idempotencia) y `ReleaseStockConsumer` (la compensación de `4.4`). |
 | [`Services/Payments/Payments.Tests`](Services/Payments/Payments.Tests) | 9 | `Docker` | `StockReservedConsumer`: cobro, rechazo por importe e idempotencia. |
 
-**84 tests**: 25 `Fast` y 59 `Docker`. El trait va en la clase, nunca en cada método.
+**131 tests**: 61 `Fast` y 70 `Docker`. El trait va en la clase, nunca en cada método.
 
 `Orders.Tests` es la única suite con las dos categorías, desde `4.7`: `OrderStateMachineTests` prueba un
-*proceso* con el repositorio de saga en memoria, así que no necesita base de datos y corre en ~10 s los
-nueve. Para el bucle de desarrollo eso es lo que hay que teclear:
+*proceso* con el repositorio de saga en memoria, así que no necesita base de datos. Y desde `5.4`,
+**`Shop133.Gateway.Tests` no necesita ni base de datos ni broker** — es la única suite del repositorio que
+no toca Docker en absoluto y corre entera en menos de un segundo. Para el bucle de desarrollo:
 
 ```powershell
+dotnet tests\Gateway\Shop133.Gateway.Tests\bin\Debug\net10.0\Shop133.Gateway.Tests.dll
 dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll -trait "Category=Fast"
 ```
 
@@ -80,6 +87,21 @@ Dos diferencias que conviene tener presentes:
   contenedor de dependencias que necesita y nada más. Ver la decisión 3 de
   [docs/fase_3_7.md](../docs/fase_3_7.md).
 
+### El Gateway va aparte, y en casi todo al revés
+
+`Shop133.Gateway.Tests` (`5.4`) no encaja en el cuadro de arriba y conviene saber por qué antes de copiarle
+la forma a nadie:
+
+| Pieza | En qué se diferencia |
+|---|---|
+| `GatewayFactory` | `WebApplicationFactory<Program>` que **solo reescribe configuración** (los dos destinos y, si el test lo pide, los cupos). No hay `DbContext` ni bus que sustituir. |
+| `BackendStub` | Un Kestrel **de verdad** en `127.0.0.1:0` que apunta qué path recibió. Hace falta porque la entrada al Gateway es en memoria pero **el reenvío de YARP sale por un socket real**: el destino no puede ser otro `TestServer`. |
+| Sin `[Collection]` | No hay contenedor que compartir. Es la primera suite de servicio sin collection. |
+| Una fábrica **por test** | El cupo gastado vive en el host. Bajo `TestServer` no hay `RemoteIpAddress`, así que la clave de partición es `"unknown"` para todo el proceso y dos tests que compartieran fábrica se heredarían los `429`. |
+
+Y la limitación que hay que tener presente al leerlos: **el stub prueba que el Gateway *manda* `/products`,
+no que Catalog.API lo *sirva***. Ese enlace es de `8.6`.
+
 **Cada guarda nueva en un `Program.cs` es una línea nueva en su fábrica de tests, y cada guarda que se va se
 lleva la suya.** `Program.cs` lee sus claves y lanza *antes* de `app.Build()`, así que sustituir servicios en
 `ConfigureTestServices` llega tarde: el host ni se construye. Nada más que estas suites detecta el desajuste.
@@ -90,8 +112,8 @@ lleva la suya.** `Program.cs` lee sus claves y lanza *antes* de `app.Build()`, a
 
 ### Requisitos previos
 
-1. **Docker Desktop corriendo.** Las 59 pruebas `Docker` levantan su propio SQL Server en un puerto
-   aleatorio. Las 25 `Fast` no lo necesitan.
+1. **Docker Desktop corriendo.** Las 70 pruebas `Docker` levantan su propio SQL Server en un puerto
+   aleatorio. Las 61 `Fast` no lo necesitan.
 2. **La imagen `mcr.microsoft.com/mssql/server:2022-latest`.** Es la misma etiqueta que
    `docker-compose.yml`, así que normalmente ya está descargada; la primera vez son ~1,5 GB.
 3. RabbitMQ **no** hace falta. Ver el aviso de arriba.
@@ -104,11 +126,12 @@ dotnet build
 
 # 2. Ejecutar. Cada proyecto de test es su propio ejecutable (regla 5b de CLAUDE.md),
 #    pero conviene lanzarlo por el .dll — ver el primer aviso de abajo.
-dotnet tests\Shop133.ArchitectureTests\bin\Debug\net10.0\Shop133.ArchitectureTests.dll   # 16, sin Docker
-dotnet tests\Services\Catalog\Catalog.Tests\bin\Debug\net10.0\Catalog.Tests.dll          # 19, ~80 s
-dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll             # 25, ~73 s
-dotnet tests\Services\Inventory\Inventory.Tests\bin\Debug\net10.0\Inventory.Tests.dll    # 15, ~101 s
-dotnet tests\Services\Payments\Payments.Tests\bin\Debug\net10.0\Payments.Tests.dll       #  9, ~61 s
+dotnet tests\Shop133.ArchitectureTests\bin\Debug\net10.0\Shop133.ArchitectureTests.dll   # 17, sin Docker
+dotnet tests\Gateway\Shop133.Gateway.Tests\bin\Debug\net10.0\Shop133.Gateway.Tests.dll   # 26, sin Docker, ~1 s
+dotnet tests\Services\Catalog\Catalog.Tests\bin\Debug\net10.0\Catalog.Tests.dll          # 29, ~148 s
+dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll             # 35, ~81 s
+dotnet tests\Services\Inventory\Inventory.Tests\bin\Debug\net10.0\Inventory.Tests.dll    # 15, ~98 s
+dotnet tests\Services\Payments\Payments.Tests\bin\Debug\net10.0\Payments.Tests.dll       #  9, ~63 s
 
 # 3. Filtrar. Ojo: la opción es `-trait` / `-class`, con UN guion.
 #    `--filter-trait` y `--filter-class` son de `dotnet test` y dan "unknown option"
