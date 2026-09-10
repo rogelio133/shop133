@@ -1,47 +1,76 @@
-﻿<!DOCTYPE html>
-<html lang="en">
+@{
+    // El item activo del navbar se deduce del controller de la ruta actual. Se resuelve
+    // aqui y no en cada vista porque el layout es el unico sitio que dibuja el menu; 6.2
+    // y 6.5 solo tendran que anadir su <li>, no volver a inventar como se marca "activo".
+    var currentController = ViewContext.RouteData.Values["controller"]?.ToString();
+}
+<!DOCTYPE html>
+<html lang="es">
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>@ViewData["Title"] - Shop133.Web</title>
+    <title>@ViewData["Title"] - Shop133</title>
     <script type="importmap"></script>
     <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
     <link rel="stylesheet" href="~/Shop133.Web.styles.css" asp-append-version="true" />
+    @await RenderSectionAsync("Styles", required: false)
 </head>
-<body>
+<body class="d-flex flex-column min-vh-100">
     <header>
-        <nav class="navbar navbar-expand-sm navbar-toggleable-sm navbar-light bg-white border-bottom box-shadow mb-3">
-            <div class="container-fluid">
-                <a class="navbar-brand" asp-area="" asp-controller="Home" asp-action="Index">Shop133.Web</a>
-                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target=".navbar-collapse" aria-controls="navbarSupportedContent"
-                        aria-expanded="false" aria-label="Toggle navigation">
+        @* Clases de Bootstrap 5.3: bg-body-tertiary en lugar del navbar-light + bg-white de
+           la plantilla, que arrastraba nomenclatura de la 4.x (navbar-light esta deprecado
+           desde la 5.3, y navbar-toggleable-sm no existe en la 5). *@
+        <nav class="navbar navbar-expand-md bg-body-tertiary border-bottom mb-4">
+            <div class="container">
+                <a class="navbar-brand fw-semibold" asp-controller="Home" asp-action="Index">Shop133</a>
+                @* El data-bs-target apunta a un id real. La plantilla usaba el selector de
+                   clase ".navbar-collapse", que funciona por casualidad mientras solo haya
+                   un collapse en la pagina. *@
+                <button class="navbar-toggler" type="button"
+                        data-bs-toggle="collapse" data-bs-target="#mainNav"
+                        aria-controls="mainNav" aria-expanded="false" aria-label="Abrir el menú">
                     <span class="navbar-toggler-icon"></span>
                 </button>
-                <div class="navbar-collapse collapse d-sm-inline-flex justify-content-between">
-                    <ul class="navbar-nav flex-grow-1">
+                <div class="collapse navbar-collapse" id="mainNav">
+                    <ul class="navbar-nav me-auto">
                         <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Home" asp-action="Index">Home</a>
+                            <a class="nav-link @(currentController == "Home" ? "active" : null)"
+                               aria-current="@(currentController == "Home" ? "page" : null)"
+                               asp-controller="Home" asp-action="Index">Inicio</a>
+                        </li>
+                        @* Los tres siguientes no tienen href a proposito: el controller que
+                           los sirve todavia no existe, y un enlace muerto seria una promesa
+                           a medias. Los activan 6.2, 6.3 y 6.5 respectivamente. *@
+                        <li class="nav-item">
+                            <a class="nav-link disabled" aria-disabled="true">Catálogo</a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Home" asp-action="Privacy">Privacy</a>
+                            <a class="nav-link disabled" aria-disabled="true">Carrito</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link disabled" aria-disabled="true">Estado del pedido</a>
                         </li>
                     </ul>
                 </div>
             </div>
         </nav>
     </header>
-    <div class="container">
-        <main role="main" class="pb-3">
-            @RenderBody()
-        </main>
-    </div>
 
-    <footer class="border-top footer text-muted">
-        <div class="container">
-            &copy; 2026 - Shop133.Web - <a asp-area="" asp-controller="Home" asp-action="Privacy">Privacy</a>
+    @* flex-grow-1 + mt-auto en el footer es lo que lo mantiene abajo en una pagina corta.
+       La plantilla lo hacia con position:absolute y un body{margin-bottom:60px}, que asume
+       un footer de exactamente 60px de alto y se rompe en cuanto crece. *@
+    <main role="main" class="container flex-grow-1 pb-3">
+        @RenderBody()
+    </main>
+
+    <footer class="mt-auto border-top py-3 text-body-secondary">
+        <div class="container d-flex flex-wrap justify-content-between gap-2">
+            <span>&copy; @DateTime.UtcNow.Year Shop133</span>
+            <span>Proyecto de aprendizaje — microservicios .NET con saga y compensaciones</span>
         </div>
     </footer>
+
     <script src="~/lib/jquery/dist/jquery.min.js"></script>
     <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
     <script src="~/js/site.js" asp-append-version="true"></script>

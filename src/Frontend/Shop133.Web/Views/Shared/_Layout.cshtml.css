@@ -1,48 +1,16 @@
-﻿/* Please see documentation at https://learn.microsoft.com/aspnet/core/client-side/bundling-and-minification
-for details on configuring this project to bundle and minify static web assets. */
+/* CSS aislado del layout. Razor le anade un atributo b-<hash> a los elementos de ESTE
+   archivo y reescribe cada selector como `footer[b-<hash>]`, asi que lo de aqui solo
+   alcanza al layout. Dos consecuencias medidas en 6.1:
 
-a.navbar-brand {
-  white-space: normal;
-  text-align: center;
-  word-break: break-all;
-}
+   1. Nada que tenga que aplicar a una vista hija puede vivir aqui. El `.btn-primary` que
+      traia la plantilla nunca llego a un boton renderizado por una vista — llevaba muerto
+      desde el dia uno.
+   2. Un elemento que pasa por un TAG HELPER sale renderizado SIN el atributo b-<hash>, asi
+      que tampoco lo alcanza. El navbar-brand y el enlace de Inicio usan asp-controller, y
+      por eso su estilo vive en wwwroot/css/site.css y no aqui.
 
-a {
-  color: #0077cc;
-}
+   Lo que queda aqui es lo que se comprobo que si engancha: elementos literales del layout. */
 
-.btn-primary {
-  color: #fff;
-  background-color: #1b6ec2;
-  border-color: #1861ac;
-}
-
-.nav-pills .nav-link.active, .nav-pills .show > .nav-link {
-  color: #fff;
-  background-color: #1b6ec2;
-  border-color: #1861ac;
-}
-
-.border-top {
-  border-top: 1px solid #e5e5e5;
-}
-.border-bottom {
-  border-bottom: 1px solid #e5e5e5;
-}
-
-.box-shadow {
-  box-shadow: 0 .25rem .75rem rgba(0, 0, 0, .05);
-}
-
-button.accept-policy {
-  font-size: 1rem;
-  line-height: inherit;
-}
-
-.footer {
-  position: absolute;
-  bottom: 0;
-  width: 100%;
-  white-space: nowrap;
-  line-height: 60px;
+footer {
+  font-size: .875rem;
 }

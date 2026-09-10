@@ -283,7 +283,7 @@ Se entrega además un `GlobalLimiter` que el título no pide, y por el criterio 
 
 Proyecto `Shop133.Web` (ASP.NET Core MVC), consumiendo **únicamente el Gateway**, nunca los servicios directo.
 
-- [ ] **6.1** Layout base con Bootstrap 5 (navbar, footer, `_Layout.cshtml`)
+- [x] **6.1** Layout base con Bootstrap 5 (navbar, footer, `_Layout.cshtml`) — [doc](docs/fase_6_1.md)
 - [ ] **6.2** Vista de catálogo: grid de productos con `card` de Bootstrap
 - [ ] **6.3** Carrito de compras **en sesión de servidor**, no en cookie — ver la nota de abajo
 - [ ] **6.4** Formulario de checkout (Bootstrap forms + validación client-side)
