@@ -55,5 +55,6 @@ Documentos de procedimiento, no ligados a un punto del roadmap. No siguen la con
 | 5.1 | Rutas del Gateway con YARP | 2026-09-07 | [fase_5_1.md](fase_5_1.md) |
 | 5.2 | Rate limiting básico en el Gateway | 2026-09-08 | [fase_5_2.md](fase_5_2.md) |
 | 5.3 | CORS centralizado en el Gateway | 2026-09-08 | [fase_5_3.md](fase_5_3.md) |
+| 5.4 | Smoke de enrutado del Gateway | 2026-09-09 | [fase_5_4.md](fase_5_4.md) |
 
 El punto **0.1** (crear solución y estructura de carpetas) se completó antes de que existiera esta convención y no se documentó retroactivamente.

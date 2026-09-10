@@ -329,3 +329,13 @@ app.UseRateLimiter();
 app.MapReverseProxy();
 
 app.Run();
+
+// Única línea que 5.4 añade a src/, y está aquí por el mismo motivo que en
+// Catalog.API (1.7) y Orders.API (2.3): las instrucciones de nivel superior
+// generan una clase Program *internal*, así que WebApplicationFactory<Program>
+// no la ve y Shop133.Gateway.Tests no compilaría.
+//
+// Descartado el InternalsVisibleTo equivalente: son más líneas, nombra al
+// proyecto de test desde el de producción (una flecha que no debería existir) y
+// el repositorio ya tiene dos precedentes de esta forma.
+public partial class Program { }
