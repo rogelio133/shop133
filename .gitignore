@@ -484,3 +484,4 @@ $RECYCLE.BIN/
 # shop133 — local overrides (secrets go in User Secrets or env vars, never in appsettings.json)
 **/appsettings.Local.json
 **/appsettings.*.Local.json
+src/Frontend/Shop133.Web/wwwroot/img/products/

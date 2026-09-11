@@ -1,24 +1,64 @@
-html {
-  font-size: 14px;
+/* Hoja global de la tienda. A diferencia de _Layout.cshtml.css (aislado al layout), lo de
+   aqui alcanza a todas las vistas, asi que es donde tiene sentido el acento de marca.
+   Se toca la variable de Bootstrap y no la regla .btn-primary: asi el color viaja solo a
+   los botones, los enlaces, los focus ring y todo lo que la 5.3 deriva de --bs-primary. */
+
+:root {
+  --bs-primary: #1b6ec2;
+  --bs-primary-rgb: 27, 110, 194;
+  --bs-link-color: #0d6efd;
+  --bs-link-color-rgb: 13, 110, 253;
+  --bs-link-hover-color: #0a58ca;
+  --bs-link-hover-color-rgb: 10, 88, 202;
 }
 
-@media (min-width: 768px) {
-  html {
-    font-size: 16px;
-  }
+/* El brand y los enlaces del navbar pasan por el AnchorTagHelper (asp-controller), y un
+   elemento procesado por un tag helper sale SIN el atributo b-<hash> de CSS aislado — asi
+   que una regla para ellos en _Layout.cshtml.css no engancharia. Medido en 6.1. */
+.navbar-brand {
+  letter-spacing: .02em;
 }
 
+.btn-primary {
+  --bs-btn-bg: var(--bs-primary);
+  --bs-btn-border-color: #1861ac;
+  --bs-btn-hover-bg: #1861ac;
+  --bs-btn-hover-border-color: #16548f;
+  --bs-btn-active-bg: #16548f;
+  --bs-btn-active-border-color: #16548f;
+  --bs-btn-disabled-bg: var(--bs-primary);
+  --bs-btn-disabled-border-color: #1861ac;
+}
+
+/* 6.2. Las descripciones del seed miden 100-160 caracteres (1.4) y las cards de una misma fila
+   tienen que quedar a la misma altura. Se recorta por LINEA RENDERIZADA y no por numero de
+   caracteres: line-clamp corta a la anchura real de la card, que cambia con el breakpoint, y el
+   texto completo sigue en el DOM para un lector de pantalla y para Ctrl+F. Bootstrap 5.3 no
+   trae utilidad para esto.
+
+   Descartado recortar con Description[..90] en el controller o en un view model: corta a mitad
+   de palabra (y de grafema, que el seed va lleno de a/e/i/o/u acentuadas y de enes), es una
+   decision de PRESENTACION tomada donde se traen los datos, no se adapta —una card a 4 columnas
+   y otra a 1 caben cosas muy distintas del mismo texto— y deja una mentira en el DOM, porque el
+   texto recortado es lo que recibe un lector de pantalla.
+
+   Va aqui y no en un Views/Catalog/Index.cshtml.css aunque el CSS aislado SI alcanzaria a este
+   <p> (no pasa por ningun tag helper, al reves que lo que midio 6.1): el modo de fallo del CSS
+   aislado es SILENCIOSO —archivo servido, CSS valido, selector que no engancha con nadie— y el
+   ambito se mueve con el archivo, asi que el dia que 6.3 saque la card a un partial la regla
+   dejaria de aplicarse sin un solo aviso. Es la decision 4 de 6.1 aplicada por segunda vez. */
+.product-description {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+
+/* El anillo de foco de la plantilla: mas visible que el de Bootstrap sobre fondo claro.
+   Se conserva porque 6.4 mete formularios y la accesibilidad del teclado importa ahi. */
 .btn:focus, .btn:active:focus, .btn-link.nav-link:focus, .form-control:focus, .form-check-input:focus {
   box-shadow: 0 0 0 0.1rem white, 0 0 0 0.25rem #258cfb;
-}
-
-html {
-  position: relative;
-  min-height: 100%;
-}
-
-body {
-  margin-bottom: 60px;
 }
 
 .form-floating > .form-control-plaintext::placeholder, .form-floating > .form-control::placeholder {

@@ -1,0 +1,70 @@
+@model CatalogProduct
+@{
+    ViewData["Title"] = Model.Name;
+}
+
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a asp-controller="Home" asp-action="Index">Inicio</a></li>
+        @* Vuelve al grid FILTRADO por la categoria de este producto. No es "volver a donde
+           estabas" —quien llego sin filtro aterriza filtrado—; la alternativa honesta seria
+           arrastrar el categoryId hasta aqui y de vuelta, o sea hilar estado por la URL para
+           un boton atras que el navegador ya tiene. *@
+        <li class="breadcrumb-item">
+            <a asp-action="Index" asp-route-categoryId="@Model.CategoryId">Catálogo</a>
+        </li>
+        <li class="breadcrumb-item active" aria-current="page">@Model.Name</li>
+    </ol>
+</nav>
+
+<div class="row g-4">
+    <div class="col-md-5">
+        <img class="img-fluid rounded"
+             src="@(Model.ImageUrl ?? "/img/products/placeholder.jpg")"
+             alt="@Model.Name" width="400" height="300" />
+    </div>
+    <div class="col-md-7">
+        <span class="badge text-bg-secondary mb-2">@Model.CategoryName</span>
+        <h1 class="h3">@Model.Name</h1>
+        <p class="fs-3 fw-semibold mb-3">@Money.Format(Model.Price)</p>
+
+        @* La descripcion entera, SIN recortar: aqui no hay rejilla que alinear. *@
+        <p class="text-body-secondary">@Model.Description</p>
+
+        <dl class="row small mb-3">
+            <dt class="col-4 col-sm-3 text-body-secondary fw-normal">Código</dt>
+            <dd class="col-8 col-sm-9 font-monospace">@Model.Sku</dd>
+
+            <dt class="col-4 col-sm-3 text-body-secondary fw-normal">Disponibles</dt>
+            <dd class="col-8 col-sm-9">
+                @if (Model.Stock == 0)
+                {
+                    <span class="badge text-bg-danger">Agotado</span>
+                }
+                else
+                {
+                    @Model.Stock
+                }
+            </dd>
+        </dl>
+
+        @* Esta frase es el punto entero del proyecto dicho en la interfaz. Product.Stock es el
+           stock que el catalogo MUESTRA; el reservable vive en InventoryDb desde 3.4 y nadie
+           sincroniza las dos columnas. Presentar este numero como una garantia contradiria la
+           arquitectura que el proyecto existe para ensenar — y 6.5 existe justamente para
+           ensenar un pedido que se cancela despues de que esta cifra dijera 42. *@
+        <p class="small text-body-secondary border-start border-3 ps-3">
+            Es el stock que muestra el catálogo. La reserva de verdad la decide Inventory cuando
+            el pedido se crea, contra su propia base de datos — así que este número puede quedarse
+            corto entre que lo lees y confirmas la compra.
+        </p>
+
+        @* Deshabilitado siguiendo la decision 1 de 6.1 al pie de la letra: se ensena el mapa
+           sin prometer un destino que no existe. Lo activa 6.3, que es quien trae el carrito
+           en sesion de servidor. *@
+        <button class="btn btn-primary" type="button" disabled aria-disabled="true">
+            Añadir al carrito
+        </button>
+        <span class="small text-body-secondary ms-2">El carrito llega en 6.3.</span>
+    </div>
+</div>
