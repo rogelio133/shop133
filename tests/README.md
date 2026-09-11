@@ -19,12 +19,12 @@ Guía operativa de los seis proyectos de `tests/`. El *porqué* de cada decisió
 | [`Shop133.ArchitectureTests`](Shop133.ArchitectureTests) | 17 | `Fast` | Las reglas de [CLAUDE.md](../CLAUDE.md) en forma ejecutable, leyendo los `.csproj` de `src/`. |
 | [`Shop133.TestUtilities`](Shop133.TestUtilities) | — | — | **No es una suite.** La biblioteca con `SqlServerContainerFixture`, que comparten las cuatro de servicio. |
 | [`Gateway/Shop133.Gateway.Tests`](Gateway/Shop133.Gateway.Tests) | 26 | `Fast` | El enrutado de `5.1` (9), el rate limiting de `5.2` (5), el CORS de `5.3` (9) y dos invariantes de `appsettings.json` que nada vigilaba (3). |
-| [`Services/Catalog/Catalog.Tests`](Services/Catalog/Catalog.Tests) | 29 | `Docker` | Los endpoints CRUD de `1.3`/`1.4` sobre SQL Server real, más `OrderCreatedPricingConsumer` (`4.8`). |
+| [`Services/Catalog/Catalog.Tests`](Services/Catalog/Catalog.Tests) | 38 | `Docker` | Los endpoints CRUD de `1.3`/`1.4` sobre SQL Server real, la paginación y el filtro de `6.2.1` (9), más `OrderCreatedPricingConsumer` (`4.8`). |
 | [`Services/Orders/Orders.Tests`](Services/Orders/Orders.Tests) | 35 | `Docker` **y** `Fast` | `POST /orders` y que se publica `OrderCreated` (13, `Docker`) · los escenarios de la saga (18, **`Fast`**) · la persistencia de la saga en `OrdersDb` (4, `Docker`). |
 | [`Services/Inventory/Inventory.Tests`](Services/Inventory/Inventory.Tests) | 15 | `Docker` | `OrderCreatedConsumer` (reserva, rechazos, atomicidad, idempotencia) y `ReleaseStockConsumer` (la compensación de `4.4`). |
 | [`Services/Payments/Payments.Tests`](Services/Payments/Payments.Tests) | 9 | `Docker` | `StockReservedConsumer`: cobro, rechazo por importe e idempotencia. |
 
-**131 tests**: 61 `Fast` y 70 `Docker`. El trait va en la clase, nunca en cada método.
+**140 tests**: 61 `Fast` y 79 `Docker`. El trait va en la clase, nunca en cada método.
 
 `Orders.Tests` es la única suite con las dos categorías, desde `4.7`: `OrderStateMachineTests` prueba un
 *proceso* con el repositorio de saga en memoria, así que no necesita base de datos. Y desde `5.4`,
@@ -128,7 +128,7 @@ dotnet build
 #    pero conviene lanzarlo por el .dll — ver el primer aviso de abajo.
 dotnet tests\Shop133.ArchitectureTests\bin\Debug\net10.0\Shop133.ArchitectureTests.dll   # 17, sin Docker
 dotnet tests\Gateway\Shop133.Gateway.Tests\bin\Debug\net10.0\Shop133.Gateway.Tests.dll   # 26, sin Docker, ~1 s
-dotnet tests\Services\Catalog\Catalog.Tests\bin\Debug\net10.0\Catalog.Tests.dll          # 29, ~148 s
+dotnet tests\Services\Catalog\Catalog.Tests\bin\Debug\net10.0\Catalog.Tests.dll          # 38, ~181 s
 dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll             # 35, ~81 s
 dotnet tests\Services\Inventory\Inventory.Tests\bin\Debug\net10.0\Inventory.Tests.dll    # 15, ~98 s
 dotnet tests\Services\Payments\Payments.Tests\bin\Debug\net10.0\Payments.Tests.dll       #  9, ~63 s

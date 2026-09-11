@@ -1,0 +1,54 @@
+@model GatewayUnavailableException
+@{
+    ViewData["Title"] = "Catálogo no disponible";
+}
+
+<h1 class="h3">El catálogo no está disponible</h1>
+
+@if (Model.IsRateLimited)
+{
+    @* Esta rama es lo primero del proyecto que le ensena a un humano el rate limiting de 5.2.
+       Es alcanzable de verdad y no es una hipotesis: 60 lecturas por minuto y POR IP, y como
+       esta tienda se renderiza en SERVIDOR, todos los visitantes son una sola IP para el
+       Gateway. Dos llamadas por render salen a unas 30 vistas de pagina por minuto. *@
+    <div class="alert alert-warning" role="alert">
+        <p>
+            Demasiadas peticiones. El Gateway limita las lecturas del catálogo a
+            <strong>60 por minuto y por IP</strong>, y como esta tienda se renderiza en el
+            servidor, todos los visitantes cuentan como una sola dirección.
+        </p>
+        <p class="mb-0">
+            @if (Model.RetryAfter is TimeSpan wait)
+            {
+                @* 5.2 midio que este valor dice LA VENTANA ENTERA, no lo que queda de ella:
+                   siempre son 60 s, asi que es conservador y nunca se queda corto. *@
+                <text>Vuelve a intentarlo en @((int)wait.TotalSeconds) segundos.</text>
+            }
+            else
+            {
+                <text>Vuelve a intentarlo dentro de un minuto.</text>
+            }
+        </p>
+    </div>
+}
+else
+{
+    <div class="alert alert-warning" role="alert">
+        <p class="mb-0">
+            La tienda habla con un <strong>único Gateway</strong>, y ese Gateway —o alguno de los
+            servicios que tiene detrás— no está respondiendo ahora mismo.
+        </p>
+    </div>
+
+    <p class="text-body-secondary">
+        Que esta página no pueda pintarse es la regla 3 funcionando, no un fallo del diseño:
+        <code>Shop133.Web</code> no conoce la dirección de ningún servicio, solo la del Gateway.
+        Si pudiera seguir enseñando el catálogo con el Gateway caído, sería porque alguien está
+        hablando con <code>Catalog.API</code> a sus espaldas.
+    </p>
+}
+
+<a class="btn btn-outline-primary" asp-action="Index">Reintentar</a>
+
+@* No hay reintento automatico, ni circuit breaker, ni cache. Eso es 6.6, y este boton es el
+   "reintento manual" que deja ver que hoy no lo hay. *@

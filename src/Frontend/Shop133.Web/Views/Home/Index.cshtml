@@ -5,8 +5,12 @@
 <div class="px-3 py-5 mb-4 text-center bg-body-tertiary rounded-3">
     <h1 class="display-5 fw-semibold">Shop133</h1>
     <p class="lead mb-4">Tienda de souvenirs — tazas, llaveros, playeras, pines y libretas.</p>
-    @* Deshabilitado en coherencia con el navbar: el catalogo llega en 6.2. *@
-    <button class="btn btn-primary btn-lg" type="button" disabled>Ver el catálogo</button>
+    @* 6.2 lo activa. <a class="btn"> y no <button>: navegar es un enlace, y asi funciona con
+       JavaScript desactivado. Este elemento pasa por el AnchorTagHelper, asi que sale sin el
+       atributo b-<hash> del CSS aislado — y no pasa nada precisamente porque la decision 4 de
+       6.1 saco .btn-primary de _Layout.cshtml.css y lo puso en site.css. Es el primer elemento
+       que demuestra que aquella llamada era la correcta. *@
+    <a class="btn btn-primary btn-lg" asp-controller="Catalog" asp-action="Index">Ver el catálogo</a>
 </div>
 
 <div class="row g-4">

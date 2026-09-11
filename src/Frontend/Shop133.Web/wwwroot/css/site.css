@@ -30,6 +30,31 @@
   --bs-btn-disabled-border-color: #1861ac;
 }
 
+/* 6.2. Las descripciones del seed miden 100-160 caracteres (1.4) y las cards de una misma fila
+   tienen que quedar a la misma altura. Se recorta por LINEA RENDERIZADA y no por numero de
+   caracteres: line-clamp corta a la anchura real de la card, que cambia con el breakpoint, y el
+   texto completo sigue en el DOM para un lector de pantalla y para Ctrl+F. Bootstrap 5.3 no
+   trae utilidad para esto.
+
+   Descartado recortar con Description[..90] en el controller o en un view model: corta a mitad
+   de palabra (y de grafema, que el seed va lleno de a/e/i/o/u acentuadas y de enes), es una
+   decision de PRESENTACION tomada donde se traen los datos, no se adapta —una card a 4 columnas
+   y otra a 1 caben cosas muy distintas del mismo texto— y deja una mentira en el DOM, porque el
+   texto recortado es lo que recibe un lector de pantalla.
+
+   Va aqui y no en un Views/Catalog/Index.cshtml.css aunque el CSS aislado SI alcanzaria a este
+   <p> (no pasa por ningun tag helper, al reves que lo que midio 6.1): el modo de fallo del CSS
+   aislado es SILENCIOSO —archivo servido, CSS valido, selector que no engancha con nadie— y el
+   ambito se mueve con el archivo, asi que el dia que 6.3 saque la card a un partial la regla
+   dejaria de aplicarse sin un solo aviso. Es la decision 4 de 6.1 aplicada por segunda vez. */
+.product-description {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+
 /* El anillo de foco de la plantilla: mas visible que el de Bootstrap sobre fondo claro.
    Se conserva porque 6.4 mete formularios y la accesibilidad del teclado importa ahi. */
 .btn:focus, .btn:active:focus, .btn-link.nav-link:focus, .form-control:focus, .form-check-input:focus {

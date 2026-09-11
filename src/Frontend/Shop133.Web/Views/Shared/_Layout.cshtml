@@ -39,12 +39,18 @@
                                aria-current="@(currentController == "Home" ? "page" : null)"
                                asp-controller="Home" asp-action="Index">Inicio</a>
                         </li>
-                        @* Los tres siguientes no tienen href a proposito: el controller que
-                           los sirve todavia no existe, y un enlace muerto seria una promesa
-                           a medias. Los activan 6.2, 6.3 y 6.5 respectivamente. *@
+                        @* 6.2 activo este. El item se marca por CONTROLLER y no por accion, que
+                           es lo que 6.1 dejo preparado y este punto es el primero en cobrar: el
+                           menu se queda encendido tambien en /catalog/details/5 y en las vistas
+                           de error del catalogo, sin una linea mas. *@
                         <li class="nav-item">
-                            <a class="nav-link disabled" aria-disabled="true">Catálogo</a>
+                            <a class="nav-link @(currentController == "Catalog" ? "active" : null)"
+                               aria-current="@(currentController == "Catalog" ? "page" : null)"
+                               asp-controller="Catalog" asp-action="Index">Catálogo</a>
                         </li>
+                        @* Los dos siguientes no tienen href a proposito: el controller que los
+                           sirve todavia no existe, y un enlace muerto seria una promesa a
+                           medias. Los activan 6.3 y 6.5 respectivamente. *@
                         <li class="nav-item">
                             <a class="nav-link disabled" aria-disabled="true">Carrito</a>
                         </li>

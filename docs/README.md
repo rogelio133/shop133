@@ -57,5 +57,7 @@ Documentos de procedimiento, no ligados a un punto del roadmap. No siguen la con
 | 5.3 | CORS centralizado en el Gateway | 2026-09-08 | [fase_5_3.md](fase_5_3.md) |
 | 5.4 | Smoke de enrutado del Gateway | 2026-09-09 | [fase_5_4.md](fase_5_4.md) |
 | 6.1 | Layout base con Bootstrap 5 | 2026-09-10 | [fase_6_1.md](fase_6_1.md) |
+| 6.2 | Vista de catálogo con grid de cards, filtro y detalle | 2026-09-10 | [fase_6_2.md](fase_6_2.md) |
+| 6.2.1 | Catalog.API estrena parámetros de consulta: paginación, filtro y recuento | 2026-09-11 | [fase_6_2_1.md](fase_6_2_1.md) |
 
 El punto **0.1** (crear solución y estructura de carpetas) se completó antes de que existiera esta convención y no se documentó retroactivamente.

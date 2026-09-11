@@ -1,3 +1,9 @@
 ﻿@using Shop133.Web
 @using Shop133.Web.Models
+@* 6.2. Las vistas del catalogo tipan contra CatalogProduct, que es el contrato de cable.
+   El precio, dicho en voz alta: a partir de aqui ese tipo es @model-able desde CUALQUIER
+   vista del proyecto para siempre, y no hay nada que lo vigile mas que la revision — la misma
+   forma que la regla 2, que tampoco es ejecutable. La alternativa (los DTO en Models/, ya
+   importado) separaria un cliente de su propio contrato, que es lo que 2.3 se nego a hacer. *@
+@using Shop133.Web.Gateway
 @addTagHelper *, Microsoft.AspNetCore.Mvc.TagHelpers
