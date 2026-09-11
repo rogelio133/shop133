@@ -4,44 +4,11 @@ using Shop133.Web.Models;
 
 namespace Shop133.Web.Controllers;
 
-/// <summary>
-/// La vista de catalogo (6.2). Es la primera pagina del proyecto que habla con el backend.
-///
-/// Hereda de <c>Controller</c> y NO lleva <c>[ApiController]</c> ni <c>[Route("[controller]")]</c>,
-/// aunque la seccion Conventions de CLAUDE.md los pida: esa convencion se escribio para los
-/// controllers de API de los cinco servicios. Aqui <c>[ApiController]</c> seria activamente
-/// danino — convierte un fallo de binding en un <c>400 ProblemDetails</c> EN VEZ de en un
-/// <c>ModelState</c> invalido, que es lo que 6.4 necesita para sus formularios.
-///
-/// Se llama <c>CatalogController</c> y no <c>ProductsController</c>, saltandose la convencion de
-/// nombrar en plural el recurso: eso vale para un recurso, y esto es una PAGINA. El nombre
-/// coincide con el titulo del roadmap, con la etiqueta del navbar, con el prefijo del Gateway
-/// (<c>/api/catalog</c>) y con el <c>CartController</c> de 6.3.
-/// </summary>
+
 public sealed class CatalogController(CatalogClient catalogClient, ILogger<CatalogController> logger)
     : Controller
 {
-    /// <summary>
-    /// El grid, con filtro opcional por categoria y paginado.
-    ///
-    /// <paramref name="categoryId"/> y <paramref name="page"/> se enlazan desde la CADENA DE
-    /// CONSULTA sin ningun atributo, porque no estan en la plantilla de ruta
-    /// (<c>{controller}/{action}/{id?}</c>).
-    ///
-    /// **Desde 6.2.1 el filtro y el recorte los hace la API.** Hasta aqui este metodo se traia el
-    /// catalogo entero y descartaba 40 filas en memoria para ensenar 10, porque
-    /// <c>GET /products</c> no aceptaba ni un parametro de consulta; el <c>///</c> de aquel
-    /// endpoint decia por escrito desde 1.3 que la paginacion entraria "si 6.2 la necesita". La
-    /// necesito, 6.2 decidio no tocar un servicio para servir a una vista, y 6.2.1 recogio la
-    /// deuda. Lo que desaparece de aqui es un <c>Where</c> y un <c>GroupBy</c> sobre cincuenta
-    /// filas que ya no viajan.
-    ///
-    /// Un <c>categoryId</c> que no existe ensena el estado vacio; NO devuelve 404. La regla de
-    /// 2.3 —un valor malo en el cuerpo es 400, en la URL es 404— no aplica: una cadena de
-    /// consulta es un FILTRO sobre un recurso, no la identidad del recurso, y <c>/Catalog</c>
-    /// existe se le cuelgue lo que se le cuelgue. La API opina lo mismo desde 6.2.1 y devuelve
-    /// 200 con la pagina vacia.
-    /// </summary>
+    
     public async Task<IActionResult> Index(int? categoryId, int page, CancellationToken cancellationToken)
     {
         // page llega a 0 cuando no viene en la URL, que es el caso normal. El recorte a 1 lo hace
@@ -51,14 +18,6 @@ public sealed class CatalogController(CatalogClient catalogClient, ILogger<Catal
 
         try
         {
-            // Las dos llamadas van EN PARALELO, justo lo que 2.3 rechazo hacer. Alli eran
-            // secuenciales a proposito, para que el coste de que un servicio llame a otro se
-            // viera; esto es frontend -> Gateway, que es el acoplamiento que la regla 3 MANDA
-            // tener, asi que no hay nada que hacer visible y esconderlo no ensena nada.
-            //
-            // Siguen siendo DOS por render contra el cupo catalog-read de 60/60 s de 5.2: la
-            // paginacion recorta el CUERPO, no el CUPO, asi que el primer 429 sigue llegando en
-            // el render #30 como midio 6.2.
             var productsTask = catalogClient.GetProductsAsync(categoryId, page, cancellationToken);
             var categoriesTask = catalogClient.GetCategoriesAsync(cancellationToken);
 
@@ -86,10 +45,6 @@ public sealed class CatalogController(CatalogClient catalogClient, ILogger<Catal
         });
     }
 
-    /// <summary>
-    /// La ficha de un producto. Se pasa el <c>CatalogProduct</c> tal cual a la vista: un view
-    /// model con una sola propiedad seria inventar la forma antes del caso de uso.
-    /// </summary>
     public async Task<IActionResult> Details(int id, CancellationToken cancellationToken)
     {
         CatalogProduct? product;
@@ -105,11 +60,6 @@ public sealed class CatalogController(CatalogClient catalogClient, ILogger<Catal
 
         if (product is null)
         {
-            // Vista propia en vez de `return NotFound()`, que en una aplicacion de cara al
-            // usuario pinta una pagina en blanco. Descartado UseStatusCodePagesWithReExecute:
-            // es un middleware que cambiaria TODOS los 404 de la aplicacion —incluido el de
-            // /Home/Privacy que 6.1 verifico—, y esa es una decision de la superficie de error
-            // entera, no del punto que resulta necesitar el primer 404 presentable.
             Response.StatusCode = StatusCodes.Status404NotFound;
             return View("NotFound", id);
         }
