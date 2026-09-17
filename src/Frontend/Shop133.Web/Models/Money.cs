@@ -25,7 +25,18 @@ namespace Shop133.Web.Models;
 /// </summary>
 public static class Money
 {
-    private static readonly CultureInfo MexicanPeso = CultureInfo.GetCultureInfo("es-MX");
+    /// <summary>
+    /// La cultura con la que esta interfaz formatea NUMEROS, no solo importes.
+    ///
+    /// Se expone desde 6.3, cuando aparecio el primer numero de la interfaz que no es dinero: el
+    /// tope de unidades por linea que <c>ShoppingCart</c> nombra al rechazar una cantidad. Un
+    /// <c>:N0</c> pelado alli habria tenido exactamente el problema que el bloque de arriba
+    /// describe —el separador de millares lo decidiria el Windows de quien ejecute— asi que en vez
+    /// de declarar una segunda cultura en otro archivo, se comparte esta. El tipo se llama
+    /// <c>Money</c> por su caso principal; el sitio unico donde vive la cultura es lo que no
+    /// conviene duplicar.
+    /// </summary>
+    public static readonly CultureInfo Culture = CultureInfo.GetCultureInfo("es-MX");
 
-    public static string Format(decimal amount) => amount.ToString("C", MexicanPeso);
+    public static string Format(decimal amount) => amount.ToString("C", Culture);
 }

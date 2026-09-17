@@ -1,16 +1,27 @@
 @model GatewayUnavailableException
 @{
-    ViewData["Title"] = "Catálogo no disponible";
+    ViewData["Title"] = "La tienda no está disponible";
 }
 
-<h1 class="h3">El catálogo no está disponible</h1>
+@* 6.3 movio esta vista desde Views/Catalog/ hasta aqui. El motivo: CartController.Add tambien
+   habla con el Gateway —es donde se acuna la foto de precios— asi que tambien puede quedarse sin
+   dependencia, y la busqueda de vistas de Razor cae en Views/Shared/ desde cualquier controller.
+   Lo que NO se movio es el codigo de estado: lo sigue poniendo cada controller antes de devolver
+   esta vista, porque 503 y 429 son lo unico que hace estas ramas comprobables desde la linea de
+   comandos (decision 3 de 6.2, que no se revierte).
+
+   El titulo dejo de nombrar el catalogo por lo mismo. El cuerpo no hizo falta tocarlo: ya
+   hablaba del Gateway y de la regla 3, que es verdad desde las dos paginas. *@
+
+<h1 class="h3">La tienda no está disponible ahora mismo</h1>
 
 @if (Model.IsRateLimited)
 {
     @* Esta rama es lo primero del proyecto que le ensena a un humano el rate limiting de 5.2.
        Es alcanzable de verdad y no es una hipotesis: 60 lecturas por minuto y POR IP, y como
        esta tienda se renderiza en SERVIDOR, todos los visitantes son una sola IP para el
-       Gateway. Dos llamadas por render salen a unas 30 vistas de pagina por minuto. *@
+       Gateway. Dos llamadas por render salen a unas 30 vistas de pagina por minuto — y desde
+       6.3 cada "anadir al carrito" gasta una mas, porque el precio se relee de Catalog. *@
     <div class="alert alert-warning" role="alert">
         <p>
             Demasiadas peticiones. El Gateway limita las lecturas del catálogo a
@@ -48,6 +59,10 @@ else
     </p>
 }
 
+@* asp-action="Index" SIN asp-controller: resuelve contra el controller ACTUAL, asi que desde
+   Catalog vuelve al catalogo y desde Cart vuelve al carrito. Y ahi hay una propiedad que merece
+   leerse: /cart no llama al Gateway ni una vez (el carrito es una foto, decision 3 de 6.3), asi
+   que ese reintento funciona incluso con el Gateway caido — lo que no se puede es anadir nada. *@
 <a class="btn btn-outline-primary" asp-action="Index">Reintentar</a>
 
 @* No hay reintento automatico, ni circuit breaker, ni cache. Eso es 6.6, y este boton es el

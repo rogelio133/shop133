@@ -324,6 +324,24 @@ Three things that cost time. **`Ignore` takes the event, not a lambda** — `Eve
 
 **Two PowerShell traps, both of which produce false negatives that look like real failures.** `curl.exe` returns an **array of lines**, not a string, so `$html.Contains("card-img-top")` compares *per element* and says `False` with the marker plainly present — a whole batch of marker checks came back "ausente" while `[regex]::Matches` on the same variable found 50 hits (it coerces the array). Join with `-join "`n"` before comparing. And **`$home` is read-only in PowerShell**: assigning to it fails with `Cannot overwrite variable HOME`, the assignment never happens, and the check behind it reports a false absence against an empty variable.
 
+**`6.3` is done — the cart lives in the server session, and that is what puts the price snapshot back on the server's side of the wire** — see [docs/fase_6_3.md](docs/fase_6_3.md). `Shop133.Web` gains `Cart/` (`ShoppingCart`, `CartLine`, `CartStore`, `CartNotice`), `CartController`, `Views/Cart/Index.cshtml` and a `CartBadgeViewComponent`; the navbar's *Carrito* item and `Details.cshtml`'s *Añadir al carrito* button — both deliberately dead since `6.1`/`6.2` — go live. **No package enters**: `Microsoft.AspNetCore.Session.dll` and `Microsoft.Extensions.Caching.Memory.dll` are in the shared framework ref pack, so the `.csproj` **still has zero `PackageReference` and zero `ProjectReference`** and `6.6` is still the item that ends that. The architecture suite stays at **17** and the repo at **140** (precedent of `3.3`/`3.5`/`4.5`/`5.2`/`6.2`). **No service, no Gateway, no contract and no migration was touched.**
+
+**The whole item is one property, and it was measured rather than asserted: the `.Shop133.Session` cookie is 190 opaque characters and the price `249` does not appear in it once.** The add form posts **only** `productId` + `quantity`; `CartController.Add` re-reads sku, name and price from Catalog through the Gateway (`CatalogClient.FindProductOrNullAsync`, unchanged since `6.2`) and freezes them server-side. A hidden `unitPrice` input would have been cheaper by one Gateway call per add — and would hand the browser back authority over the order's amount, which is what `3.3` opened and what this item exists to close. Third layer of decision 2b of `3.3`: **`6.3`/`8.1` decide *who* may send the snapshot, `4.8` decides whether the snapshot is true.** The cost is stated, not hidden: **one Gateway call per "add"** against `5.2`'s 60/60 s `catalog-read` quota, with every visitor counting as one IP.
+
+**The cart is a PHOTOGRAPH: `/cart` re-reads no price, and the two numbers that prove it come from the same pair of commands.** With the Gateway stopped, `/catalog` takes **2.06 s** to give up with a 503 (the `127.0.0.1` refusal `2.3` measured at 2.03 s) and `/cart` answers **200 in 4.5 ms** with its lines and total intact. *Rejected* revalidating line by line: one Gateway call **per line per render**, and the price changing under the buyer's feet. **The limitation has an owner and is said aloud on the page itself**: a line added more than 30 minutes ago falls outside `4.8`'s `PricingSnapshotWindowMinutes`, so the order will cancel itself in `6.4`/`6.5` — which is exactly what those items exist to teach. `IdleTimeout` is written explicitly at 20 min **and does not bound that**: every request resets it, so an active cart can hold an hours-old line.
+
+**Adding the same product twice SUMS and keeps the FIRST price.** Summing mirrors what `OrdersController` does before constructing the `Order`, and is not a convenience: `Order`'s constructor has forbidden two lines with the same `ProductId` since `2.1`, so a cart that kept them separate would produce a `400` in `6.4`. Keeping the older price is the deliberate half — a line's price freezes once, and whether that photograph still counts is `4.8`'s call, not this method's. **`ShoppingCart` duplicates the API's two limits by hand** (50 distinct lines, 1..10 000 per line) rather than importing them: importing needs a `ProjectReference` to `Orders.API`, i.e. rule 3 broken with `Frontend_DoesNotReference_ServicesOrGateway` going red. Same precedent as `OrderItem.ProductSkuMaxLength`, and they are allowed to diverge. Exceeding a limit **returns a reason, never throws** (precedent `StockItem.CanReserve`).
+
+**`[AutoValidateAntiforgeryToken]` goes on the CLASS, and `CartStore` is the only file that touches `ISession`.** The per-action attribute is a list someone must remember to extend — a new action that forgets it is unprotected with no warning; the automatic one makes protection the default. Measured: a POST with no token is **400** and the cart is untouched. `CartStore`'s exclusivity is the same reasoning one level up: "in the server session, not in a cookie" only holds while exactly one file could break it. **The badge is a view component**, not `Context.Session` in the layout and not `ViewData` filled by a base controller — both of those fail *silently* (a controller that forgets shows an empty badge over a full cart).
+
+**`Views/Catalog/Unavailable.cshtml` moved to `Views/Shared/`** because `CartController.Add` can also lose the Gateway. The status code did **not** move — each controller still sets 503/429 before returning it, since that is the only thing that makes the branch checkable from the command line (decision 3 of `6.2`, not reversed). Its *Reintentar* stays `asp-action="Index"` with no controller, so it resolves against the current one — and from the cart that target **works even with the Gateway down**. The private `Unavailable(...)` helper is duplicated and stays duplicated: *two copies are not a pattern* (`2.4`).
+
+**Three things that cost time.** **Razor treats an `@` between word characters as an email's `@`**, so `Carrito@await Component.InvokeAsync("CartBadge")` inside the navbar's `<a>` printed the expression **literally into the HTML** — clean build, zero warnings, zero runtime errors; the fix is to close a tag first so the `@` follows a `>`. **A running service locks its own `.exe`** and the build dies with `MSB3027` — `4.9`'s trap, hit twice here; stop the process, rebuild, relaunch, and read the build result before the test result. And **restarting the frontend empties every cart**, which is decision 1 working rather than a bug, but turns every recompile into a re-verification.
+
+**The user-visible strings in `Shop133.Web`'s `.cs` files need accents even though its comments do not.** `6.2` established accent-free comments there, and the habit leaked into `ShoppingCart`'s rejection texts (*"No se pueden pedir mas de…"*) — caught by reading real `curl` output, not by the compiler. In the same place a bare `:N0` had slipped in, which is exactly the ambient-culture trap `Money` exists to prevent, so **`Money` now exposes its `Culture`** rather than a second one being declared elsewhere: `6.3` brought the first UI number that is not money.
+
+**What `6.3` leaves open and nobody owns: nothing watches that the cart stays on the server.** Adding an `<input type="hidden" name="unitPrice">` to the details form tomorrow would undo the entire item and **no test would notice** — same shape as rule 2, which is not executable either. Also not measured: the **50-line cap**, unreachable because the seed has exactly 50 products, so a full cart has no *new* product left to add.
+
 **`6.2.1` is done — the deferred query parameters land at last and the frontend stops filtering in memory** — see [docs/fase_6_2_1.md](docs/fase_6_2_1.md). `GET /products` accepts `page`, `pageSize` and `categoryId` and answers a `PagedResponse<T>` envelope; `GET /categories` gains `ProductCount`. `Catalog.Tests` goes 29 → **38**, the repo 131 → **140**. **No package, no `.csproj`, no migration, nothing of `Shop133.Contracts` and not one line of the Gateway** (its route is a catch-all and the query string already travelled) — so the architecture suite stays at **17** (precedent of `3.3`/`3.5`/`4.5`/`5.2`).
 
 **It is a debt that was promised in writing at both ends and owned at neither.** `1.3` left `GET /products` unpaged conditionally — *"Entra si 6.2 la necesita"* — and `1.4` left the filter the same way — *"Entra ahí"*. `6.2` **needed it and decided not to add it** (*"tocar un servicio para servir a una vista es inventar alcance"*), leaving it in its *Pendiente* as *"un punto de la Fase 1 que nadie tiene asignado"*. Both were right separately; the joint result was ownerless. It is numbered `6.2.1` and **nothing is renumbered** — the numbers are the key between commit, roadmap and `docs/`.
@@ -494,7 +512,7 @@ Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed su
 | 3 | MassTransit + RabbitMQ messaging | **Code complete** — 3.1–3.7 done; awaiting the PRs to `develop`/`main` and the `fase-3` tag |
 | 4 | Saga + compensations | **Code complete** — 4.1–4.9 done; awaiting the PRs to `develop`/`main` and the `fase-4` tag |
 | 5 | YARP Gateway | **Code complete** — 5.1–5.4 done; awaiting the PRs to `develop`/`main` and the `fase-5` tag |
-| 6 | Frontend (MVC + Bootstrap 5) | **In progress** on `feature/fase-6-frontend` — 6.1–6.2 done |
+| 6 | Frontend (MVC + Bootstrap 5) | **In progress** on `feature/fase-6-frontend` — 6.1–6.3 done |
 | 7 | Observability | Not started |
 | 8 | Optional extras (auth, real-infra integration tests, CI/CD, E2E) | Not started |
 
@@ -792,8 +810,28 @@ dotnet run --project src/Gateway/Shop133.Gateway            # 5104
 # en 6.2, y su politica de resiliencia (Polly) en 6.6. Se puede arrancar solo, sin Docker,
 # sin broker y sin ningun servicio levantado.
 #
-# El navbar: Catalogo lo activo 6.2; Carrito y Estado del pedido siguen DESHABILITADOS (sin
-# href) hasta 6.3 y 6.5. No son un olvido — ver la nota de la Fase 6 mas arriba.
+# El navbar: Catalogo lo activo 6.2 y Carrito 6.3 (con un badge de UNIDADES, no de lineas).
+# Estado del pedido sigue DESHABILITADO (sin href) hasta 6.5. No es un olvido — ver la nota
+# de la Fase 6 mas arriba.
+#
+# EL CARRITO (6.3) VIVE EN LA SESION DEL SERVIDOR, y esa es la propiedad del punto entero: la
+# cookie .Shop133.Session lleva un id opaco (190 caracteres, medido) y el PRECIO no sale de aqui.
+#   GET  /cart                 la pagina; NO llama al Gateway ni una vez (el carrito es una foto)
+#   POST /cart/add             productId + quantity Y NADA MAS. El sku, el nombre y el precio los
+#                              relee CartController.Add de Catalog POR EL GATEWAY y los congela.
+#                              Anadir un <input hidden name="unitPrice"> al formulario de la ficha
+#                              rompe el punto entero y NINGUN test se entera. Sin dueno.
+#   POST /cart/setquantity     cantidad 0 = quitar la linea
+#   POST /cart/remove /clear
+#
+# Las cuatro mutaciones son POST + antiforgery + redirect. Al medir con curl hace falta el frasco
+# de cookies (-c jar.txt -b jar.txt) o cada peticion es una sesion nueva y el carrito sale siempre
+# vacio; el token sale del HTML de cualquier pagina con <form asp-action> y SE REUTILIZA mientras
+# dure la cookie, asi que no hay que pedir una pagina por cada POST. Sin token: 400.
+#
+# OJO AL CUPO: cada "anadir" gasta UNA llamada mas del cupo catalog-read de 60/60 s de 5.2, encima
+# de las dos por render que midio 6.2. Y REINICIAR EL PROCESO VACIA TODOS LOS CARRITOS — es
+# AddDistributedMemoryCache, que pese al nombre no es distribuido: vive en el proceso.
 dotnet run --project src/Frontend/Shop133.Web               # 5025 (https 7227)
 
 # CUIDADO al arrancar un servicio con la salida REDIRIGIDA a un archivo (background, tee, un

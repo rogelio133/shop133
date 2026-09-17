@@ -6,4 +6,10 @@
    forma que la regla 2, que tampoco es ejecutable. La alternativa (los DTO en Models/, ya
    importado) separaria un cliente de su propio contrato, que es lo que 2.3 se nego a hacer. *@
 @using Shop133.Web.Gateway
+@* 6.3. Views/Cart/Index.cshtml tipa contra ShoppingCart, y _Layout.cshtml lee las dos claves de
+   CartNotice. Lo que NO se importa es Shop133.Web.Controllers, aunque esas claves empezaron ahi:
+   dejaria todos los controllers como @@model posible de cualquier vista para siempre, que es
+   exactamente la cesion que el comentario de arriba anoto al importar Shop133.Web.Gateway — y
+   esta si tenia alternativa, asi que se tomo. *@
+@using Shop133.Web.Cart
 @addTagHelper *, Microsoft.AspNetCore.Mvc.TagHelpers

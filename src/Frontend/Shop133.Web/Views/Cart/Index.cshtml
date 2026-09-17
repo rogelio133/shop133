@@ -1,0 +1,141 @@
+@model ShoppingCart
+@{
+    ViewData["Title"] = "Carrito";
+}
+
+<div class="d-flex flex-wrap align-items-baseline justify-content-between gap-2 mb-3">
+    <h1 class="h3 mb-0">Carrito</h1>
+    @if (!Model.IsEmpty)
+    {
+        <span class="text-body-secondary">
+            @Model.UnitCount artículo@(Model.UnitCount == 1 ? "" : "s")
+            en @Model.Lines.Count línea@(Model.Lines.Count == 1 ? "" : "s")
+        </span>
+    }
+</div>
+
+@if (Model.IsEmpty)
+{
+    <div class="alert alert-info" role="alert">
+        <p class="mb-2">El carrito está vacío.</p>
+        @* Un carrito vacio no es un error: es el estado inicial de todo el mundo. Por eso lleva
+           una salida y no un aviso. *@
+        <a class="btn btn-sm btn-outline-primary" asp-controller="Catalog" asp-action="Index">
+            Ver el catálogo
+        </a>
+    </div>
+}
+else
+{
+    @* table-responsive envuelve a la tabla y no al reves: es lo que le da el scroll horizontal
+       propio en un movil en vez de desbordar la pagina entera. *@
+    <div class="table-responsive">
+        <table class="table align-middle">
+            <caption class="visually-hidden">Productos añadidos al carrito</caption>
+            <thead>
+                <tr>
+                    <th scope="col" colspan="2">Producto</th>
+                    <th scope="col" class="text-end">Precio</th>
+                    <th scope="col" style="width: 12rem;">Cantidad</th>
+                    <th scope="col" class="text-end">Subtotal</th>
+                    <th scope="col"><span class="visually-hidden">Quitar</span></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var line in Model.Lines)
+                {
+                    <tr>
+                        <td style="width: 5rem;">
+                            @* La miniatura sale de ImageUrl, que es el UNICO campo de la linea que
+                               no forma parte de la foto del pedido: esta ahi para esta celda. La
+                               ruta la sirve este proyecto (MapStaticAssets), no el Gateway, asi
+                               que no gasta cupo del rate limiter de 5.2. *@
+                            <img class="img-fluid rounded"
+                                 src="@(line.ImageUrl ?? "/img/products/placeholder.jpg")"
+                                 alt="" width="80" height="60" loading="lazy" />
+                        </td>
+                        <td>
+                            <a asp-controller="Catalog" asp-action="Details" asp-route-id="@line.ProductId">
+                                @line.ProductName
+                            </a>
+                            @* El sku congelado, que es la mitad de la foto que el usuario puede
+                               ver. El producto puede haber desaparecido del catalogo desde que se
+                               anadio —1.3 borra fisicamente— y esta fila seguiria siendo legible:
+                               ese es el motivo de que OrderLine congele sku, nombre y precio. *@
+                            <div class="small text-body-secondary font-monospace">@line.ProductSku</div>
+                        </td>
+                        <td class="text-end">@Money.Format(line.UnitPrice)</td>
+                        <td>
+                            @* Un formulario POR LINEA. No es "un formulario grande con todas las
+                               cantidades" a proposito: eso exigiria enlazar una coleccion y un
+                               unico boton de guardar, y dejaria sin respuesta que pasa cuando una
+                               linea se rechaza y las otras no. Una linea, una decision. *@
+                            <form asp-action="SetQuantity" method="post" class="d-flex gap-2">
+                                <input type="hidden" name="productId" value="@line.ProductId" />
+                                @* min="0" y no min="1": 0 QUITA la linea, y lo decide
+                                   ShoppingCart.SetQuantity. El max sale de la constante, nunca de
+                                   un literal — la constante es la copia local del [Range] de
+                                   CreateOrderItemRequest. *@
+                                <input type="number" name="quantity" value="@line.Quantity"
+                                       min="0" max="@ShoppingCart.MaxQuantityPerLine"
+                                       class="form-control form-control-sm" style="width: 5.5rem;"
+                                       aria-label="Cantidad de @line.ProductName" />
+                                <button type="submit" class="btn btn-sm btn-outline-secondary">
+                                    Actualizar
+                                </button>
+                            </form>
+                        </td>
+                        <td class="text-end fw-semibold">@Money.Format(line.Subtotal)</td>
+                        <td class="text-end">
+                            @* Un <form> y no un <a>: quitar MUTA, y un GET que muta es cacheable y
+                               precargable — un navegador que precarga enlaces vaciaria el carrito
+                               solo. Ademas un enlace no lleva token antiforgery. *@
+                            <form asp-action="Remove" method="post">
+                                <input type="hidden" name="productId" value="@line.ProductId" />
+                                <button type="submit" class="btn btn-sm btn-outline-danger"
+                                        aria-label="Quitar @line.ProductName del carrito">
+                                    Quitar
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+            <tfoot>
+                <tr>
+                    <th scope="row" colspan="4" class="text-end border-0">Total</th>
+                    <td class="text-end fs-5 fw-semibold border-0">@Money.Format(Model.Total)</td>
+                    <td class="border-0"></td>
+                </tr>
+            </tfoot>
+        </table>
+    </div>
+
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mt-3">
+        <form asp-action="Clear" method="post">
+            <button type="submit" class="btn btn-outline-secondary">Vaciar carrito</button>
+        </form>
+
+        <div class="text-end">
+            @* Deshabilitado siguiendo la decision 1 de 6.1: se ensena el mapa sin prometer un
+               destino que no existe. Lo activa 6.4, que es quien trae el formulario de checkout y
+               el POST /orders — y que copiara las cinco primeras propiedades de cada CartLine tal
+               cual al cuerpo del pedido. *@
+            <button class="btn btn-primary btn-lg" type="button" disabled aria-disabled="true">
+                Tramitar pedido
+            </button>
+            <div class="small text-body-secondary mt-1">El checkout llega en 6.4.</div>
+        </div>
+    </div>
+
+    @* Esta nota es la arquitectura del proyecto dicha en la interfaz, igual que la del stock en la
+       ficha de detalle. El precio de cada linea se congelo al anadirla y no se vuelve a leer; la
+       ventana de autenticidad de 4.8 son 30 minutos, asi que un carrito viejo produce un pedido
+       que se cancela solo. No se esconde: es exactamente lo que 6.5 existe para ensenar. *@
+    <p class="small text-body-secondary border-start border-3 ps-3 mt-4">
+        Los precios de este carrito son los que tenía el catálogo cuando añadiste cada producto, y
+        son los que viajarán con el pedido. Catalog los vuelve a comprobar al tramitarlo: si alguno
+        cambió hace más de media hora, el pedido se cancelará solo y el stock reservado se
+        devolverá sin que nadie intervenga.
+    </p>
+}

@@ -59,12 +59,36 @@
             corto entre que lo lees y confirmas la compra.
         </p>
 
-        @* Deshabilitado siguiendo la decision 1 de 6.1 al pie de la letra: se ensena el mapa
-           sin prometer un destino que no existe. Lo activa 6.3, que es quien trae el carrito
-           en sesion de servidor. *@
-        <button class="btn btn-primary" type="button" disabled aria-disabled="true">
-            Añadir al carrito
-        </button>
-        <span class="small text-body-secondary ms-2">El carrito llega en 6.3.</span>
+        @* 6.3 lo activo. **El formulario manda SOLO productId y quantity**, y ese es el punto
+           entero del punto: el sku, el nombre y el PRECIO no salen de aqui — los relee
+           CartController.Add de Catalog por el Gateway y los congela en la sesion del servidor.
+           Mandar el precio en un <input type="hidden"> seria comodo, ahorraria una llamada al
+           Gateway por cada "anadir"... y devolveria al navegador la autoridad sobre el importe
+           del pedido, que es justo lo que 6.3 existe para quitarle. Ver la decision 2b de
+           docs/fase_3_3.md.
+
+           El <form asp-action> le pone el token antiforgery solo; el controller lo exige con
+           [AutoValidateAntiforgeryToken] en la clase.
+
+           Y esto esta AQUI y no en las cards del grid a proposito: la card usa stretched-link, y
+           un segundo elemento interactivo dentro de ella lo rompe — con el sintoma de que el
+           boton deja de responder. 6.2 ya dejo escrito que la ficha es su sitio. *@
+        <form asp-controller="Cart" asp-action="Add" method="post" class="d-flex gap-2 mb-2">
+            <input type="hidden" name="productId" value="@Model.Id" />
+            <label class="visually-hidden" for="quantity">Cantidad</label>
+            @* min="1": aqui un 0 no quiere decir nada (quitar es cosa de la pagina del carrito), y
+               el max sale de la constante que copia el [Range] de CreateOrderItemRequest, nunca de
+               un literal. El navegador lo comprueba, y ShoppingCart lo vuelve a comprobar: un
+               atributo HTML no es una validacion. *@
+            <input type="number" id="quantity" name="quantity" value="1"
+                   min="1" max="@ShoppingCart.MaxQuantityPerLine"
+                   class="form-control" style="width: 6rem;" />
+            <button class="btn btn-primary" type="submit">Añadir al carrito</button>
+        </form>
+
+        @* Se anade aunque Stock sea 0, y no es un descuido: ese numero es el que MUESTRA el
+           catalogo, y el reservable vive en InventoryDb desde 3.4. Bloquear aqui por un numero que
+           nadie sincroniza daria una garantia falsa en la direccion contraria a la del parrafo de
+           arriba — y quien decide de verdad es Inventory al consumir OrderCreated. *@
     </div>
 </div>

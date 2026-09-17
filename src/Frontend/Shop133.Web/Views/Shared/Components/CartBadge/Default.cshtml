@@ -1,0 +1,17 @@
+@model int
+
+@* La ruta de este archivo NO es negociable: Razor busca la vista de un view component en
+   Views/Shared/Components/<Nombre>/Default.cshtml, y el <Nombre> sale de quitarle el sufijo
+   "ViewComponent" a la clase. Un archivo bien escrito en otra carpeta da un error de vista no
+   encontrada que enumera rutas y no explica la convencion. *@
+
+@if (Model > 0)
+{
+    @* aria-label porque el numero solo no dice de que es. Sin el, un lector de pantalla anuncia
+       "Carrito 3" y el 3 podria ser cualquier cosa. *@
+    <span class="badge rounded-pill text-bg-primary ms-1"
+          aria-label="@Model artículo@(Model == 1 ? "" : "s") en el carrito">@Model</span>
+}
+
+@* Con el carrito vacio no se pinta NADA, ni un badge a cero. Un cero es ruido permanente en el
+   navbar, y su ausencia dice lo mismo. *@

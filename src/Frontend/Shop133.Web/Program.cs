@@ -1,3 +1,4 @@
+using Shop133.Web.Cart;
 using Shop133.Web.Gateway;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -54,6 +55,56 @@ builder.Services.AddHttpClient<CatalogClient>(client =>
     // Polly no cabe y los reintentos NO LLEGAN A EJECUTARSE NUNCA, sin error y sin aviso.
 });
 
+// 6.3 — el carrito, EN SESION DE SERVIDOR.
+//
+// Las tres lineas de abajo son el punto entero, y el motivo no es de comodidad sino de
+// arquitectura. Desde 3.3 el cuerpo de POST /orders lleva el precio, asi que QUIEN GUARDA EL
+// CARRITO ES QUIEN ACUNA LA FOTO DEL PEDIDO. Aqui la cookie lleva solo un identificador opaco y
+// los datos —el UnitPrice incluido— viven en este proceso, de modo que la foto la acuna
+// Shop133.Web leyendo Catalog por el Gateway (lo que la regla 3 permite). Con el carrito en
+// cookie la acunaria el navegador, y el cliente volveria a dictar el importe con 4.8 como unica
+// defensa. Ver la decision 2b de docs/fase_3_3.md: 6.3 y 8.1 deciden QUIEN puede mandar la foto,
+// 4.8 decide si la foto es cierta. Hacen falta las dos.
+//
+// AddDistributedMemoryCache es un nombre enganoso: NO es distribuido. Es el almacen en memoria de
+// este proceso, asi que el carrito muere con el y no se comparte entre replicas. Se dice en voz
+// alta en lugar de esconderlo. Descartado un IDistributedCache de verdad (SQL Server o Redis):
+// exige un paquete —y este .csproj sigue con CERO PackageReference, propiedad documentada que
+// solo 6.6 puede romper— y una base de datos que este proyecto no posee.
+builder.Services.AddDistributedMemoryCache();
+
+builder.Services.AddSession(options =>
+{
+    // Se escribe aunque coincida con el valor de fabrica, para que la relacion con los 30 min de
+    // PricingSnapshotWindowMinutes (4.8) quede a la vista. Y OJO, porque parece que la acota y no
+    // lo hace: CADA PETICION REINICIA ESTE CONTADOR, asi que un carrito en uso puede sostener una
+    // linea anadida hace horas. Esto protege la memoria del proceso, no la frescura del precio —
+    // de eso se encarga 4.8 rechazando la foto, y el pedido se cancela solo en 6.4/6.5.
+    options.IdleTimeout = TimeSpan.FromMinutes(20);
+
+    // HttpOnly ya es el valor por defecto; se escribe porque esta cookie es exactamente lo que el
+    // titulo de 6.3 dice que NO debe llevar el carrito, y conviene ver que ni siquiera el
+    // JavaScript de la propia pagina puede leer el identificador.
+    options.Cookie.HttpOnly = true;
+
+    // Sin esto, la cookie desaparece en cuanto alguien anada una politica de consentimiento
+    // (CheckConsentNeeded), y el carrito se vaciaria solo sin un error en ninguna parte. No hay
+    // consentimiento de cookies en este proyecto; la marca esta puesta para que siga sin haberlo
+    // el dia que lo haya.
+    options.Cookie.IsEssential = true;
+
+    options.Cookie.Name = ".Shop133.Session";
+});
+
+// CartStore necesita llegar a HttpContext.Session, y IHttpContextAccessor NO esta registrado por
+// defecto. Es una linea y esta en el framework compartido — sin paquete.
+builder.Services.AddHttpContextAccessor();
+
+// Scoped: cachea el carrito durante la peticion, de modo que el controller y el
+// CartBadgeViewComponent vean la MISMA instancia. Con un transient, el badge pintaria el carrito
+// de antes de la mutacion.
+builder.Services.AddScoped<CartStore>();
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -70,6 +121,12 @@ if (!app.Environment.IsDevelopment())
 // abre el navegador, no la proxea nadie, y su perfil activo sirve tambien en https.
 app.UseHttpsRedirection();
 app.UseRouting();
+
+// 6.3. El sitio importa: DESPUES de UseRouting y ANTES del endpoint, porque quien lee la sesion
+// es el controller. Colocado detras del MapControllerRoute, CartStore lanzaria en cada peticion
+// con "Session has not been configured for this application or request" — un fallo ruidoso, que
+// es justamente por lo que CartStore no lo disimula devolviendo un carrito vacio.
+app.UseSession();
 
 // Aqui iba el app.UseAuthorization() de la plantilla. Se quita: no hay ningun esquema de
 // autenticacion registrado detras, asi que el middleware no puede autorizar nada. Vuelve
