@@ -1,0 +1,18 @@
+@model int
+@{
+    ViewData["Title"] = "Producto no encontrado";
+}
+
+<h1 class="h3">No existe el producto @Model</h1>
+
+<p class="text-body-secondary">
+    El catálogo no tiene ningún producto con ese identificador. Puede que se haya borrado:
+    <code>DELETE /products/{id}</code> es un borrado físico, así que un producto que existió
+    puede desaparecer del catálogo.
+</p>
+
+@* Ese borrado fisico es precisamente el motivo de que OrderLine congele Sku, Name y UnitPrice
+   (0.3): un pedido tiene que poder decir que se compro despues de que el producto ya no este.
+   Aqui no hay nada congelado, asi que un 404 es la respuesta correcta y no un fallo. *@
+
+<a class="btn btn-outline-primary" asp-action="Index">Volver al catálogo</a>

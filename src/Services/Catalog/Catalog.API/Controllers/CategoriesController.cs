@@ -37,12 +37,21 @@ public sealed class CategoriesController(CatalogDbContext db) : ControllerBase
     ///
     /// Sin paginación por motivos evidentes, y sin 404 posible: la lista vacía
     /// es un 200 con un array vacío, no un "no encontrado".
+    ///
+    /// Desde 6.2.1 cada categoría trae su recuento de productos, y por eso el
+    /// mapeo se hace **dentro** de la consulta en vez de con el
+    /// <c>CategoryResponse.From</c> que existió de 1.4 hasta aquí: el recuento
+    /// no está en la entidad, así que tiene que salir de SQL. La subconsulta
+    /// correlacionada se traduce a un <c>COUNT</c> por fila; con cinco
+    /// categorías fijas eso es exactamente lo que hay que ejecutar.
     /// </summary>
     [HttpGet]
     [EndpointSummary("Lista las categorías del catálogo")]
     [EndpointDescription(
-        "La lista completa, ordenada por nombre. Es la fuente de los categoryId válidos para " +
-        "POST /products y PUT /products/{id}: mandar uno que no esté aquí devuelve 400. " +
+        "La lista completa, ordenada por nombre, con el número de productos de cada una. Ese " +
+        "recuento cuenta el catálogo entero, no la página ni el filtro que se esté aplicando en " +
+        "GET /products. Es la fuente de los categoryId válidos para POST /products y " +
+        "PUT /products/{id}: mandar uno que no esté aquí devuelve 400. " +
         "Solo lectura — las categorías se añaden con una migración, no por HTTP.")]
     [ProducesResponseType<IReadOnlyList<CategoryResponse>>(StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<CategoryResponse>>> GetAll(CancellationToken cancellationToken)
@@ -50,8 +59,14 @@ public sealed class CategoriesController(CatalogDbContext db) : ControllerBase
         var categories = await db.Categories
             .AsNoTracking()
             .OrderBy(category => category.Name)
+            .Select(category => new CategoryResponse
+            {
+                Id = category.Id,
+                Name = category.Name,
+                ProductCount = db.Products.Count(product => product.CategoryId == category.Id),
+            })
             .ToListAsync(cancellationToken);
 
-        return categories.Select(CategoryResponse.From).ToList();
+        return categories;
     }
 }

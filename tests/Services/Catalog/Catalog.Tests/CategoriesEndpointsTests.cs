@@ -68,4 +68,30 @@ public sealed class CategoriesEndpointsTests(SqlServerContainerFixture container
         // a este endpoint.
         Assert.All(categories, category => Assert.True(category.Id > 0));
     }
+
+    /// <summary>
+    /// El recuento de 6.2.1, que sale de una subconsulta correlacionada y no de
+    /// una navegación <c>Category.Products</c> que la entidad no tiene.
+    ///
+    /// El seed de 1.4 son 10 productos por categoría, y **esta clase no crea ni
+    /// borra productos**, así que aquí se puede afirmar el 10 exacto — al revés
+    /// que en <c>ProductsEndpointsTests</c>, donde varios tests escriben en Tazas
+    /// y en Llaveros.
+    ///
+    /// Lo que de verdad afirma: que el recuento cuenta el **catálogo entero** y
+    /// no lo que devuelva <c>GET /products</c>. Si alguien lo calculara sobre la
+    /// página por defecto, saldrían 20 repartidos y estos cinco dieces fallarían.
+    /// </summary>
+    [Fact]
+    public async Task GetAll_AfterMigrations_ReturnsTenProductsPerCategory()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var categories = await client.GetFromJsonAsync<IReadOnlyList<CategoryResponse>>(
+            "/categories", cancellationToken);
+
+        Assert.NotNull(categories);
+        Assert.Equal(5, categories.Count);
+        Assert.All(categories, category => Assert.Equal(10, category.ProductCount));
+    }
 }

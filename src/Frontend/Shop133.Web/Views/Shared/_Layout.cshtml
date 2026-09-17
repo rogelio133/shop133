@@ -1,47 +1,126 @@
-﻿<!DOCTYPE html>
-<html lang="en">
+@{
+    // El item activo del navbar se deduce del controller de la ruta actual. Se resuelve
+    // aqui y no en cada vista porque el layout es el unico sitio que dibuja el menu; 6.2
+    // y 6.5 solo tendran que anadir su <li>, no volver a inventar como se marca "activo".
+    var currentController = ViewContext.RouteData.Values["controller"]?.ToString();
+}
+<!DOCTYPE html>
+<html lang="es">
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>@ViewData["Title"] - Shop133.Web</title>
+    <title>@ViewData["Title"] - Shop133</title>
     <script type="importmap"></script>
     <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
     <link rel="stylesheet" href="~/Shop133.Web.styles.css" asp-append-version="true" />
+    @await RenderSectionAsync("Styles", required: false)
 </head>
-<body>
+<body class="d-flex flex-column min-vh-100">
     <header>
-        <nav class="navbar navbar-expand-sm navbar-toggleable-sm navbar-light bg-white border-bottom box-shadow mb-3">
-            <div class="container-fluid">
-                <a class="navbar-brand" asp-area="" asp-controller="Home" asp-action="Index">Shop133.Web</a>
-                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target=".navbar-collapse" aria-controls="navbarSupportedContent"
-                        aria-expanded="false" aria-label="Toggle navigation">
+        @* Clases de Bootstrap 5.3: bg-body-tertiary en lugar del navbar-light + bg-white de
+           la plantilla, que arrastraba nomenclatura de la 4.x (navbar-light esta deprecado
+           desde la 5.3, y navbar-toggleable-sm no existe en la 5). *@
+        <nav class="navbar navbar-expand-md bg-body-tertiary border-bottom mb-4">
+            <div class="container">
+                <a class="navbar-brand fw-semibold" asp-controller="Home" asp-action="Index">Shop133</a>
+                @* El data-bs-target apunta a un id real. La plantilla usaba el selector de
+                   clase ".navbar-collapse", que funciona por casualidad mientras solo haya
+                   un collapse en la pagina. *@
+                <button class="navbar-toggler" type="button"
+                        data-bs-toggle="collapse" data-bs-target="#mainNav"
+                        aria-controls="mainNav" aria-expanded="false" aria-label="Abrir el menú">
                     <span class="navbar-toggler-icon"></span>
                 </button>
-                <div class="navbar-collapse collapse d-sm-inline-flex justify-content-between">
-                    <ul class="navbar-nav flex-grow-1">
+                <div class="collapse navbar-collapse" id="mainNav">
+                    <ul class="navbar-nav me-auto">
                         <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Home" asp-action="Index">Home</a>
+                            <a class="nav-link @(currentController == "Home" ? "active" : null)"
+                               aria-current="@(currentController == "Home" ? "page" : null)"
+                               asp-controller="Home" asp-action="Index">Inicio</a>
                         </li>
+                        @* 6.2 activo este. El item se marca por CONTROLLER y no por accion, que
+                           es lo que 6.1 dejo preparado y este punto es el primero en cobrar: el
+                           menu se queda encendido tambien en /catalog/details/5 y en las vistas
+                           de error del catalogo, sin una linea mas. *@
                         <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Home" asp-action="Privacy">Privacy</a>
+                            <a class="nav-link @(currentController == "Catalog" ? "active" : null)"
+                               aria-current="@(currentController == "Catalog" ? "page" : null)"
+                               asp-controller="Catalog" asp-action="Index">Catálogo</a>
+                        </li>
+                        @* 6.3 activo este. El badge es un VIEW COMPONENT y no un ViewData que
+                           rellene cada controller: el layout lo pintan TODAS las vistas, asi que
+                           un controller que se olvidara dejaria el contador a cero con tres cosas
+                           en el carrito y sin un solo error. Component.InvokeAsync no necesita
+                           @@addTagHelper. *@
+                        <li class="nav-item">
+                            <a class="nav-link @(currentController == "Cart" ? "active" : null)"
+                               aria-current="@(currentController == "Cart" ? "page" : null)"
+                               asp-controller="Cart" asp-action="Index">
+                                @* El <span> alrededor de "Carrito" NO es maquetacion: sin el, el
+                                   marcado seria `Carrito@@await ...`, y Razor trata una arroba
+                                   ENTRE CARACTERES DE PALABRA como la arroba literal de un correo
+                                   electronico. El resultado es que la expresion se imprime tal
+                                   cual en el HTML —medido— sin un solo error ni aviso. Cerrando
+                                   una etiqueta antes, la arroba va detras de un `>` y vuelve a
+                                   ser codigo. *@
+                                <span>Carrito</span>@await Component.InvokeAsync("CartBadge")
+                            </a>
+                        </li>
+                        @* Este sigue sin href a proposito: el controller que lo sirve todavia no
+                           existe, y un enlace muerto seria una promesa a medias. Lo activa 6.5. *@
+                        <li class="nav-item">
+                            <a class="nav-link disabled" aria-disabled="true">Estado del pedido</a>
                         </li>
                     </ul>
                 </div>
             </div>
         </nav>
     </header>
-    <div class="container">
-        <main role="main" class="pb-3">
-            @RenderBody()
-        </main>
-    </div>
 
-    <footer class="border-top footer text-muted">
-        <div class="container">
-            &copy; 2026 - Shop133.Web - <a asp-area="" asp-controller="Home" asp-action="Privacy">Privacy</a>
+    @* flex-grow-1 + mt-auto en el footer es lo que lo mantiene abajo en una pagina corta.
+       La plantilla lo hacia con position:absolute y un body{margin-bottom:60px}, que asume
+       un footer de exactamente 60px de alto y se rompe en cuanto crece. *@
+    <main role="main" class="container flex-grow-1 pb-3">
+        @* 6.3. Los avisos del carrito viajan en TempData porque tienen que cruzar el redirect del
+           POST-Redirect-GET, y se pintan AQUI y no en Views/Cart/Index.cshtml porque no todos
+           aterrizan en el carrito: un producto que ya no esta en el catalogo devuelve al catalogo,
+           y un rechazo al anadir devuelve a la ficha.
+
+           role="alert" hace que un lector de pantalla lo anuncie al aparecer; sin el, el aviso
+           pasaria desapercibido justo para quien mas lo necesita.
+
+           6.7 CAMBIA ESTO POR TOASTS. Lo que cambiara es como se PINTAN, no de donde salen: las
+           dos claves de TempData son el anclaje, y por eso viven en CartNotice en vez de ser dos
+           literales repartidos entre el controller y este archivo — una errata en uno de los dos
+           daria un aviso que simplemente no aparece, sin error y sin log. *@
+        @if (TempData[CartNotice.MessageKey] is string cartMessage)
+        {
+            <div class="alert alert-success alert-dismissible fade show" role="alert">
+                @cartMessage
+                <button type="button" class="btn-close" data-bs-dismiss="alert"
+                        aria-label="Cerrar"></button>
+            </div>
+        }
+        @if (TempData[CartNotice.ErrorKey] is string cartError)
+        {
+            <div class="alert alert-warning alert-dismissible fade show" role="alert">
+                @cartError
+                <button type="button" class="btn-close" data-bs-dismiss="alert"
+                        aria-label="Cerrar"></button>
+            </div>
+        }
+
+        @RenderBody()
+    </main>
+
+    <footer class="mt-auto border-top py-3 text-body-secondary">
+        <div class="container d-flex flex-wrap justify-content-between gap-2">
+            <span>&copy; @DateTime.UtcNow.Year Shop133</span>
+            <span>Proyecto de aprendizaje — microservicios .NET con saga y compensaciones</span>
         </div>
     </footer>
+
     <script src="~/lib/jquery/dist/jquery.min.js"></script>
     <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
     <script src="~/js/site.js" asp-append-version="true"></script>

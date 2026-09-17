@@ -1,8 +1,43 @@
-﻿@{
-    ViewData["Title"] = "Home Page";
+@{
+    ViewData["Title"] = "Inicio";
 }
 
-<div class="text-center">
-    <h1 class="display-4">Welcome</h1>
-    <p>Learn about <a href="https://learn.microsoft.com/aspnet/core">building Web apps with ASP.NET Core</a>.</p>
+<div class="px-3 py-5 mb-4 text-center bg-body-tertiary rounded-3">
+    <h1 class="display-5 fw-semibold">Shop133</h1>
+    <p class="lead mb-4">Tienda de souvenirs — tazas, llaveros, playeras, pines y libretas.</p>
+    @* 6.2 lo activa. <a class="btn"> y no <button>: navegar es un enlace, y asi funciona con
+       JavaScript desactivado. Este elemento pasa por el AnchorTagHelper, asi que sale sin el
+       atributo b-<hash> del CSS aislado — y no pasa nada precisamente porque la decision 4 de
+       6.1 saco .btn-primary de _Layout.cshtml.css y lo puso en site.css. Es el primer elemento
+       que demuestra que aquella llamada era la correcta. *@
+    <a class="btn btn-primary btn-lg" asp-controller="Catalog" asp-action="Index">Ver el catálogo</a>
+</div>
+
+<div class="row g-4">
+    <div class="col-md-6">
+        <h2 class="h4">Qué hay detrás</h2>
+        <p class="text-body-secondary">
+            Cada pedido atraviesa cinco servicios independientes, cada uno con su propia base
+            de datos, que se coordinan por mensajes en lugar de por llamadas directas.
+        </p>
+        <ul class="list-unstyled text-body-secondary">
+            <li><strong>Catalog</strong> — el catálogo y la validación del precio</li>
+            <li><strong>Orders</strong> — el pedido y la saga que lo lleva de principio a fin</li>
+            <li><strong>Inventory</strong> — reserva y libera el stock</li>
+            <li><strong>Payments</strong> — simula el cobro</li>
+            <li><strong>Notifications</strong> — avisa del desenlace</li>
+        </ul>
+    </div>
+    <div class="col-md-6">
+        <h2 class="h4">Por qué el pedido tarda en confirmarse</h2>
+        <p class="text-body-secondary">
+            El pedido se acepta antes de estar confirmado: primero se valida el precio y se
+            reserva el stock, después se cobra. Si el cobro se rechaza, el stock reservado se
+            devuelve solo, sin intervención manual.
+        </p>
+        <p class="text-body-secondary mb-0">
+            Esa espera no es un fallo — es la naturaleza asíncrona del backend, y esta interfaz
+            la enseña en vez de esconderla.
+        </p>
+    </div>
 </div>
