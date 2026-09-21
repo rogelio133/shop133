@@ -19,6 +19,14 @@ namespace Shop133.Web.Gateway;
 public sealed class CatalogClient(HttpClient httpClient, ILogger<CatalogClient> logger)
 {
     /// <summary>
+    /// El cupo que este cliente puede agotar, para que la pagina de 429 diga la verdad. Es
+    /// <c>catalog-read</c> de 5.2. Ver <see cref="GatewayUnavailableException.Quota"/>: la frase
+    /// entra en 6.4, cuando <see cref="OrdersClient"/> demostro que una sola cifra escrita en la
+    /// vista mentia para la mitad de las rutas.
+    /// </summary>
+    private const string Quota = "las lecturas del catálogo a 60 por minuto y por IP";
+
+    /// <summary>
     /// Cuantos productos pide por pagina. Es una decision de PRESENTACION —12 son tres filas
     /// exactas en la rejilla de cuatro columnas— y por eso vive aqui y no en la API, que tiene su
     /// propio valor por defecto de 12 y un tope de 100. Que NO coincidan es la prueba de que son
@@ -126,7 +134,8 @@ public sealed class CatalogClient(HttpClient httpClient, ILogger<CatalogClient> 
             throw new GatewayUnavailableException(
                 $"El Gateway contesto {(int)response.StatusCode}.",
                 (int)response.StatusCode,
-                retryAfter);
+                retryAfter,
+                Quota);
         }
 
         return await response.Content.ReadFromJsonAsync<T>(cancellationToken);

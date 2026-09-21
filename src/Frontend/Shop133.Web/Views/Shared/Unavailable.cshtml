@@ -18,15 +18,22 @@
 @if (Model.IsRateLimited)
 {
     @* Esta rama es lo primero del proyecto que le ensena a un humano el rate limiting de 5.2.
-       Es alcanzable de verdad y no es una hipotesis: 60 lecturas por minuto y POR IP, y como
-       esta tienda se renderiza en SERVIDOR, todos los visitantes son una sola IP para el
-       Gateway. Dos llamadas por render salen a unas 30 vistas de pagina por minuto — y desde
-       6.3 cada "anadir al carrito" gasta una mas, porque el precio se relee de Catalog. *@
+       Es alcanzable de verdad y no es una hipotesis: y como esta tienda se renderiza en SERVIDOR,
+       todos los visitantes son una sola IP para el Gateway. Dos llamadas por render salen a unas
+       30 vistas de pagina por minuto — y desde 6.3 cada "anadir al carrito" gasta una mas, porque
+       el precio se relee de Catalog.
+
+       6.4 LE QUITO LA CIFRA A ESTE TEXTO, y merece leerse por que. Estaba escrito "60 por minuto",
+       que es el cupo catalog-read; el checkout va por orders-route, cuyo cupo son DIEZ por minuto
+       porque cada POST arranca la saga entera. O sea que desde que existe un segundo llamante,
+       esta pagina le daba al usuario una cifra falsa y un consejo equivocado. La frase la pone
+       ahora el cliente que se quedo sin cupo, que es el unico que sabe contra que ruta iba. *@
     <div class="alert alert-warning" role="alert">
         <p>
-            Demasiadas peticiones. El Gateway limita las lecturas del catálogo a
-            <strong>60 por minuto y por IP</strong>, y como esta tienda se renderiza en el
-            servidor, todos los visitantes cuentan como una sola dirección.
+            Demasiadas peticiones. El Gateway limita
+            <strong>@(Model.Quota ?? "las peticiones de la tienda")</strong>,
+            y como esta tienda se renderiza en el servidor, todos los visitantes cuentan como una
+            sola dirección.
         </p>
         <p class="mb-0">
             @if (Model.RetryAfter is TimeSpan wait)

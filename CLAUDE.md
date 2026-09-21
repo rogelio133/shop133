@@ -342,6 +342,24 @@ Three things that cost time. **`Ignore` takes the event, not a lambda** — `Eve
 
 **What `6.3` leaves open and nobody owns: nothing watches that the cart stays on the server.** Adding an `<input type="hidden" name="unitPrice">` to the details form tomorrow would undo the entire item and **no test would notice** — same shape as rule 2, which is not executable either. Also not measured: the **50-line cap**, unreachable because the seed has exactly 50 products, so a full cart has no *new* product left to add.
 
+**`6.4` is done — the frontend makes its first POST ever and the saga finally starts from a browser form** — see [docs/fase_6_4.md](docs/fase_6_4.md). `Shop133.Web` gains `Gateway/OrdersClient` (+ `NewOrder`, `NewOrderLine`, `PlacedOrder`, `OrderRejectedException`), `CheckoutController`, two view models and two views; the cart's *Tramitar pedido* button — `disabled` since `6.3` — goes live. **No package enters**: jquery-validation 1.21.0 and unobtrusive 4.0.0 have been vendored since `0.1` and `_ValidationScriptsPartial.cshtml` existed with **no view using it**, so the `.csproj` still has zero `PackageReference`/`ProjectReference` and `6.6` is still the item that ends that. The architecture suite stays at **17** and the repo at **140**. **No service, no Gateway, no contract and no migration was touched.**
+
+**Measured, and it is the point: a 2-mug order ends `Confirmed`, and a `1197.00` one ends `Cancelled` returning its 3 units (`61/0` before and after) with the reason in Notifications' email** — the whole five-service saga fired from a `<form>` for the first time.
+
+**The form has ONE editable field, and that scarcity is the decision.** `CreateOrderRequest` is `CustomerEmail` + `Items`, so a shipping address would mean either discarding what the user typed or touching Orders' contract, entity and a migration — a roadmap item inside a frontend one, which is what `6.2` already refused. What the title does not suggest is the **new 400 branch**: until today any non-2xx became `GatewayUnavailableException`, and for a POST that is false — the Gateway answered and it is the *body* that is wrong. `OrderRejectedException` separates it (checked **before** `IsSuccessStatusCode`, precedent `FindProductOrNullAsync`'s 404), throws rather than returning a reason because the user only types an email so a 400 means **the cart built a body the API refuses**, and drops the `ValidationProblemDetails` **keys** (they name Orders' DTO fields) while keeping the texts, which land in `asp-validation-summary="ModelOnly"` with an empty key. Exercised by diverging the duplicated length constant on purpose — and the message comes back **in English**, because it is Orders' and nobody translated it there.
+
+**The order id comes from the 201's BODY, not `Location`** — that header still points at `http://localhost:5189/orders/{id}` without the prefix. `6.3` warned it stopped being theoretical here; it is re-measured, deliberately **not** fixed (the real fix is a YARP response transform, i.e. Phase 5 code with its own tests) and **still ownerless**, now with a real consumer in front of it.
+
+**Two corrections the second caller uncovered.** `Program.cs` carried a comment describing a 5 s `client.Timeout` — and telling `6.6` to re-read that line — **over a line that was never written**: the real value was the factory default of **100 s**. And `Views/Shared/Unavailable.cshtml` announced *"60 por minuto"* in its 429 branch, which is `catalog-read`; checkout goes through `orders-write`, which is **ten**, so that page handed the user a false figure the moment a second route existed. `GatewayUnavailableException` gains a `Quota` string supplied by whichever client ran out — **the configured default, not the live value**, since the Gateway tells nobody its quota (visible in the verification: with the limit lowered to 2 the page still says 10). Both written up as corrections, precedent 2b of `3.3`.
+
+**Measured and handed to `6.5` before it starts: `GET /orders/{id}` falls under `orders-route`, i.e. the SAME 10/60 s write quota as the POST** — the `429` lands on request 11. Polling every 2-3 s as the roadmap's simple option suggests would 429 about 25 seconds after the page opens, so either the poll is far slower or `orders-route` splits into two routes with two quotas — a Gateway change. **Decide it before writing the polling.**
+
+**Three things worth not rediscovering.** `TempData` **cannot serialize a `decimal`** (cookie provider takes string/int/bool/DateTime/Guid), and it blows up at runtime, so the confirmation's total is formatted with `Money.Format` *before* being stored; it also lasts exactly one request, so an F5 on the confirmation keeps the order number from the route and loses the rest — said on the page rather than papered over. The summary properties carry **`[BindNever]`** so a crafted POST cannot make the page echo figures the attacker wrote, and the price is that every path returning the view must **repopulate** them from the cart or the summary renders blank and looks like an emptied cart. And the `LogInformation` must go **before** `cart.Clear()` or it always reports zero lines.
+
+**The deliberate breakage worth carrying: removing `@section Scripts` leaves every `data-val-*` attribute in place.** The two `<script>` tags vanish and nothing else changes — the HTML *looks* validated and nothing reads it, with no error, no warning and no visible difference. That is what makes the positive check meaningful; `curl` cannot run the validation itself, and the doc says so rather than claiming it measured the browser.
+
+**Why the checkout does NOT warn about a stale price snapshot**, which `6.3` floated as possible work here: the frontend cannot know. `4.8`'s window does not measure the line's age but the time since the price **changed**, and `PreviousPrice`/`PriceChangedAt` are deliberately absent from `ProductResponse` so nobody can forge an authentic snapshot. Warning by age would condemn perfectly valid photographs.
+
 **`6.2.1` is done — the deferred query parameters land at last and the frontend stops filtering in memory** — see [docs/fase_6_2_1.md](docs/fase_6_2_1.md). `GET /products` accepts `page`, `pageSize` and `categoryId` and answers a `PagedResponse<T>` envelope; `GET /categories` gains `ProductCount`. `Catalog.Tests` goes 29 → **38**, the repo 131 → **140**. **No package, no `.csproj`, no migration, nothing of `Shop133.Contracts` and not one line of the Gateway** (its route is a catch-all and the query string already travelled) — so the architecture suite stays at **17** (precedent of `3.3`/`3.5`/`4.5`/`5.2`).
 
 **It is a debt that was promised in writing at both ends and owned at neither.** `1.3` left `GET /products` unpaged conditionally — *"Entra si 6.2 la necesita"* — and `1.4` left the filter the same way — *"Entra ahí"*. `6.2` **needed it and decided not to add it** (*"tocar un servicio para servir a una vista es inventar alcance"*), leaving it in its *Pendiente* as *"un punto de la Fase 1 que nadie tiene asignado"*. Both were right separately; the joint result was ownerless. It is numbered `6.2.1` and **nothing is renumbered** — the numbers are the key between commit, roadmap and `docs/`.
@@ -512,7 +530,7 @@ Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed su
 | 3 | MassTransit + RabbitMQ messaging | **Code complete** — 3.1–3.7 done; awaiting the PRs to `develop`/`main` and the `fase-3` tag |
 | 4 | Saga + compensations | **Code complete** — 4.1–4.9 done; awaiting the PRs to `develop`/`main` and the `fase-4` tag |
 | 5 | YARP Gateway | **Code complete** — 5.1–5.4 done; awaiting the PRs to `develop`/`main` and the `fase-5` tag |
-| 6 | Frontend (MVC + Bootstrap 5) | **In progress** on `feature/fase-6-frontend` — 6.1–6.3 done |
+| 6 | Frontend (MVC + Bootstrap 5) | **In progress** on `feature/fase-6-frontend` — 6.1–6.4 done |
 | 7 | Observability | Not started |
 | 8 | Optional extras (auth, real-infra integration tests, CI/CD, E2E) | Not started |
 
@@ -634,7 +652,7 @@ Tests are not a phase. They are numbered items spread across the roadmap — `0.
 
 The reference rules read the **`.csproj` files**, not the compiled assemblies: Roslyn prunes unused references from the manifest, so with service projects still empty an assembly-level check would pass vacuously. `ProjectGraph.cs` is that reader; add new reference rules on top of it. Rules about *types* (records, immutability) use plain reflection, and `NetArchTest` covers the one namespace-dependency assertion.
 
-**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`. Since `6.2.1`: **61 `Fast`** (17 `Shop133.ArchitectureTests` + 18 `Orders.Tests` + 26 `Shop133.Gateway.Tests`) and **79 `Docker`** (38 `Catalog.Tests` + 17 `Orders.Tests` + 15 `Inventory.Tests` + 9 `Payments.Tests`), **140 in total**. Orders went 17 → 10 in `3.3` (the seven that tested the synchronous debt), 10 → 12 in `3.7` (it can finally assert the publish), 12 → 25 in `4.7` and 25 → 35 in `4.9`; Inventory went 9 → 15 in `4.4`; Catalog went 19 → 29 in `4.8` and 29 → 38 in `6.2.1`. `4.5` and `4.6` both added **zero** tests, `5.1` added only the architecture one, `5.2`/`5.3` added none at all — which is what `5.4` collects — and `6.1`/`6.2` added none either, because Phase 6 has no test item.
+**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`. Since `6.2.1`: **61 `Fast`** (17 `Shop133.ArchitectureTests` + 18 `Orders.Tests` + 26 `Shop133.Gateway.Tests`) and **79 `Docker`** (38 `Catalog.Tests` + 17 `Orders.Tests` + 15 `Inventory.Tests` + 9 `Payments.Tests`), **140 in total**. Orders went 17 → 10 in `3.3` (the seven that tested the synchronous debt), 10 → 12 in `3.7` (it can finally assert the publish), 12 → 25 in `4.7` and 25 → 35 in `4.9`; Inventory went 9 → 15 in `4.4`; Catalog went 19 → 29 in `4.8` and 29 → 38 in `6.2.1`. `4.5` and `4.6` both added **zero** tests, `5.1` added only the architecture one, `5.2`/`5.3` added none at all — which is what `5.4` collects — and `6.1` through `6.4` added none either, because Phase 6 has no test item. `6.2.1` is the exception that proves it: it added 9, and only because it touched `Catalog.API`, which does have a suite.
 
 **`tests/README.md` had been stale since `4.8`** — it reported 84 tests while the repo was at 105 — and `5.4` corrected it. It is the operational guide to the six test projects and it has to move with them.
 
@@ -812,7 +830,32 @@ dotnet run --project src/Gateway/Shop133.Gateway            # 5104
 #
 # El navbar: Catalogo lo activo 6.2 y Carrito 6.3 (con un badge de UNIDADES, no de lineas).
 # Estado del pedido sigue DESHABILITADO (sin href) hasta 6.5. No es un olvido — ver la nota
-# de la Fase 6 mas arriba.
+# de la Fase 6 mas arriba. 6.4 NO toca el navbar: al checkout se llega desde el carrito.
+#
+# EL CHECKOUT (6.4) ES EL PRIMER POST QUE SALE DE ESTE PROYECTO, y con el la saga entera
+# arranca desde un formulario en vez de desde un curl.
+#   GET  /checkout                 el formulario. UN solo campo (el correo) mas el resumen del
+#                                  carrito en SOLO LECTURA — las cantidades se cambian en /cart.
+#                                  Carrito vacio -> 302 a /cart con su aviso.
+#   POST /checkout                 tramita. 302 a la confirmacion, o re-pinta el formulario.
+#   GET  /checkout/placed/{id}     numero de pedido, correo y total. NO llama al Gateway.
+#
+# Cuatro desenlaces del POST, y separarlos es el punto: 302 (201 de Orders), 200 re-pintando el
+# formulario (correo invalido, O un 400 de Orders via OrderRejectedException), 503 (Gateway
+# caido) y 429 (cupo orders-write agotado). EL CARRITO SOBREVIVE A LOS TRES FALLOS — solo se
+# vacia despues del 201; medido en las cuatro ramas.
+#
+# La validacion de cliente son los data-val-* que generan las DataAnnotations de
+# CheckoutViewModel MAS la seccion @section Scripts con _ValidationScriptsPartial. QUITAR ESA
+# SECCION ES UN FALLO SILENCIOSO: los data-val-* SIGUEN en el HTML —la pagina parece validada—
+# y no los lee nadie. Medido. Comprueba las dos mitades, no solo los atributos.
+#
+# El id del pedido sale del CUERPO del 201, nunca de la cabecera Location, que sigue apuntando
+# a localhost:5189 sin el prefijo (deuda de 5.1, sin dueno).
+#
+# OJO PARA 6.5: GET /api/orders/{id} cae en orders-route, o sea en el MISMO cupo de ESCRITURA
+# de 10/60 s que el POST — medido, el 429 llega en la peticion 11. Un sondeo cada 2-3 s daria
+# 429 a los ~25 s. O el sondeo es mas lento, o orders-route se parte en dos rutas.
 #
 # EL CARRITO (6.3) VIVE EN LA SESION DEL SERVIDOR, y esa es la propiedad del punto entero: la
 # cookie .Shop133.Session lleva un id opaco (190 caracteres, medido) y el PRECIO no sale de aqui.

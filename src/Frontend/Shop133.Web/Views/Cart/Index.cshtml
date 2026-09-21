@@ -117,14 +117,15 @@ else
         </form>
 
         <div class="text-end">
-            @* Deshabilitado siguiendo la decision 1 de 6.1: se ensena el mapa sin prometer un
-               destino que no existe. Lo activa 6.4, que es quien trae el formulario de checkout y
-               el POST /orders — y que copiara las cinco primeras propiedades de cada CartLine tal
-               cual al cuerpo del pedido. *@
-            <button class="btn btn-primary btn-lg" type="button" disabled aria-disabled="true">
+            @* 6.4 lo activo. Estuvo deshabilitado desde 6.3 siguiendo la decision 1 de 6.1 — se
+               ensena el mapa sin prometer un destino que no existe.
+
+               Un <a> y no un <form>: GET /checkout no muta nada, solo pinta el formulario. Las
+               cuatro mutaciones del carrito siguen siendo POST con token, que es donde esa
+               distincion importa. *@
+            <a class="btn btn-primary btn-lg" asp-controller="Checkout" asp-action="Index">
                 Tramitar pedido
-            </button>
-            <div class="small text-body-secondary mt-1">El checkout llega en 6.4.</div>
+            </a>
         </div>
     </div>
 

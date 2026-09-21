@@ -40,20 +40,48 @@ if (!Uri.TryCreate(gatewayBaseUrl, UriKind.Absolute, out _))
         $"'Gateway:BaseUrl' = '{gatewayBaseUrl}' no es una URL absoluta.");
 }
 
-builder.Services.AddHttpClient<CatalogClient>(client =>
+// La configuracion de los DOS clientes tipados, en un solo sitio. Se extrae en 6.4, al aparecer
+// el segundo: la base y el timeout tienen que ser los mismos, y dos lambdas calcadas son dos
+// sitios donde el "/api/" puede divergir sin que nada avise.
+//
+// 6.6 ENGANCHA AQUI sus politicas de Polly, y entonces esto deja de ser una sola funcion: un
+// reintento automatico de una LECTURA es gratis, y el de una ESCRITURA crea pedidos duplicados.
+void ConfigureGatewayClient(HttpClient client)
 {
     // Con barra final: sin ella, Uri resuelve la ruta relativa contra el PADRE y se come el
     // ultimo segmento. Aqui la base SI tiene segmento de ruta ("/api/"), asi que esto muerde
     // de verdad — en 2.3 era una precaucion teorica.
     client.BaseAddress = new Uri(gatewayBaseUrl.TrimEnd('/') + "/api/");
 
-    // 5 s en vez de los 100 de fabrica (precedente de 2.3). Con el valor por defecto, "el
-    // Gateway esta caido" tardaria minuto y medio en pintar el aviso y pareceria un cuelgue.
+    // ── CORRECCION DE 6.4 ──
     //
-    // 6.6 TIENE QUE RELEER ESTA LINEA. Timeout es el plazo EXTERIOR de todo el pipeline de
-    // resiliencia: con 5 s aqui, el total-request-timeout de 30 s del handler estandar de
-    // Polly no cabe y los reintentos NO LLEGAN A EJECUTARSE NUNCA, sin error y sin aviso.
-});
+    // Esta linea NO EXISTIA. El comentario de 6.2 describia este valor y advertia a 6.6 de que
+    // tendria que releerlo, pero la asignacion nunca se escribio: el timeout real era el de
+    // fabrica, CIEN SEGUNDOS. Se descubrio al anadir el segundo cliente, que copia esta
+    // configuracion. Un comentario que describe una linea ausente es peor que no tenerlo —
+    // sostiene que una decision esta tomada y ademas le pasa el aviso al punto siguiente.
+    //
+    // 5 s (precedente de 2.3). Con el valor de fabrica, "el Gateway esta caido" tardaria minuto y
+    // medio en pintar el aviso y pareceria un cuelgue; y desde 6.4 eso pasa DELANTE de alguien que
+    // esta tramitando un pedido. El rechazo de conexion en 127.0.0.1 son ~2 s (medido en 2.3 y
+    // en 6.2), asi que 5 s deja margen sin acercarse a la espera de fabrica.
+    //
+    // 6.6 TIENE QUE RELEER ESTA LINEA, y ahora si hay linea que releer. Timeout es el plazo
+    // EXTERIOR de todo el pipeline de resiliencia: con 5 s aqui, el total-request-timeout de 30 s
+    // del handler estandar de Polly no cabe y los reintentos NO LLEGAN A EJECUTARSE NUNCA, sin
+    // error y sin aviso.
+    client.Timeout = TimeSpan.FromSeconds(5);
+}
+
+builder.Services.AddHttpClient<CatalogClient>(ConfigureGatewayClient);
+
+// 6.4 — el segundo cliente tipado y el PRIMER POST que sale de este proyecto. Con el, la saga
+// entera arranca desde un formulario de navegador en vez de desde un curl.
+//
+// Separado de CatalogClient y no un metodo mas alli: aquel se llama "Catalog" y hablaria con
+// Orders, y son dos cupos distintos del rate limiter de 5.2 (60/min las lecturas del catalogo,
+// 10/min los pedidos) con dos politicas de reintento incompatibles en 6.6.
+builder.Services.AddHttpClient<OrdersClient>(ConfigureGatewayClient);
 
 // 6.3 — el carrito, EN SESION DE SERVIDOR.
 //
