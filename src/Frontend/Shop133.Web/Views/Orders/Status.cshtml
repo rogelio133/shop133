@@ -1,0 +1,135 @@
+@model OrderStatusViewModel
+@{
+    ViewData["Title"] = "Estado del pedido";
+
+    var (pricing, fulfilment) = Model.Tracks;
+    var outcome = OrderProgress.Outcome(Model.Status.Status);
+}
+
+@* ── El primer render lo hace el SERVIDOR, y a partir de aqui manda el JavaScript ──
+   Los data-* son el unico canal entre los dos: el .js no lleva Razor dentro (dejaria de poder
+   servirse como estatico y de cachearse) y esta vista no sabe nada de como sondea el .js.
+   data-poll dice si hay que arrancar: un pedido ya resuelto se pinta y se deja quieto. *@
+<div id="order-status"
+     data-order-id="@Model.Status.Id"
+     data-gateway="@Model.GatewayBaseUrl"
+     data-poll="@(Model.ShouldPoll ? "true" : "false")">
+
+    <h1 class="h3 mb-1">Estado del pedido</h1>
+    <p class="font-monospace text-break text-body-secondary small">@Model.Status.Id</p>
+
+    @* El desenlace. data-role marca los nodos que el sondeo reescribe; sin ellos el .js tendria
+       que buscar por clase de Bootstrap, que es lo que se rompe al cambiar el diseno. *@
+    <div class="alert @outcome.AlertClass d-flex flex-wrap align-items-center gap-2"
+         role="alert" data-role="outcome">
+        <span class="h5 mb-0" data-role="outcome-title">@outcome.Title</span>
+        @if (Model.ShouldPoll)
+        {
+            @* El spinner solo existe mientras haya algo que esperar. Si el pedido ya esta resuelto
+               al cargar la pagina, no se pinta y no hay nada que apagar despues. *@
+            <span class="ms-auto spinner-border spinner-border-sm" role="status" data-role="spinner">
+                <span class="visually-hidden">Actualizando…</span>
+            </span>
+        }
+    </div>
+
+    @* El motivo de la cancelacion. Es la PRIMERA vez que este texto sale del sistema por HTTP:
+       hasta 6.5 solo llegaba al correo de Notifications (4.6), porque el pedido no lo guarda —vive
+       en la fila de la saga— y ningun endpoint lo exponia. Puede faltar en un pedido cancelado y no
+       es un fallo: hay caminos que publican el motivo sin guardarlo. *@
+    <p data-role="reason" class="@(Model.Status.CancellationReason is null ? "d-none" : null)">
+        @Model.Status.CancellationReason
+    </p>
+
+    @* ── Las DOS pistas, y no una barra de progreso ──
+       Una sola barra seria mentira desde 4.9: la validacion del precio en Catalog corre EN
+       PARALELO con la reserva de stock, porque las dos salen del mismo OrderCreated por el mismo
+       fanout. Los estados de nombre compuesto de la saga (PricingPendingStockReserved) existen
+       justo para decir que rama ya contesto y cual falta; aplanarlos en un porcentaje escondería
+       lo que esta pagina existe para ensenar. Ver Models/OrderProgress.cs. *@
+    <div class="row g-3 mb-3">
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                        <h2 class="h6 card-title mb-0">@pricing.Title</h2>
+                        <span class="badge @OrderProgress.BadgeClass(pricing.State)" data-role="pricing-badge">
+                            @OrderProgress.Label(pricing.State)
+                        </span>
+                    </div>
+                    <p class="card-text mb-0" data-role="pricing-detail">@pricing.Detail</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                        <h2 class="h6 card-title mb-0">@fulfilment.Title</h2>
+                        <span class="badge @OrderProgress.BadgeClass(fulfilment.State)" data-role="fulfilment-badge">
+                            @OrderProgress.Label(fulfilment.State)
+                        </span>
+                    </div>
+                    <p class="card-text mb-0" data-role="fulfilment-detail">@fulfilment.Detail</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <dl class="row">
+        <dt class="col-sm-3">Tramitado</dt>
+        <dd class="col-sm-9">@Model.Status.CreatedAt.ToLocalTime().ToString("g", Money.Culture)</dd>
+
+        @if (Model.FormattedTotal is not null)
+        {
+            @* Sale de la SESION, no de una segunda llamada: el endpoint de estado es ligero a
+               proposito y no trae el total. Por eso falta en un enlace compartido o despues de
+               reiniciar el proceso, y entonces simplemente no se pinta. *@
+            <dt class="col-sm-3">Total</dt>
+            <dd class="col-sm-9 fw-semibold">@Model.FormattedTotal</dd>
+        }
+
+        @* El nombre REAL del estado de la saga, sin traducir. Se ensena a proposito: es un proyecto
+           para entender microservicios, y poder cruzar esta palabra con OrdersDb.OrderStates, con
+           las colas de RabbitMQ y con los logs de los cinco servicios es la mitad de lo que esta
+           pagina aporta. Orders.API lo devuelve crudo justamente para que se pueda. *@
+        <dt class="col-sm-3">Estado interno</dt>
+        <dd class="col-sm-9">
+            <code data-role="stage">@(Model.Status.Stage ?? "(la saga aún no ha arrancado)")</code>
+        </dd>
+    </dl>
+
+    @* El aviso del sondeo: cupo agotado, fallo de red o tope de intentos alcanzado. Nace oculto y
+       lo enciende el .js; sin JavaScript no aparece nunca, que es correcto — sin sondeo no hay
+       nada que avisar. *@
+    <div class="alert alert-warning d-none" role="alert" data-role="polling-notice"></div>
+
+    <noscript>
+        <div class="alert alert-secondary" role="alert">
+            Esta página se actualiza sola con JavaScript. Sin él, los datos de arriba son los del
+            momento en que se cargó: recarga para ver si el pedido ha avanzado.
+        </div>
+    </noscript>
+
+    <div class="d-flex flex-wrap gap-2">
+        <a class="btn btn-outline-primary" asp-action="Index">Tus pedidos</a>
+        <a class="btn btn-outline-secondary" asp-controller="Catalog" asp-action="Index">Seguir comprando</a>
+    </div>
+
+    <p class="small text-body-secondary border-start border-3 ps-3 mt-3">
+        Las dos columnas avanzan <strong>a la vez</strong> y no en fila: el precio lo valida
+        <code>Catalog</code> mientras <code>Inventory</code> aparta las unidades, porque los dos
+        reaccionan al mismo mensaje. Si una de las dos falla después de que la otra haya hecho su
+        trabajo, lo hecho se deshace solo — eso es la compensación, y es lo que esta tienda existe
+        para enseñar.
+    </p>
+</div>
+
+@section Scripts {
+    @* Solo en esta pagina, no en _Layout: es el unico sitio que sondea. asp-append-version para que
+       un cambio en el archivo no se quede detras de la cache del navegador.
+
+       OJO: MapStaticAssets() sirve desde un manifiesto de BUILD (6.2), asi que un .js nuevo sin
+       recompilar da 404 con la ruta perfectamente escrita. *@
+    <script src="~/js/order-status.js" asp-append-version="true"></script>
+}

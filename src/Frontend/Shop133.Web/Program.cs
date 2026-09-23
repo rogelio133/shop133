@@ -1,5 +1,6 @@
 using Shop133.Web.Cart;
 using Shop133.Web.Gateway;
+using Shop133.Web.Orders;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -38,6 +39,26 @@ if (!Uri.TryCreate(gatewayBaseUrl, UriKind.Absolute, out _))
 {
     throw new InvalidOperationException(
         $"'Gateway:BaseUrl' = '{gatewayBaseUrl}' no es una URL absoluta.");
+}
+
+// 6.5 — la direccion que usa el NAVEGADOR. Opcional: si falta, el navegador llega por donde llega
+// este servidor, que es cierto en el unico despliegue que hoy existe. Por eso NO hay guarda de
+// ausencia como la de arriba; lo que si se valida es la forma, porque una URL relativa aqui
+// produciria peticiones contra el propio frontend y un 404 que acusaria al sitio equivocado.
+//
+// Quien la usa no es ningun HttpClient de este proceso: acaba en un data- del HTML y la lee el
+// fetch de wwwroot/js/order-status.js. El caso que obliga a declararla en local es el perfil
+// https — ver el comentario de appsettings.json y OrdersController.BrowserGatewayBaseUrl.
+var gatewayPublicBaseUrl = builder.Configuration["Gateway:PublicBaseUrl"];
+
+if (!string.IsNullOrWhiteSpace(gatewayPublicBaseUrl)
+    && !Uri.TryCreate(gatewayPublicBaseUrl, UriKind.Absolute, out _))
+{
+    throw new InvalidOperationException(
+        $"'Gateway:PublicBaseUrl' = '{gatewayPublicBaseUrl}' no es una URL absoluta. Es la " +
+        "direccion del Gateway tal y como la ve el NAVEGADOR, asi que tiene que llevar esquema, " +
+        "host y puerto: el fetch de la pagina de estado del pedido sale del navegador, no de " +
+        "este proceso. Dejala sin declarar para que el navegador use la misma que el servidor.");
 }
 
 // La configuracion de los DOS clientes tipados, en un solo sitio. Se extrae en 6.4, al aparecer
@@ -132,6 +153,15 @@ builder.Services.AddHttpContextAccessor();
 // CartBadgeViewComponent vean la MISMA instancia. Con un transient, el badge pintaria el carrito
 // de antes de la mutacion.
 builder.Services.AddScoped<CartStore>();
+
+// 6.5 — los pedidos tramitados en esta sesion, para que el item "Estado del pedido" del navbar
+// tenga adonde llevar. Scoped por el mismo motivo que CartStore: cachea la lista durante la
+// peticion, de modo que el controller no la deserialice dos veces.
+//
+// Segundo archivo del proyecto que toca ISession, y el /// de CartStore decia ser el unico. No es
+// una contradiccion y esta explicado en RecentOrdersStore: aquella regla defendia que el PRECIO no
+// saliera al navegador, y lo que la sostiene es que haya un solo duenno POR COSA guardada.
+builder.Services.AddScoped<RecentOrdersStore>();
 
 var app = builder.Build();
 

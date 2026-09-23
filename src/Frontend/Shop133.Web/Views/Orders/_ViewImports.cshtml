@@ -1,0 +1,14 @@
+@* 6.5. Solo las vistas de esta carpeta tipan contra RecentOrder, asi que el using va AQUI y no en
+   el _ViewImports raiz. Los _ViewImports son jerarquicos: este se suma al de Views/, no lo
+   sustituye.
+
+   Es el criterio que aquel archivo ya dejo escrito. Al importar Shop133.Web.Gateway anoto el
+   precio —"ese tipo es @@model-able desde CUALQUIER vista del proyecto para siempre"— y al no
+   importar Shop133.Web.Controllers dijo que aquella "si tenia alternativa, asi que se tomo".
+   Esta tambien la tiene, y por eso Shop133.Web.Orders no entra en el raiz: RecentOrdersStore es
+   el segundo duenno de la sesion del proyecto, y no hay ningun motivo para que sea @@model-able
+   desde la ficha de un producto.
+
+   Es el primer _ViewImports por carpeta del proyecto. No hace falta repetir el @@addTagHelper ni
+   los usings de arriba: se heredan. *@
+@using Shop133.Web.Orders

@@ -81,15 +81,12 @@ public sealed class CatalogController(CatalogClient catalogClient, ILogger<Catal
     /// COMPROBABLE desde la linea de comandos. Con el Gateway parado <c>/Catalog</c> devuelve
     /// 503 y con el arriba 200; un 200 con un cartel dentro no se distingue de una pagina que
     /// funciona con ningun comando.
+    ///
+    /// **El cuerpo de este metodo se fue en 6.5 a <see cref="GatewayFailureExtensions"/>**, al
+    /// aparecer la cuarta copia. El razonamiento de arriba no se movio con el: explica POR QUE el
+    /// codigo es 503 y no 502, y esa decision se tomo aqui, en 6.2, con Orders delante como
+    /// contraejemplo.
     /// </summary>
-    private IActionResult Unavailable(GatewayUnavailableException exception)
-    {
-        logger.LogWarning(exception, "No se pudo pintar el catalogo.");
-
-        Response.StatusCode = exception.IsRateLimited
-            ? StatusCodes.Status429TooManyRequests
-            : StatusCodes.Status503ServiceUnavailable;
-
-        return View("Unavailable", exception);
-    }
+    private IActionResult Unavailable(GatewayUnavailableException exception) =>
+        this.GatewayUnavailable(exception, logger, "No se pudo pintar el catalogo.");
 }

@@ -6,7 +6,8 @@
 <div class="alert alert-success" role="alert">
     <h1 class="h4 alert-heading">Pedido recibido</h1>
     <p class="mb-0">
-        Ya está en marcha. Te avisaremos por correo cuando se confirme o si hay que cancelarlo.
+        Ya está en marcha. Puedes seguirlo aquí mismo, y además te avisaremos por correo cuando se
+        confirme o si hay que cancelarlo.
     </p>
 </div>
 
@@ -39,14 +40,22 @@
     </p>
 }
 
-@* Lo que esta pagina NO hace, dicho en la interfaz igual que la nota de precios del carrito: no
-   pregunta por el estado. El pedido acaba de entrar en una saga asincrona y en este instante
-   siempre esta "Pending"; verlo avanzar hasta Confirmed o Cancelled es 6.5, y releerlo aqui
-   gastaria un permiso del cupo de diez pedidos por minuto para no contar nada. *@
+@* Esta pagina SIGUE sin preguntar por el estado, y eso no cambia con 6.5: en este instante el
+   pedido siempre esta "Pending" —la saga acaba de arrancar, y desde 4.5 el evento que la arranca
+   ni siquiera ha salido del outbox—, asi que una llamada aqui gastaria un permiso del cupo para no
+   contar nada todavia. Lo que 6.5 anade es el ENLACE: el seguimiento vive en su propia pagina, que
+   es la que sondea. *@
 <p class="small text-body-secondary border-start border-3 ps-3">
     El pedido no se confirma en el momento: por detrás se reserva el stock, se valida el precio y se
     cobra, y cualquiera de esos pasos puede cancelarlo y deshacer lo anterior sin que nadie
-    intervenga. El seguimiento en vivo de esas etapas llega en 6.5.
+    intervenga. En la página de seguimiento se ve avanzar paso a paso.
 </p>
 
-<a class="btn btn-outline-primary" asp-controller="Catalog" asp-action="Index">Seguir comprando</a>
+<div class="d-flex flex-wrap gap-2">
+    @* El destino de 6.5. El id sale de la ruta, asi que este enlace sobrevive a la recarga que
+       vacia el TempData — es lo unico de esta pagina que sigue funcionando despues de un F5. *@
+    <a class="btn btn-primary" asp-controller="Orders" asp-action="Status" asp-route-id="@Model.OrderId">
+        Seguir el pedido
+    </a>
+    <a class="btn btn-outline-primary" asp-controller="Catalog" asp-action="Index">Seguir comprando</a>
+</div>

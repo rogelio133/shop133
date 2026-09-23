@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Shop133.Web.Cart;
 using Shop133.Web.Gateway;
 using Shop133.Web.Models;
+using Shop133.Web.Orders;
 
 namespace Shop133.Web.Controllers;
 
@@ -27,6 +28,7 @@ namespace Shop133.Web.Controllers;
 public sealed class CheckoutController(
     CartStore cartStore,
     OrdersClient ordersClient,
+    RecentOrdersStore recentOrders,
     ILogger<CheckoutController> logger)
     : Controller
 {
@@ -143,6 +145,22 @@ public sealed class CheckoutController(
         // Un carrito vacio se BORRA de la sesion en lugar de guardarse vacio; lo decide CartStore.
         await cartStore.SaveAsync(cart, cancellationToken);
 
+        // 6.5 — el pedido queda apuntado en la sesion para que se pueda volver a el desde el
+        // navbar. Va DESPUES del 201, como el Clear y por el mismo motivo: si el POST hubiera
+        // fallado no habria pedido que recordar.
+        //
+        // Es lo que hace que la pagina de estado sea alcanzable sin copiar un Guid a mano — el
+        // TempData de abajo solo dura una peticion, asi que un F5 sobre la confirmacion ya pierde
+        // el correo y el total.
+        await recentOrders.RememberAsync(
+            new RecentOrder
+            {
+                Id = placed.Id,
+                PlacedAt = DateTimeOffset.UtcNow,
+                FormattedTotal = Money.Format(placed.Total),
+            },
+            cancellationToken);
+
         TempData[PlacedEmailKey] = placed.CustomerEmail;
 
         // Formateado AQUI y no en la vista: TempData no sabe serializar un decimal y revienta en
@@ -222,22 +240,15 @@ public sealed class CheckoutController(
     }
 
     /// <summary>
-    /// El aviso de que el Gateway no contesta. **Tercera copia** del helper privado de
-    /// <c>CatalogController</c> y <c>CartController</c>, y se queda copiada: aquel fijo el
-    /// criterio en cuatro ocurrencias (precedente de <c>SqlServerContainerFixture</c>, que espero
-    /// a tener cuatro copias en 3.7 antes de extraerse). La cuarta decide.
+    /// El aviso de que el Gateway no contesta. Era la **tercera copia** del helper privado de
+    /// <c>CatalogController</c> y <c>CartController</c>, y su comentario decia <i>"la cuarta
+    /// decide"</i>, siguiendo el criterio que 2.4 fijo y 3.7 aplico con
+    /// <c>SqlServerContainerFixture</c>.
     ///
-    /// El codigo de estado se conserva porque es lo unico que hace la rama comprobable desde la
-    /// linea de comandos — decision 3 de 6.2, que sigue sin revertirse.
+    /// **6.5 trajo la cuarta y decidio: el cuerpo vive en <see cref="GatewayFailureExtensions"/>.**
+    /// Aqui solo queda el texto del log, que resulto ser lo unico que las tres copias no
+    /// compartian — que es exactamente lo que aquel precedente pedia comprobar antes de extraer.
     /// </summary>
-    private IActionResult Unavailable(GatewayUnavailableException exception)
-    {
-        logger.LogWarning(exception, "No se pudo tramitar el pedido.");
-
-        Response.StatusCode = exception.IsRateLimited
-            ? StatusCodes.Status429TooManyRequests
-            : StatusCodes.Status503ServiceUnavailable;
-
-        return View("Unavailable", exception);
-    }
+    private IActionResult Unavailable(GatewayUnavailableException exception) =>
+        this.GatewayUnavailable(exception, logger, "No se pudo tramitar el pedido.");
 }

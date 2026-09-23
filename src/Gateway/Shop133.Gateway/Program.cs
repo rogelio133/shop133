@@ -141,6 +141,15 @@ builder.Services.AddCors(options =>
         //     puede leer, que no es lo mismo que estar bien.
         //   - Retry-After es lo que el 429 de 5.2 contesta, y sin exponerlo un
         //     cliente de navegador ve el rechazo pero no cuánto tiene que esperar.
+        //
+        // ACTUALIZACIÓN DE 6.5, y corrige media predicción de las dos de arriba. El
+        // 201 del alta NO lo lee JavaScript: el POST del checkout sale del servidor
+        // (6.4), y el id se saca del CUERPO precisamente porque Location está roto.
+        // Quien sí estrena esta línea es el sondeo del estado del pedido, y lo que
+        // de verdad necesita es la SEGUNDA cabecera: al agotarse el cupo, el
+        // fetch() lee el Retry-After del 429 y pinta cuántos segundos faltan. Sin
+        // exponerlo, el navegador deja ver el 429 y esconde el único dato que lo
+        // hace accionable.
         .WithExposedHeaders("Location", "Retry-After")
 
         // El preflight de un POST se repetiría en cada petición. Diez minutos es
@@ -173,6 +182,12 @@ builder.Services.AddCors(options =>
 
 const string CatalogReadPolicy = "catalog-read";
 const string OrdersWritePolicy = "orders-write";
+
+// 6.5. Hasta este punto había UNA política para todo /api/orders/*, así que leer el
+// estado de un pedido gastaba permisos del cupo de escritura — 6.4 lo midió (el 429
+// llega en la petición 11) y dejó la decisión aquí por escrito. La ruta se parte por
+// método en appsettings.json; esto es la mitad que le faltaba en código.
+const string OrdersReadPolicy = "orders-read";
 
 // Los cupos son configuración, no literales, por el motivo de 5.4: bajarlos con
 // RateLimiting__OrdersWrite__PermitLimit=3 es lo que permite provocar el 429 sin
@@ -219,6 +234,7 @@ static string ClientPartitionKey(HttpContext httpContext) =>
     httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
 var catalogReadQuota = ReadQuota(builder.Configuration, "CatalogRead");
+var ordersReadQuota = ReadQuota(builder.Configuration, "OrdersRead");
 var ordersWriteQuota = ReadQuota(builder.Configuration, "OrdersWrite");
 var globalQuota = ReadQuota(builder.Configuration, "Global");
 
@@ -233,11 +249,24 @@ builder.Services.AddRateLimiter(options =>
     // El roadmap pide 429 y 5.4 lo va a afirmar.
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 
-    // Dos políticas y no una: el límite protege el COSTE, no el número de
-    // peticiones. Un GET al catálogo lee una tabla; un POST /orders arranca la
+    // Tres políticas desde 6.5, y no una: el límite protege el COSTE, no el número
+    // de peticiones. Un GET al catálogo lee una tabla; un POST /orders arranca la
     // saga entera — cinco servicios, doce mensajes, cinco bases de datos.
+    //
+    // Las DOS de orders son el entregable de 6.5 en este archivo. Comparten prefijo
+    // público y se separan por método en appsettings.json, porque lo caro de
+    // /api/orders no es el prefijo: es crear un pedido. Consultar en qué va uno
+    // cuesta lo mismo que leer el catálogo, y de ahí que compartan número.
+    //
+    // Cada política es su propia partición, así que agotar una NO agota las otras.
+    // No es una suposición: ExhaustingTheReadQuota_DoesNotAffectTheWriteQuota lo
+    // afirma desde 5.4 para catalog/orders, y 6.5 lo repite para los dos de orders
+    // — que es lo único que hace comprobable que la partición de verdad se hizo.
     options.AddPolicy<string>(CatalogReadPolicy, httpContext =>
         FixedWindowFor(ClientPartitionKey(httpContext), catalogReadQuota));
+
+    options.AddPolicy<string>(OrdersReadPolicy, httpContext =>
+        FixedWindowFor(ClientPartitionKey(httpContext), ordersReadQuota));
 
     options.AddPolicy<string>(OrdersWritePolicy, httpContext =>
         FixedWindowFor(ClientPartitionKey(httpContext), ordersWriteQuota));

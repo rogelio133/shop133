@@ -18,13 +18,13 @@ Guía operativa de los seis proyectos de `tests/`. El *porqué* de cada decisió
 |---|---|---|---|
 | [`Shop133.ArchitectureTests`](Shop133.ArchitectureTests) | 17 | `Fast` | Las reglas de [CLAUDE.md](../CLAUDE.md) en forma ejecutable, leyendo los `.csproj` de `src/`. |
 | [`Shop133.TestUtilities`](Shop133.TestUtilities) | — | — | **No es una suite.** La biblioteca con `SqlServerContainerFixture`, que comparten las cuatro de servicio. |
-| [`Gateway/Shop133.Gateway.Tests`](Gateway/Shop133.Gateway.Tests) | 26 | `Fast` | El enrutado de `5.1` (9), el rate limiting de `5.2` (5), el CORS de `5.3` (9) y dos invariantes de `appsettings.json` que nada vigilaba (3). |
+| [`Gateway/Shop133.Gateway.Tests`](Gateway/Shop133.Gateway.Tests) | 29 | `Fast` | El enrutado de `5.1` (10), el rate limiting de `5.2` (7), el CORS de `5.3` (9) y dos invariantes de `appsettings.json` que nada vigilaba (3). `6.5` sumó tres al partir `orders-route` por método: la ruta de lectura, y los dos sentidos del corte entre su cupo y el de escritura. |
 | [`Services/Catalog/Catalog.Tests`](Services/Catalog/Catalog.Tests) | 38 | `Docker` | Los endpoints CRUD de `1.3`/`1.4` sobre SQL Server real, la paginación y el filtro de `6.2.1` (9), más `OrderCreatedPricingConsumer` (`4.8`). |
-| [`Services/Orders/Orders.Tests`](Services/Orders/Orders.Tests) | 35 | `Docker` **y** `Fast` | `POST /orders` y que se publica `OrderCreated` (13, `Docker`) · los escenarios de la saga (18, **`Fast`**) · la persistencia de la saga en `OrdersDb` (4, `Docker`). |
+| [`Services/Orders/Orders.Tests`](Services/Orders/Orders.Tests) | 41 | `Docker` **y** `Fast` | `POST /orders` y que se publica `OrderCreated` (13, `Docker`) · los escenarios de la saga (18, **`Fast`**) · la persistencia de la saga en `OrdersDb` (4, `Docker`) · `GET /orders/{id}/status`, el endpoint de `6.5` que junta el pedido con la fila de la saga (6, `Docker`). |
 | [`Services/Inventory/Inventory.Tests`](Services/Inventory/Inventory.Tests) | 15 | `Docker` | `OrderCreatedConsumer` (reserva, rechazos, atomicidad, idempotencia) y `ReleaseStockConsumer` (la compensación de `4.4`). |
 | [`Services/Payments/Payments.Tests`](Services/Payments/Payments.Tests) | 9 | `Docker` | `StockReservedConsumer`: cobro, rechazo por importe e idempotencia. |
 
-**140 tests**: 61 `Fast` y 79 `Docker`. El trait va en la clase, nunca en cada método.
+**149 tests**: 64 `Fast` y 85 `Docker`. El trait va en la clase, nunca en cada método.
 
 `Orders.Tests` es la única suite con las dos categorías, desde `4.7`: `OrderStateMachineTests` prueba un
 *proceso* con el repositorio de saga en memoria, así que no necesita base de datos. Y desde `5.4`,
@@ -48,7 +48,7 @@ petición no daba error, se quedaba colgada hasta que el test expiraba. `docker 
 prerrequisito.
 
 Desde `3.7`, `OrdersApiFactory` desmonta el bus de RabbitMQ y monta el harness en memoria, y las dos suites
-de consumers nunca lo usaron. **Comprobado con el broker parado: `Orders.Tests` pasaba 12/12** (hoy 25/25).
+de consumers nunca lo usaron. **Comprobado con el broker parado: `Orders.Tests` pasaba 12/12** (hoy 41/41).
 
 Lo que sí sigue haciendo falta es **Docker**, para el SQL Server de Testcontainers. El harness quita el
 broker, no la base de datos — la regla 1 de la estrategia de tests prohíbe el provider InMemory de EF Core.
@@ -112,8 +112,13 @@ lleva la suya.** `Program.cs` lee sus claves y lanza *antes* de `app.Build()`, a
 
 ### Requisitos previos
 
-1. **Docker Desktop corriendo.** Las 70 pruebas `Docker` levantan su propio SQL Server en un puerto
-   aleatorio. Las 61 `Fast` no lo necesitan.
+1. **Docker Desktop corriendo.** Las 85 pruebas `Docker` levantan su propio SQL Server en un puerto
+   aleatorio. Las 64 `Fast` no lo necesitan.
+
+   > **CORRECCIÓN de `6.5`:** aquí ponía *"las 70 pruebas `Docker`"* cuando la tabla de arriba ya
+   > decía 79, y unas líneas más arriba se leía *"hoy 25/25"* para `Orders.Tests` con la tabla en 35.
+   > Las dos cifras se quedaron atrás en algún punto anterior. Se arreglan aquí y se dice, en vez de
+   > cambiarlas en silencio — mismo criterio con el que `5.4` corrigió el total de este archivo.
 2. **La imagen `mcr.microsoft.com/mssql/server:2022-latest`.** Es la misma etiqueta que
    `docker-compose.yml`, así que normalmente ya está descargada; la primera vez son ~1,5 GB.
 3. RabbitMQ **no** hace falta. Ver el aviso de arriba.
@@ -127,9 +132,9 @@ dotnet build
 # 2. Ejecutar. Cada proyecto de test es su propio ejecutable (regla 5b de CLAUDE.md),
 #    pero conviene lanzarlo por el .dll — ver el primer aviso de abajo.
 dotnet tests\Shop133.ArchitectureTests\bin\Debug\net10.0\Shop133.ArchitectureTests.dll   # 17, sin Docker
-dotnet tests\Gateway\Shop133.Gateway.Tests\bin\Debug\net10.0\Shop133.Gateway.Tests.dll   # 26, sin Docker, ~1 s
-dotnet tests\Services\Catalog\Catalog.Tests\bin\Debug\net10.0\Catalog.Tests.dll          # 38, ~181 s
-dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll             # 35, ~81 s
+dotnet tests\Gateway\Shop133.Gateway.Tests\bin\Debug\net10.0\Shop133.Gateway.Tests.dll   # 29, sin Docker, ~1 s
+dotnet tests\Services\Catalog\Catalog.Tests\bin\Debug\net10.0\Catalog.Tests.dll          # 38, ~193 s
+dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll             # 41, ~111 s
 dotnet tests\Services\Inventory\Inventory.Tests\bin\Debug\net10.0\Inventory.Tests.dll    # 15, ~98 s
 dotnet tests\Services\Payments\Payments.Tests\bin\Debug\net10.0\Payments.Tests.dll       #  9, ~63 s
 

@@ -128,6 +128,53 @@ public sealed class GatewayRateLimitingTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task ExhaustingTheOrdersReadQuota_DoesNotAffectTheWriteQuota()
+    {
+        // 6.5. El test que hace comprobable que partir orders-route en dos sirvió de
+        // algo: son DOS cubos, no uno con dos nombres.
+        //
+        // Antes de este punto había una sola ruta para /api/orders/*, así que este
+        // escenario ni siquiera se podía escribir — las dos peticiones gastaban del
+        // mismo cupo de escritura y la segunda habría dado 429. 6.4 lo midió y lo
+        // dejó anotado: "o el sondeo es mucho más lento, o orders-route se parte".
+        //
+        // Es el hermano literal del test de arriba, y esa simetría es el punto:
+        // aquél separa catalog de orders (prefijos distintos), éste separa lectura de
+        // escritura DENTRO del mismo prefijo, que es lo que solo se puede hacer con
+        // el Match.Methods de 6.5.
+        var client = ClientWith(("RateLimiting:OrdersRead:PermitLimit", "1"));
+
+        await client.GetAsync($"/api/orders/{Guid.NewGuid()}/status", TestContext.Current.CancellationToken);
+        var readRejected = await client.GetAsync(
+            $"/api/orders/{Guid.NewGuid()}/status", TestContext.Current.CancellationToken);
+        var write = await PostOrderAsync(client);
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, readRejected.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, write.StatusCode);
+    }
+
+    [Fact]
+    public async Task ExhaustingTheOrdersWriteQuota_DoesNotBlockReadingAnOrder()
+    {
+        // 6.5, y es la mitad que de verdad le importa a la página de estado: el otro
+        // sentido del mismo corte.
+        //
+        // Con el cupo de escritura agotado —diez pedidos en un minuto, que es un
+        // número alcanzable— la página del pedido que YA se creó tiene que seguir
+        // pudiendo sondearse. Sin la ruta partida, tramitar varios pedidos seguidos
+        // dejaba a su propia página de seguimiento sin cupo para mirarlos.
+        var client = ClientWith(("RateLimiting:OrdersWrite:PermitLimit", "1"));
+
+        await PostOrderAsync(client);
+        var writeRejected = await PostOrderAsync(client);
+        var read = await client.GetAsync(
+            $"/api/orders/{Guid.NewGuid()}/status", TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, writeRejected.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, read.StatusCode);
+    }
+
+    [Fact]
     public async Task GlobalLimiter_AppliesToRequestsWithoutARoute()
     {
         // La red de seguridad que 5.2 añadió sin que el título la pidiera: una ruta

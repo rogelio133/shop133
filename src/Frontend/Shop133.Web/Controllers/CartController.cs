@@ -156,23 +156,16 @@ public sealed class CartController(
     }
 
     /// <summary>
-    /// El aviso de que el Gateway no contesta. Es una **copia casi literal** del
-    /// <c>Unavailable(...)</c> privado de <c>CatalogController</c>, y se queda copiada: son dos
-    /// ocurrencias, y en este proyecto *dos copias no son un patron* (precedente de 2.4 con
-    /// <c>SqlServerContainerFixture</c>, que espero a tener cuatro antes de extraerse). Lo que si
-    /// se comparte ya es la VISTA, que 6.3 movio a <c>Views/Shared/</c> precisamente por esto.
+    /// El aviso de que el Gateway no contesta.
     ///
-    /// El codigo de estado se conserva porque es lo unico que hace la rama comprobable desde la
-    /// linea de comandos — decision 3 de 6.2, que no se revierte.
+    /// Esto era una **copia casi literal** del <c>Unavailable(...)</c> de <c>CatalogController</c>,
+    /// y su comentario decia que se quedaba copiada porque *dos copias no son un patron*
+    /// (precedente de 2.4 con <c>SqlServerContainerFixture</c>, que espero a tener cuatro antes de
+    /// extraerse). **6.5 trajo la cuarta y el cuerpo se fue a
+    /// <see cref="GatewayFailureExtensions"/>**, que es lo que aquel precedente mandaba hacer. La
+    /// prediccion se cumplio literalmente: las tres copias solo se diferenciaban en el texto del
+    /// log, que es lo unico que sigue estando aqui.
     /// </summary>
-    private IActionResult Unavailable(GatewayUnavailableException exception)
-    {
-        logger.LogWarning(exception, "No se pudo añadir al carrito.");
-
-        Response.StatusCode = exception.IsRateLimited
-            ? StatusCodes.Status429TooManyRequests
-            : StatusCodes.Status503ServiceUnavailable;
-
-        return View("Unavailable", exception);
-    }
+    private IActionResult Unavailable(GatewayUnavailableException exception) =>
+        this.GatewayUnavailable(exception, logger, "No se pudo añadir al carrito.");
 }

@@ -61,5 +61,6 @@ Documentos de procedimiento, no ligados a un punto del roadmap. No siguen la con
 | 6.2.1 | Catalog.API estrena parámetros de consulta: paginación, filtro y recuento | 2026-09-11 | [fase_6_2_1.md](fase_6_2_1.md) |
 | 6.3 | Carrito de compras en sesión de servidor, no en cookie | 2026-09-11 | [fase_6_3.md](fase_6_3.md) |
 | 6.4 | Formulario de checkout con validación client-side | 2026-09-20 | [fase_6_4.md](fase_6_4.md) |
+| 6.5 | Página de estado del pedido con sondeo | 2026-09-23 | [fase_6_5.md](fase_6_5.md) |
 
 El punto **0.1** (crear solución y estructura de carpetas) se completó antes de que existiera esta convención y no se documentó retroactivamente.

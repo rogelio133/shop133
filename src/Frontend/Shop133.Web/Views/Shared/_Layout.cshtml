@@ -67,10 +67,16 @@
                                 <span>Carrito</span>@await Component.InvokeAsync("CartBadge")
                             </a>
                         </li>
-                        @* Este sigue sin href a proposito: el controller que lo sirve todavia no
-                           existe, y un enlace muerto seria una promesa a medias. Lo activa 6.5. *@
+                        @* 6.5 activo este, y con el se acaba la fila de items deshabilitados que
+                           6.1 dejo puesta a proposito: el navbar ya no promete nada que no exista.
+
+                           Lleva al Index —la lista de pedidos de esta sesion— y no a un pedido
+                           concreto, porque el layout se pinta en TODAS las paginas y desde el
+                           catalogo no hay ningun pedido al que apuntar. *@
                         <li class="nav-item">
-                            <a class="nav-link disabled" aria-disabled="true">Estado del pedido</a>
+                            <a class="nav-link @(currentController == "Orders" ? "active" : null)"
+                               aria-current="@(currentController == "Orders" ? "page" : null)"
+                               asp-controller="Orders" asp-action="Index">Estado del pedido</a>
                         </li>
                     </ul>
                 </div>

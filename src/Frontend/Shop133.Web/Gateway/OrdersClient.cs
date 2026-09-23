@@ -29,7 +29,22 @@ public sealed class OrdersClient(HttpClient httpClient, ILogger<OrdersClient> lo
     /// entera —cinco servicios, doce mensajes, cinco bases de datos—. Ver
     /// <see cref="GatewayUnavailableException.Quota"/>.
     /// </summary>
-    private const string Quota = "la creación de pedidos a 10 por minuto y por IP";
+    private const string WriteQuota = "la creación de pedidos a 10 por minuto y por IP";
+
+    /// <summary>
+    /// El otro cupo que este cliente puede agotar desde 6.5, y el motivo de que
+    /// <see cref="GatewayUnavailableException.Quota"/> exista.
+    ///
+    /// Hasta este punto <c>/api/orders/*</c> era UNA sola ruta con UN solo cupo, asi que leer el
+    /// estado de un pedido gastaba permisos de crearlo: 6.4 lo midio (el 429 llega en la peticion
+    /// 11) y dejo escrito que o el sondeo iba mucho mas lento, o la ruta se partia. Se partio, por
+    /// metodo, en 6.5.
+    ///
+    /// **Y con eso este cliente pasa a poder agotar dos cupos distintos**, que es la situacion que
+    /// en 6.4 obligo a sacar la cifra del texto de la vista: una sola frase para los dos le daria
+    /// al usuario un numero falso en la mitad de los casos. La eleccion la hace cada metodo.
+    /// </summary>
+    private const string ReadQuota = "la consulta de pedidos a 60 por minuto y por IP";
 
     /// <summary>
     /// Manda el pedido y devuelve lo que contesto el 201.
@@ -94,7 +109,7 @@ public sealed class OrdersClient(HttpClient httpClient, ILogger<OrdersClient> lo
                 $"El Gateway contesto {(int)response.StatusCode} al crear el pedido.",
                 (int)response.StatusCode,
                 retryAfter,
-                Quota);
+                WriteQuota);
         }
 
         // Un 2xx con un cuerpo ilegible es un fallo de la dependencia, no del cuerpo que se mando:
@@ -103,6 +118,75 @@ public sealed class OrdersClient(HttpClient httpClient, ILogger<OrdersClient> lo
         return await response.Content.ReadFromJsonAsync<PlacedOrder>(cancellationToken)
             ?? throw new GatewayUnavailableException(
                 "El Gateway contesto al alta del pedido con un cuerpo vacio.");
+    }
+
+    /// <summary>
+    /// El estado de un pedido, para la pagina de 6.5. **La primera LECTURA que sale de este
+    /// cliente**: hasta ahora solo escribia.
+    ///
+    /// **Devuelve <c>null</c> en un 404 en vez de lanzar**, copiando la forma de
+    /// <c>CatalogClient.FindProductOrNullAsync</c>: un id que no existe es una respuesta
+    /// documentada del servicio, no un fallo suyo, y pintar "la tienda no esta disponible" por un
+    /// pedido inexistente seria acusar al Gateway de algo que no ha hecho. El 404 se comprueba
+    /// ANTES que <c>IsSuccessStatusCode</c> por ese mismo motivo.
+    ///
+    /// Lo llama el render del servidor una vez por visita. El sondeo del navegador NO pasa por
+    /// aqui: va directo al Gateway con <c>fetch</c>, que es lo que hace que cada visitante cuente
+    /// como su propia IP para el cupo de 5.2 en vez de sumar todos a la del servidor. Ver
+    /// <c>wwwroot/js/order-status.js</c>.
+    /// </summary>
+    public async Task<OrderStatus?> GetStatusAsync(Guid orderId, CancellationToken cancellationToken)
+    {
+        HttpResponseMessage response;
+
+        // La ruta es relativa y SIN barra inicial, como todas: la BaseAddress acaba en "/api/" y
+        // con "/orders/..." el tipo Uri se comeria ese prefijo en silencio.
+        var path = $"orders/{orderId}/status";
+
+        try
+        {
+            response = await httpClient.GetAsync(path, cancellationToken);
+        }
+        catch (HttpRequestException exception)
+        {
+            logger.LogWarning(exception, "No se pudo conectar con el Gateway para leer el pedido.");
+
+            throw new GatewayUnavailableException(
+                "No se pudo conectar con el Gateway para leer el pedido.", innerException: exception);
+        }
+        catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            // El filtro separa un TIMEOUT de alguien que cerro la pestana. Aqui pesa menos que en
+            // el alta —no hay nada escrito que pueda quedar huerfano— pero sin el, cerrar la
+            // pagina de seguimiento quedaria registrado como una caida del Gateway.
+            logger.LogWarning(exception, "El Gateway agoto el tiempo de espera al leer el pedido.");
+
+            throw new GatewayUnavailableException(
+                "El Gateway agoto el tiempo de espera al leer el pedido.", innerException: exception);
+        }
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var retryAfter = response.Headers.RetryAfter?.Delta;
+
+            logger.LogWarning(
+                "El Gateway contesto {StatusCode} al leer el pedido.", (int)response.StatusCode);
+
+            throw new GatewayUnavailableException(
+                $"El Gateway contesto {(int)response.StatusCode} al leer el pedido.",
+                (int)response.StatusCode,
+                retryAfter,
+                ReadQuota);
+        }
+
+        return await response.Content.ReadFromJsonAsync<OrderStatus>(cancellationToken)
+            ?? throw new GatewayUnavailableException(
+                "El Gateway contesto al estado del pedido con un cuerpo vacio.");
     }
 
     /// <summary>
