@@ -1,0 +1,95 @@
+@model CheckoutViewModel
+@{
+    ViewData["Title"] = "Tramitar pedido";
+}
+
+<h1 class="h3 mb-3">Tramitar pedido</h1>
+
+<div class="row g-4">
+    <div class="col-12 col-lg-7">
+        @* PRIMERA vista del proyecto con asp-for / asp-validation-for / asp-validation-summary.
+           Hasta 6.3 todos los formularios eran <input name="..."> a pelo, porque mandaban ids y
+           cantidades que no necesitaban mensajes. *@
+        <form asp-action="Index" method="post" novalidate>
+            @* ModelOnly y no All: los errores de CAMPO ya salen junto a su campo, y repetirlos
+               arriba haria leer lo mismo dos veces. Este resumen queda reservado para los errores
+               que no son de ningun campo — que hoy son exactamente los del 400 de Orders, que el
+               controller anade con clave vacia. Ese emparejamiento es lo que hace VISIBLE la rama
+               de OrderRejectedException; con "None" el pedido se rechazaria en silencio. *@
+            <div asp-validation-summary="ModelOnly" class="alert alert-danger" role="alert"></div>
+
+            <div class="mb-3">
+                <label asp-for="CustomerEmail" class="form-label"></label>
+                @* type="email" lo pone el tag helper solo, leyendo el [EmailAddress]. El
+                   novalidate del <form> apaga la validacion NATIVA del navegador para que la que
+                   se vea sea la de jquery-validation: si no, salen las dos, con dos estilos y dos
+                   idiomas segun el navegador. *@
+                <input asp-for="CustomerEmail" class="form-control"
+                       autocomplete="email" placeholder="tu@correo.es" />
+                <span asp-validation-for="CustomerEmail" class="text-danger small"></span>
+                <div class="form-text">
+                    Aquí es donde te avisaremos de si el pedido se confirma o se cancela.
+                </div>
+            </div>
+
+            <button type="submit" class="btn btn-primary btn-lg">Confirmar pedido</button>
+            <a class="btn btn-link" asp-controller="Cart" asp-action="Index">Volver al carrito</a>
+        </form>
+    </div>
+
+    <div class="col-12 col-lg-5">
+        @* El resumen es de SOLO LECTURA: las cantidades se cambian en /cart. Un checkout que deja
+           editar el pedido es otra pagina de carrito con otro nombre, y duplicaria los cuatro
+           formularios de 6.3 con sus topes y sus avisos. *@
+        <div class="card">
+            <div class="card-header">
+                Resumen —
+                @Model.UnitCount artículo@(Model.UnitCount == 1 ? "" : "s")
+                en @Model.Lines.Count línea@(Model.Lines.Count == 1 ? "" : "s")
+            </div>
+            <ul class="list-group list-group-flush">
+                @foreach (var line in Model.Lines)
+                {
+                    <li class="list-group-item d-flex justify-content-between gap-3">
+                        <div>
+                            <div>@line.ProductName</div>
+                            <div class="small text-body-secondary font-monospace">@line.ProductSku</div>
+                            <div class="small text-body-secondary">
+                                @line.Quantity × @Money.Format(line.UnitPrice)
+                            </div>
+                        </div>
+                        <div class="text-end fw-semibold">@Money.Format(line.Subtotal)</div>
+                    </li>
+                }
+                <li class="list-group-item d-flex justify-content-between">
+                    <span class="fw-semibold">Total</span>
+                    <span class="fs-5 fw-semibold">@Money.Format(Model.Total)</span>
+                </li>
+            </ul>
+        </div>
+
+        @* La misma nota que /cart, y por el mismo motivo: la arquitectura dicha en la interfaz en
+           vez de escondida. Aqui gana peso porque es el ultimo momento antes de que la foto salga
+           hacia Catalog, que es quien la valida en 4.8. *@
+        <p class="small text-body-secondary border-start border-3 ps-3 mt-3">
+            Los precios de arriba son los que tenía el catálogo cuando añadiste cada producto, y son
+            los que viajan con el pedido. Catalog los vuelve a comprobar: si alguno cambió hace más
+            de media hora, el pedido se cancelará solo y el stock reservado se devolverá sin que
+            nadie intervenga. Tampoco se comprueba el stock aquí — eso lo decide Inventory después,
+            y también puede cancelar el pedido.
+        </p>
+    </div>
+</div>
+
+@* ESTA LINEA ES LA MITAD "validacion client-side" DEL TITULO DE 6.4, y es la que falla en
+   silencio: sin ella la pagina funciona igual —el servidor valida lo mismo y devuelve los mismos
+   mensajes— y la unica diferencia es una ida y vuelta al servidor por cada correo mal escrito.
+   No hay error, no hay aviso, y en una pantalla no se distingue. La forma de comprobarlo es mirar
+   si el HTML servido trae data-val="true" y si el navegador llega a mandar la peticion.
+
+   Los dos scripts estan vendorizados en wwwroot/lib desde 0.1 (jquery-validation 1.21.0 y
+   unobtrusive 4.0.0), y jquery ya lo carga _Layout.cshtml antes de esta seccion. Por eso 6.4 no
+   anade ni un paquete: el .csproj sigue con cero PackageReference. *@
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+}

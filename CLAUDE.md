@@ -312,6 +312,112 @@ Three things that cost time. **`Ignore` takes the event, not a lambda** — `Eve
 
 **The Gateway has no container and no `MapGet("/")`.** Only `catalog-api` is containerised, so from inside Docker the Gateway would reach one of its two destinations; it runs from the IDE on **5104**. The template's root endpoint is deleted — the Gateway owns only `/api/*`, a 404 at the root is correct, and the liveness probe is `8.4`'s `/health`. `launchBrowser` therefore drops to `false` like the five services.
 
+**`6.2` is done — the frontend makes its first HTTP call ever, and rule 3 stops being satisfied by absence** — see [docs/fase_6_2.md](docs/fase_6_2.md). `Shop133.Web` gains `Gateway/` (typed `CatalogClient` + two wire DTOs + `GatewayUnavailableException`), `CatalogController` with `Index`/`Details`, four views, two view models and **51 generated product images**. **No package enters** — `Microsoft.Extensions.Http` is in the shared framework (verified in the `Microsoft.AspNetCore.App.Ref/10.0.11` pack), so `AddHttpClient<T>` comes with the Web SDK and the `.csproj` **still has zero `PackageReference` and zero `ProjectReference`**. The architecture suite stays at **17** and the repo at **131** (precedent of `3.3`/`3.5`/`4.5`/`5.2`/`6.1`).
+
+**Until today rule 3 held because the frontend called nobody; from today it holds because it calls only the Gateway** — in all of `Shop133.Web` no service port appears, only `Gateway:BaseUrl`. **The outbound folder is named `Gateway/`, not `Services/`**, deliberately: `Services/` is the word rule 3 forbids the frontend to know, it invites a sibling client pointed at `:5124`, and the test guarding this project is literally called `Frontend_DoesNotReference_ServicesOrGateway`. The config section is `Gateway` for the same reason — `Services:` is a *plural* section whose next key is `Services:CatalogBaseUrl`, i.e. rule 3 broken by autocomplete. **It is guarded** (present + absolute URI), because the tempting `?? ""` form is the dangerous one: `BaseAddress` stays null, every request goes relative, and **every page reports "the Gateway is down" pointing at a process that is perfectly alive.**
+
+**Three decisions the title does not suggest.** The failure renders a dedicated view with **`503`, not `2.3`'s `502`** — there Orders was an *intermediary* inside the same request, which is what 502 describes, while `Shop133.Web` proxies nothing and simply cannot *build its page*; keeping 2.3's conclusion without its premise is what `6.1` d7 refused. The base URL is **`127.0.0.1`, not `localhost`**: 2.3 measured 4.13 s for a refused connection on `localhost` (it resolves to `::1` **and** `127.0.0.1`) versus 2.03 s on the literal, and with the 5 s timeout that is 83 % of the failure budget in front of a person — **measured here: `/catalog` with the Gateway stopped answers `503` in 2.16 s**. And the **`429` gets its own branch**, the first thing in the project to show `5.2`'s rate limiter to a human.
+
+**The cost is documented rather than engineered around.** `GET /products` takes **no query parameter at all**, so every render fetches the whole catalogue and discards 40 rows to show 10 — the frontend filters because the API cannot, which is right at 50 rows and wrong at 500, and the fix is a Phase 1 item nobody owns. Two calls per render against the 60/60 s `catalog-read` quota, with **every visitor counting as one IP** because the MVC renders server-side, gives ~30 page views/minute — **measured: the first `429` landed on render #30, exactly**. *Rejected* deriving the chips from the products themselves (they carry `categoryId` + `categoryName`), which halves the quota cost but leaves `GET /categories` with no consumer in the whole system, in the very item its `///` was written for.
+
+**Three things that cost time.** **`MapStaticAssets()` serves from a BUILD-TIME manifest, not the filesystem** — a file dropped into `wwwroot/` after compiling has no endpoint and returns **404**, unlike the old `UseStaticFiles()`; generate images, refresh, and you debug 51 correct paths. The fix is `dotnet build` (the manifest ends with 102 endpoints for 51 files — plain + fingerprinted each, which is what confirms the non-fingerprinted path the API hands out is served). **`3.7`'s `dotnet <dll>` remedy for Smart App Control changes the content root**: `WebApplication.CreateBuilder` takes it from the *current directory*, so launching from the repo root makes `appsettings.json` vanish and the Gateway dies on its own `ReverseProxy:Routes` guard with the config perfectly present — launch from the **project folder**. And **a service whose stdout is redirected to a file can stall**, with the symptom `Empty reply from server` and no error anywhere: `Catalog.API` accepted connections and closed them without answering, the log frozen at 4652 bytes with the process at 0 % CPU and `Responding` true — blocked writing to a pipe nobody drains (MassTransit's telemetry dumps large stack traces). The same code in its container answered 200.
+
+**Two PowerShell traps, both of which produce false negatives that look like real failures.** `curl.exe` returns an **array of lines**, not a string, so `$html.Contains("card-img-top")` compares *per element* and says `False` with the marker plainly present — a whole batch of marker checks came back "ausente" while `[regex]::Matches` on the same variable found 50 hits (it coerces the array). Join with `-join "`n"` before comparing. And **`$home` is read-only in PowerShell**: assigning to it fails with `Cannot overwrite variable HOME`, the assignment never happens, and the check behind it reports a false absence against an empty variable.
+
+**`6.3` is done — the cart lives in the server session, and that is what puts the price snapshot back on the server's side of the wire** — see [docs/fase_6_3.md](docs/fase_6_3.md). `Shop133.Web` gains `Cart/` (`ShoppingCart`, `CartLine`, `CartStore`, `CartNotice`), `CartController`, `Views/Cart/Index.cshtml` and a `CartBadgeViewComponent`; the navbar's *Carrito* item and `Details.cshtml`'s *Añadir al carrito* button — both deliberately dead since `6.1`/`6.2` — go live. **No package enters**: `Microsoft.AspNetCore.Session.dll` and `Microsoft.Extensions.Caching.Memory.dll` are in the shared framework ref pack, so the `.csproj` **still has zero `PackageReference` and zero `ProjectReference`** and `6.6` is still the item that ends that. The architecture suite stays at **17** and the repo at **140** (precedent of `3.3`/`3.5`/`4.5`/`5.2`/`6.2`). **No service, no Gateway, no contract and no migration was touched.**
+
+**The whole item is one property, and it was measured rather than asserted: the `.Shop133.Session` cookie is 190 opaque characters and the price `249` does not appear in it once.** The add form posts **only** `productId` + `quantity`; `CartController.Add` re-reads sku, name and price from Catalog through the Gateway (`CatalogClient.FindProductOrNullAsync`, unchanged since `6.2`) and freezes them server-side. A hidden `unitPrice` input would have been cheaper by one Gateway call per add — and would hand the browser back authority over the order's amount, which is what `3.3` opened and what this item exists to close. Third layer of decision 2b of `3.3`: **`6.3`/`8.1` decide *who* may send the snapshot, `4.8` decides whether the snapshot is true.** The cost is stated, not hidden: **one Gateway call per "add"** against `5.2`'s 60/60 s `catalog-read` quota, with every visitor counting as one IP.
+
+**The cart is a PHOTOGRAPH: `/cart` re-reads no price, and the two numbers that prove it come from the same pair of commands.** With the Gateway stopped, `/catalog` takes **2.06 s** to give up with a 503 (the `127.0.0.1` refusal `2.3` measured at 2.03 s) and `/cart` answers **200 in 4.5 ms** with its lines and total intact. *Rejected* revalidating line by line: one Gateway call **per line per render**, and the price changing under the buyer's feet. **The limitation has an owner and is said aloud on the page itself**: a line added more than 30 minutes ago falls outside `4.8`'s `PricingSnapshotWindowMinutes`, so the order will cancel itself in `6.4`/`6.5` — which is exactly what those items exist to teach. `IdleTimeout` is written explicitly at 20 min **and does not bound that**: every request resets it, so an active cart can hold an hours-old line.
+
+**Adding the same product twice SUMS and keeps the FIRST price.** Summing mirrors what `OrdersController` does before constructing the `Order`, and is not a convenience: `Order`'s constructor has forbidden two lines with the same `ProductId` since `2.1`, so a cart that kept them separate would produce a `400` in `6.4`. Keeping the older price is the deliberate half — a line's price freezes once, and whether that photograph still counts is `4.8`'s call, not this method's. **`ShoppingCart` duplicates the API's two limits by hand** (50 distinct lines, 1..10 000 per line) rather than importing them: importing needs a `ProjectReference` to `Orders.API`, i.e. rule 3 broken with `Frontend_DoesNotReference_ServicesOrGateway` going red. Same precedent as `OrderItem.ProductSkuMaxLength`, and they are allowed to diverge. Exceeding a limit **returns a reason, never throws** (precedent `StockItem.CanReserve`).
+
+**`[AutoValidateAntiforgeryToken]` goes on the CLASS, and `CartStore` is the only file that touches `ISession`.** The per-action attribute is a list someone must remember to extend — a new action that forgets it is unprotected with no warning; the automatic one makes protection the default. Measured: a POST with no token is **400** and the cart is untouched. `CartStore`'s exclusivity is the same reasoning one level up: "in the server session, not in a cookie" only holds while exactly one file could break it. **The badge is a view component**, not `Context.Session` in the layout and not `ViewData` filled by a base controller — both of those fail *silently* (a controller that forgets shows an empty badge over a full cart).
+
+**`Views/Catalog/Unavailable.cshtml` moved to `Views/Shared/`** because `CartController.Add` can also lose the Gateway. The status code did **not** move — each controller still sets 503/429 before returning it, since that is the only thing that makes the branch checkable from the command line (decision 3 of `6.2`, not reversed). Its *Reintentar* stays `asp-action="Index"` with no controller, so it resolves against the current one — and from the cart that target **works even with the Gateway down**. The private `Unavailable(...)` helper is duplicated and stays duplicated: *two copies are not a pattern* (`2.4`).
+
+**Three things that cost time.** **Razor treats an `@` between word characters as an email's `@`**, so `Carrito@await Component.InvokeAsync("CartBadge")` inside the navbar's `<a>` printed the expression **literally into the HTML** — clean build, zero warnings, zero runtime errors; the fix is to close a tag first so the `@` follows a `>`. **A running service locks its own `.exe`** and the build dies with `MSB3027` — `4.9`'s trap, hit twice here; stop the process, rebuild, relaunch, and read the build result before the test result. And **restarting the frontend empties every cart**, which is decision 1 working rather than a bug, but turns every recompile into a re-verification.
+
+**The user-visible strings in `Shop133.Web`'s `.cs` files need accents even though its comments do not.** `6.2` established accent-free comments there, and the habit leaked into `ShoppingCart`'s rejection texts (*"No se pueden pedir mas de…"*) — caught by reading real `curl` output, not by the compiler. In the same place a bare `:N0` had slipped in, which is exactly the ambient-culture trap `Money` exists to prevent, so **`Money` now exposes its `Culture`** rather than a second one being declared elsewhere: `6.3` brought the first UI number that is not money.
+
+**What `6.3` leaves open and nobody owns: nothing watches that the cart stays on the server.** Adding an `<input type="hidden" name="unitPrice">` to the details form tomorrow would undo the entire item and **no test would notice** — same shape as rule 2, which is not executable either. Also not measured: the **50-line cap**, unreachable because the seed has exactly 50 products, so a full cart has no *new* product left to add.
+
+**`6.4` is done — the frontend makes its first POST ever and the saga finally starts from a browser form** — see [docs/fase_6_4.md](docs/fase_6_4.md). `Shop133.Web` gains `Gateway/OrdersClient` (+ `NewOrder`, `NewOrderLine`, `PlacedOrder`, `OrderRejectedException`), `CheckoutController`, two view models and two views; the cart's *Tramitar pedido* button — `disabled` since `6.3` — goes live. **No package enters**: jquery-validation 1.21.0 and unobtrusive 4.0.0 have been vendored since `0.1` and `_ValidationScriptsPartial.cshtml` existed with **no view using it**, so the `.csproj` still has zero `PackageReference`/`ProjectReference` and `6.6` is still the item that ends that. The architecture suite stays at **17** and the repo at **140**. **No service, no Gateway, no contract and no migration was touched.**
+
+**Measured, and it is the point: a 2-mug order ends `Confirmed`, and a `1197.00` one ends `Cancelled` returning its 3 units (`61/0` before and after) with the reason in Notifications' email** — the whole five-service saga fired from a `<form>` for the first time.
+
+**The form has ONE editable field, and that scarcity is the decision.** `CreateOrderRequest` is `CustomerEmail` + `Items`, so a shipping address would mean either discarding what the user typed or touching Orders' contract, entity and a migration — a roadmap item inside a frontend one, which is what `6.2` already refused. What the title does not suggest is the **new 400 branch**: until today any non-2xx became `GatewayUnavailableException`, and for a POST that is false — the Gateway answered and it is the *body* that is wrong. `OrderRejectedException` separates it (checked **before** `IsSuccessStatusCode`, precedent `FindProductOrNullAsync`'s 404), throws rather than returning a reason because the user only types an email so a 400 means **the cart built a body the API refuses**, and drops the `ValidationProblemDetails` **keys** (they name Orders' DTO fields) while keeping the texts, which land in `asp-validation-summary="ModelOnly"` with an empty key. Exercised by diverging the duplicated length constant on purpose — and the message comes back **in English**, because it is Orders' and nobody translated it there.
+
+**The order id comes from the 201's BODY, not `Location`** — that header still points at `http://localhost:5189/orders/{id}` without the prefix. `6.3` warned it stopped being theoretical here; it is re-measured, deliberately **not** fixed (the real fix is a YARP response transform, i.e. Phase 5 code with its own tests) and **still ownerless**, now with a real consumer in front of it.
+
+**Two corrections the second caller uncovered.** `Program.cs` carried a comment describing a 5 s `client.Timeout` — and telling `6.6` to re-read that line — **over a line that was never written**: the real value was the factory default of **100 s**. And `Views/Shared/Unavailable.cshtml` announced *"60 por minuto"* in its 429 branch, which is `catalog-read`; checkout goes through `orders-write`, which is **ten**, so that page handed the user a false figure the moment a second route existed. `GatewayUnavailableException` gains a `Quota` string supplied by whichever client ran out — **the configured default, not the live value**, since the Gateway tells nobody its quota (visible in the verification: with the limit lowered to 2 the page still says 10). Both written up as corrections, precedent 2b of `3.3`.
+
+**Measured and handed to `6.5` before it starts: `GET /orders/{id}` falls under `orders-route`, i.e. the SAME 10/60 s write quota as the POST** — the `429` lands on request 11. Polling every 2-3 s as the roadmap's simple option suggests would 429 about 25 seconds after the page opens, so either the poll is far slower or `orders-route` splits into two routes with two quotas — a Gateway change. **Decide it before writing the polling.**
+
+**Three things worth not rediscovering.** `TempData` **cannot serialize a `decimal`** (cookie provider takes string/int/bool/DateTime/Guid), and it blows up at runtime, so the confirmation's total is formatted with `Money.Format` *before* being stored; it also lasts exactly one request, so an F5 on the confirmation keeps the order number from the route and loses the rest — said on the page rather than papered over. The summary properties carry **`[BindNever]`** so a crafted POST cannot make the page echo figures the attacker wrote, and the price is that every path returning the view must **repopulate** them from the cart or the summary renders blank and looks like an emptied cart. And the `LogInformation` must go **before** `cart.Clear()` or it always reports zero lines.
+
+**The deliberate breakage worth carrying: removing `@section Scripts` leaves every `data-val-*` attribute in place.** The two `<script>` tags vanish and nothing else changes — the HTML *looks* validated and nothing reads it, with no error, no warning and no visible difference. That is what makes the positive check meaningful; `curl` cannot run the validation itself, and the doc says so rather than claiming it measured the browser.
+
+**Why the checkout does NOT warn about a stale price snapshot**, which `6.3` floated as possible work here: the frontend cannot know. `4.8`'s window does not measure the line's age but the time since the price **changed**, and `PreviousPrice`/`PriceChangedAt` are deliberately absent from `ProductResponse` so nobody can forge an authentic snapshot. Warning by age would condemn perfectly valid photographs.
+
+**`6.5` is done — the frontend stops being blind to the outcome, and the page shows TWO parallel tracks rather than a progress bar** — see [docs/fase_6_5.md](docs/fase_6_5.md). Orders.API gains `GET /orders/{id}/status`, the Gateway splits `orders-route` by method, and `Shop133.Web` gains its **first JavaScript ever**. **No package enters** — the poll is bare `fetch` — so the `.csproj` still has zero `PackageReference`/`ProjectReference` and `6.6` is still the item that ends that. The architecture suite stays at **17**; the repo goes 140 → **149** (Gateway 26 → 29, Orders 35 → 41).
+
+**The item collects the two debts the repo had written down for it, and one of them was the code contradicting itself.** The quota: `6.4` measured `GET /orders/{id}` falling in `orders-write` with the 429 at request 11, and left the call here. **Split by method** — `orders-write-route` (`POST`, still 10/60 s) and `orders-read-route` (`GET`, **60**/60 s, the same number as `catalog-read` because a read is a read). `Global` stays at 120, so `GlobalQuota_StaysAboveEveryRouteQuota` needs no change. **Measured: 15 consecutive GETs all 200, and the POST still 201.** The contradiction: `OrderStateMachine.Confirmed`'s `///` justified the terminal states not being `Finalize()` because *"6.5 querrá la fila"*, while `OrderStateConfiguration` claimed *"la página de 6.5 leerá `Orders`, no esto"*. **The first wins and the second is corrected** — same re-read with which `4.4` corrected `4.3` — because `Order.Status` is three values and offers no intermediate stage at all. It brings the missing datum with it: **the cancellation reason leaves the system over HTTP for the first time**, with no new column, since the `///` of `Order.Cancel()` had made one conditional on *"su caso de uso delante"* and the answer is that it is already persisted one `JOIN` away.
+
+**No progress bar, and that is the decision the roadmap's own title would have got wrong.** *Rejected* the linear three-step bar that title suggests: it is prettier and **false since `4.9`**, which put Catalog's price validation in parallel with the stock reservation. With one bar, an order in `PricingPendingPaymentCompleted` — charged, waiting on Catalog — would paint as confirmed an instant before cancelling. The two tracks are named after the services (*Precio (Catalog)*, *Stock y cobro (Inventory → Payments)*) and the **real saga state name** is shown beside them, so the screen can be crossed with `OrdersDb.OrderStates`, the queues and five services' logs. **Measured live: `PricingPendingStockReserved` shows up in the poll**, and a `1197.00` order passes through `CompensatingStock` with `status` still `Pending` — which is exactly why `isFinal` reads the ORDER's status and not the saga's — before ending `Cancelled` with its units back (`61/0` before and after).
+
+**The `fetch` leaves the BROWSER and goes straight to the Gateway.** *Rejected* polling an action of the frontend that would relay to the Gateway (no CORS, no mixed content): `Shop133.Web` renders server-side, so every visitor would be **one IP** for the rate limiter — `6.2` measured the first 429 at render 30. With the poll in the browser each visitor spends their own quota. And with it **CORS gets its first consumer ever**, which is literally what `5.3` said it existed for. The price, documented not measured: under the `https` profile a `fetch` to an `http` URL is **mixed content** and the browser blocks it with nothing but a console line — hence the optional `Gateway:PublicBaseUrl`, which falls back to `Gateway:BaseUrl` (a value with meaning, not the `?? ""` that `6.2` rejected).
+
+**The stage→UI map is DUPLICATED between `Models/OrderProgress.cs` and the `.js`, and nothing watches it.** Rejected having the server return rendered HTML each round: it would spend the same quota to send markup instead of six fields, and would force the poll back through `Shop133.Web`. If the two maps drift, the symptom is the page changing its own wording on the first poll. The state names are literals in both, because importing `OrderStateMachine` would break rule 3 at compile time — same case as `OrderItem.ProductSkuMaxLength`.
+
+**The fourth copy of `Unavailable(...)` arrived and was extracted**, exactly as `CheckoutController` had written (*"la cuarta decide"*, precedent `SqlServerContainerFixture` at four in `3.7`) — and the `diff` confirmed what that precedent asked to check: the three copies differed **only in the log text**. It is a `Controller` extension method, not a base class, so the four controllers keep their `sealed` and their primary constructors. The status code stays inside it (decision 3 of `6.2`, not reversed). Also: `RecentOrdersStore` is the **second** file to touch `ISession`, which re-reads rather than breaks `6.3`'s note — that rule defended the *price* not reaching the browser, and what sustains it is one owner **per stored thing**, not one file total. And the navbar **no longer has a single `nav-link disabled`**: `6.1`'s row of half-promises ends here.
+
+**Two environment findings, and the second corrects a margin.** `MSB3027` bit **twice** in this item, and the second time the build reported `2 Error(s)` with **not one `error CS` line** — all of them `apphost.exe` copy failures. And **the Gateway's cluster destinations use `localhost`**, so with Orders.API stopped the page takes **4.13 s** to give up (the dual-stack refusal `2.3` measured) versus **2.07 s** with the Gateway itself stopped (the frontend's `127.0.0.1` literal): the frontend's 5 s timeout has **0.87 s of margin** over a dead backend behind the Gateway, not the ~3 s that `6.2`'s measurement suggested.
+
+**What the item uncovers and does not fix: `Catalog.Tests` is red (2 of 38) and it predates this work.** `GetProductsRequest.DefaultPageSize` is **12** in `HEAD` while `ProductsEndpointsTests` asserts the **20** that `6.2.1` documented as the API's decision (against the frontend's 12 — *"dos decisiones de dos dueños"*). The test hardcodes 20 deliberately, so **the guard worked and the red was already there**, hidden by `Catalog.Tests`'s stale `bin/` (the `4.8` trap) until a full solution build surfaced it. Which number is right has to be decided — revert the constant, or update two tests and `6.2.1`'s document. **Ownerless.**
+
+**`6.2.1` is done — the deferred query parameters land at last and the frontend stops filtering in memory** — see [docs/fase_6_2_1.md](docs/fase_6_2_1.md). `GET /products` accepts `page`, `pageSize` and `categoryId` and answers a `PagedResponse<T>` envelope; `GET /categories` gains `ProductCount`. `Catalog.Tests` goes 29 → **38**, the repo 131 → **140**. **No package, no `.csproj`, no migration, nothing of `Shop133.Contracts` and not one line of the Gateway** (its route is a catch-all and the query string already travelled) — so the architecture suite stays at **17** (precedent of `3.3`/`3.5`/`4.5`/`5.2`).
+
+**It is a debt that was promised in writing at both ends and owned at neither.** `1.3` left `GET /products` unpaged conditionally — *"Entra si 6.2 la necesita"* — and `1.4` left the filter the same way — *"Entra ahí"*. `6.2` **needed it and decided not to add it** (*"tocar un servicio para servir a una vista es inventar alcance"*), leaving it in its *Pendiente* as *"un punto de la Fase 1 que nadie tiene asignado"*. Both were right separately; the joint result was ownerless. It is numbered `6.2.1` and **nothing is renumbered** — the numbers are the key between commit, roadmap and `docs/`.
+
+**The body is an envelope, and that is a breaking change paid today because tomorrow it would not be free.** *Rejected* an `X-Total-Count` header: a header **does not appear in the OpenAPI document** and is lost in any layer that does not propagate it — and there has been one in front of this service since `5.1`. `GET /products` has exactly **two** consumers, `Shop133.Web` and `Catalog.Tests`, and both are touched in this item; same reasoning with which `3.2` changed `StockReserved`.
+
+**Two things that cannot be skipped and fail in silence.** `[FromQuery]` on the DTO is **mandatory**: with `[ApiController]` a complex parameter is inferred as `[FromBody]`, so without it a `GET` with a query string arrives with the defaults — always page 1 of 20, no exception, no warning, request perfectly written. And the three parameters live in a `record` **because `[Range]` on a plain parameter produces no 400 at all**: `[ApiController]` returns 400 off an invalid `ModelState`, and an out-of-range primitive never dirties it, so `?page=0` would reach the `Skip` with a **negative** offset. *Rejected* clamping silently: a `?pageSize=100000` would answer 20 items without saying why.
+
+**A nonexistent `categoryId` is `200` with an empty page, not `400`** — the `POST` returns 400 because there that id **writes** a relation that must exist, while here it only **selects**, and "there is nothing" is a true answer. It is also what `6.2` had already decided from the client side. Measured consequence: zero items are **zero pages**, not one empty page, so the frontend's pager has nothing to draw instead of a lying "página 1 de 1".
+
+**The per-category count comes from a correlated subquery and counts the WHOLE catalogue**, not the page nor the filter — a category menu has to keep saying the same thing after one is picked. *Rejected* a `Category.Products` inverse navigation: the entity is two properties, and adding a collection to count would throw in a way to load ten products by accident. Side effect: **`CategoryResponse.From(Category)` is deleted** — with the count inside, the type can no longer be built from the entity alone, so the mapping moves into the query projection. `ProductResponse.From` stays.
+
+**`OrderBy` stops being cosmetic the moment there is a `Skip`**: without a deterministic order SQL Server can return the same row on two pages and skip another. The line did not change; its reason did.
+
+**The frontend clamps `page` to >= 1 BEFORE calling, and without that it would lie.** A `400` from the API would become `GatewayUnavailableException` and the page would say *"el Gateway no responde"* pointing at a perfectly alive process — the same confidently-wrong diagnosis decision 3 of `6.2` refused. Measured: `/catalog?page=0` answers `200`. The API talks to a program and tells it that it asked for something impossible; the frontend talks to a person who mistyped.
+
+**`PageSize` deliberately exists twice** — `GetProductsRequest.DefaultPageSize` (contract) and `CatalogClient.PageSize` (how many cards fit on a screen). Two decisions with two owners; that they both say 20 today is a coincidence, the same way Orders duplicates `Product`'s length constants.
+
+**The pager's exhausted ends are `<span>` without `href`, not `<a class="disabled">`.** Measured on the served HTML and corrected: Bootstrap 5 applies `pointer-events: none` to a disabled `.page-link`, so the mouse cannot reach it — **but the keyboard can**, and Tab + Enter would navigate to `?page=0`. Same shape `6.1` chose for the navbar's pending links. The first page carries **no** `?page=1`, and every pager link drags the `categoryId` (Razor omits a `null` attribute, so with no filter it never appears); the chips deliberately do **not** keep the page.
+
+**A third empty state, because the second would start lying.** With paging, `?page=99` leaves the page with no products *while having them*, and "no hay productos en esta categoría" would be false. `IsPastLastPage` distinguishes it. And **`CategoryFilterViewModel` is deleted**: it existed to carry a count computed in memory, and `CatalogCategory` (id + name + count) now *is* the chip. The `GroupBy` could not have stayed anyway — over a page of twenty it would count twenty.
+
+**Two deliberate breakages, and the first is the transferable one.** Integer division in `TotalPages` was caught by three tests, and the revealing one was `GetAll_FilteredByCategory` with **`Expected: 1, Actual: 0`** — ten products at `pageSize` 20 give **zero** pages, so a whole category would vanish from the pager. Computing the count over one page (`.Take(4)`) was caught by exactly the one test written for it.
+
+**Three environment findings.** **Edge headless clamps HEIGHT too, and there it does not crop — it writes no file at all**: `6.1` measured the ~500 px width clamp that crops; above ~1400 px tall `--screenshot` fails in silence and the only symptom is a `Get-Item: Cannot find path` ten lines later. **Razor encodes the accents of an `@(...)` expression into HTML entities and those of literal markup not** — the same sentence renders `página 99` and `una sola p&#xE1;gina`, so a `.Contains("página")` check passes in one and fails in the other. And **`Stop-Process` failed with `Access is denied` on services that were listed as alive but listening on nothing** — the check that counts is a `curl` against the port, not `Get-Process`.
+
+**Phase 6 is in progress on `feature/fase-6-frontend`. `6.1` is done — `Shop133.Web` stops being the `dotnet new mvc` scaffold** — see [docs/fase_6_1.md](docs/fase_6_1.md). It was the **last untouched project in `src/`**, intact since `0.1`. **No package enters** — Bootstrap **5.3.3** has been vendored in `wwwroot/lib/bootstrap/dist/` since `0.1` (MIT, full dist with the Popper bundle), alongside jQuery 3.7.1 and jquery-validation 1.21.0 — so `Shop133.Web.csproj` **still has zero `PackageReference` and zero `ProjectReference`** and was not touched. Eight files of `src/` change, all under `src/Frontend/`. The architecture suite stays at **17** and the repo at **131** (precedent of `3.3`/`3.5`/`4.5`/`5.2`: say so rather than invent a rule that never matches).
+
+**The navbar declares the links that do not exist yet as `disabled`, and that is a deliberate middle path between two precedents that point opposite ways.** `Catálogo` (`6.2`), `Carrito` (`6.3`) and `Estado del pedido` (`6.5`) carried `class="nav-link disabled"` + `aria-disabled="true"` and **no `href`** — **all three have since been activated by the items named, the last of them in `6.5`, so there is no longer a single `nav-link disabled` in the layout**. *Rejected* pointing them at controllers that do not exist (`5.1`'s **filter that never matches**, only returning 404 in the user's face) and *rejected* creating stub controllers (inventing the shape before the use case, which `1.1` and `2.1` both refused). It shows the whole map of the app without promising a destination — and the half-promise is visible as grey rather than as a 404.
+
+**The template speaks Bootstrap 4, and that is what "Bootstrap 5" in the title actually meant.** It shipped `navbar-light` (deprecated in 5.3), `navbar-toggleable-sm` (a class that **does not exist** in Bootstrap 5) and an `aria-controls="navbarSupportedContent"` pointing at **no element in the document**. The toggler now targets a real `id` (`#mainNav`) instead of the class selector `.navbar-collapse`, which works only while there is exactly one collapse on the page.
+
+**The measured finding, and it cost a mid-item rewrite: an element processed by a TAG HELPER renders WITHOUT the `b-<hash>` attribute of scoped CSS.** In the served HTML the three disabled `<a>` carry `b-aivb9iabbi` while the `navbar-brand` and the `Inicio` link — the two using `asp-controller`/`asp-action` — do not. So a `.navbar-brand { … }` written in `_Layout.cshtml.css` compiles to `.navbar-brand[b-aivb9iabbi]` and **matches nothing, with no warning**: valid CSS, file served, selector finds nobody. It is the same class of dead rule as the template's own `.btn-primary`/`.nav-pills`/`a{color}` in that file, which never reached a child view's button **since `0.1`**. The brand accent therefore lives in `wwwroot/css/site.css` and as **Bootstrap variables** (`--bs-primary`, `--bs-btn-bg`) rather than as rules, so it travels to everything 5.3 derives from them.
+
+**The footer is pinned with flexbox, and the template encoded its height in three files.** `body.d-flex.flex-column.min-vh-100` + `main.flex-grow-1` + `footer.mt-auto` replaces `.footer{position:absolute;bottom:0;line-height:60px}` (scoped CSS) plus `body{margin-bottom:60px}` and `html{position:relative;min-height:100%}` (`site.css`). The old one assumed a footer exactly 60px tall — its `white-space:nowrap` existed to stop it growing — so it would have broken on the first change.
+
+**`UseHttpsRedirection()` STAYS in the frontend, and that does not contradict `5.1`.** That item removed it from Catalog.API and Orders.API because they sit **behind** the Gateway and the `307` handed the client the service's real address through it. `Shop133.Web` is behind nothing — it is the app the browser opens. Copying the conclusion without the premise would be the error. `app.UseAuthorization()` **is** removed (no authentication scheme behind it until `8.1`), and `public partial class Program { }` is **not** added: there is no test suite, because **Phase 6 has no test item anywhere in the roadmap** — the same ownerless gap `4.6` opened. UI text is Spanish with `lang="es"` (consistent with `1.4`'s seed, `3.4`'s `Reason` and `4.6`'s email bodies); identifiers stay English.
+
+**Two environment findings.** **Edge headless clamps the window width below ~500px and the result looks exactly like a horizontal-overflow bug** — a `--window-size=420,900` screenshot comes out with text cut off on the right and the toggler half-drawn, while the same page at 500 and 700 is perfect: the browser lays out at its clamped minimum and **crops the capture to the 420 requested**. Re-shoot at 500 before hunting an `overflow-x`. And Razor **omits an attribute whose value is `null`**, which is what makes `aria-current="@(... ? "page" : null)"` readable without an `if` around the `<a>`.
+
+**`Privacy` is gone entirely** — view, `HomeController.Privacy()` and the footer link — because no roadmap item would ever have replaced it, and the footer is `6.1`'s own deliverable. **`launchSettings.json` was not touched and must not be**: `http://localhost:5025` and `https://localhost:7227` are exactly the Gateway's `Cors:AllowedOrigins` from `5.3`, so moving a port breaks that item and two `Shop133.Gateway.Tests`.
+
 **Phase 3 was in progress on `feature/fase-3-messaging`. `3.1` is done** — see [docs/fase_3_1.md](docs/fase_3_1.md). `MassTransit.RabbitMQ` **8.5.10** (Apache-2.0) lives in `Orders.API`, `Inventory.API` and `Payments.API`, and **only the transport is declared** — it drags the core, same reasoning as the SQL Server provider. **The v9 trap is live, not theoretical**: 9.2.0 is published, so `dotnet add package MassTransit.RabbitMQ` without a version installs the commercial one. That warning is now executable — `PackageRulesTests.MassTransitPackages_StayOnMajorVersion8` reads the `Version` attribute out of every `src/` `.csproj` and fails on anything not `8.`, so the suite went to **13 tests** (14 since `3.2`). It lives in its own file and not in `LayeringRulesTests`, whose `EfCorePackages_LiveOnlyIn_InfrastructureProjects` also inspects packages but does so to assert rule 5; a licence rule is not a layering rule. `ProjectGraph.PackageReferences` therefore changed type from `IReadOnlyList<string>` to `IReadOnlyList<PackageReferenceInfo>` (id + version), and an **empty version counts as a violation** — it would mean the version was left to somewhere else. Nothing under `Shop133.Contracts` or `Orders.Domain` was touched: the `OrderStateMachine`'s dependency arrives with the state machine in `4.1`, not before.
 
 The broker URI is **one key, `ConnectionStrings:RabbitMq`**, in User Secrets (`amqp://guest:guest@localhost:5672`), guarded in `Program.cs` exactly like `ConnectionStrings:OrdersDb`; `cfg.Host(new Uri(...))` reads the credentials from the URI's userinfo, so no `h.Username()`/`h.Password()`. `Inventory.API` and `Payments.API` had no `UserSecretsId` and got one from `dotnet user-secrets init`. The guard matters more here than in `2.2`: without it a missing key does not fail at registration but when the **hosted service starts the bus**, in a message that never mentions configuration. `SetKebabCaseEndpointNameFormatter()` and `cfg.ConfigureEndpoints(context)` are both set **now, with zero consumers** — the first because the formatter names every consumer's queue and changing it in `3.4` would strand orphan queues in the broker, the second because without it registering an `IConsumer` creates no receive endpoint and the message is lost **silently**. The `AddMassTransit` block is a **literal copy in all three services**, deliberately: extracting it needs a project all three reference, and `Shop133.Contracts` must stay at zero packages. Same precedent as `SqlServerContainerFixture` in `2.4` — `3.4`/`3.5` will touch two of the copies, and that is when extraction gets decided with a diff in hand.
@@ -440,7 +546,7 @@ Roadmap items are numbered (`0.1` … `8.6`). From 0.2 onward every completed su
 | 3 | MassTransit + RabbitMQ messaging | **Code complete** — 3.1–3.7 done; awaiting the PRs to `develop`/`main` and the `fase-3` tag |
 | 4 | Saga + compensations | **Code complete** — 4.1–4.9 done; awaiting the PRs to `develop`/`main` and the `fase-4` tag |
 | 5 | YARP Gateway | **Code complete** — 5.1–5.4 done; awaiting the PRs to `develop`/`main` and the `fase-5` tag |
-| 6 | Frontend (MVC + Bootstrap 5) | Not started |
+| 6 | Frontend (MVC + Bootstrap 5) | **In progress** on `feature/fase-6-frontend` — 6.1–6.5 done |
 | 7 | Observability | Not started |
 | 8 | Optional extras (auth, real-infra integration tests, CI/CD, E2E) | Not started |
 
@@ -562,7 +668,7 @@ Tests are not a phase. They are numbered items spread across the roadmap — `0.
 
 The reference rules read the **`.csproj` files**, not the compiled assemblies: Roslyn prunes unused references from the manifest, so with service projects still empty an assembly-level check would pass vacuously. `ProjectGraph.cs` is that reader; add new reference rules on top of it. Rules about *types* (records, immutability) use plain reflection, and `NetArchTest` covers the one namespace-dependency assertion.
 
-**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`. Since `5.4`: **61 `Fast`** (17 `Shop133.ArchitectureTests` + 18 `Orders.Tests` + 26 `Shop133.Gateway.Tests`) and **70 `Docker`** (29 `Catalog.Tests` + 17 `Orders.Tests` + 15 `Inventory.Tests` + 9 `Payments.Tests`), **131 in total**. Orders went 17 → 10 in `3.3` (the seven that tested the synchronous debt), 10 → 12 in `3.7` (it can finally assert the publish), 12 → 25 in `4.7` and 25 → 35 in `4.9`; Inventory went 9 → 15 in `4.4`; Catalog went 19 → 29 in `4.8`. `4.5` and `4.6` both added **zero** tests, `5.1` added only the architecture one, and `5.2`/`5.3` added none at all — which is what `5.4` collects.
+**5. Categories via `[Trait("Category", ...)]`**: `Fast` (no Docker) and `Docker` (Testcontainers). Keeps the development loop fast while CI (`8.3`) runs both. The trait goes **on the class**, not on each method. Live since `1.7`. Since `6.5`: **64 `Fast`** (17 `Shop133.ArchitectureTests` + 18 `Orders.Tests` + 29 `Shop133.Gateway.Tests`) and **85 `Docker`** (38 `Catalog.Tests` + 23 `Orders.Tests` + 15 `Inventory.Tests` + 9 `Payments.Tests`), **149 in total**. Orders went 17 → 10 in `3.3` (the seven that tested the synchronous debt), 10 → 12 in `3.7` (it can finally assert the publish), 12 → 25 in `4.7`, 25 → 35 in `4.9` and 35 → 41 in `6.5`; Inventory went 9 → 15 in `4.4`; Catalog went 19 → 29 in `4.8` and 29 → 38 in `6.2.1`; the Gateway went 26 → 29 in `6.5`. `4.5` and `4.6` both added **zero** tests, `5.1` added only the architecture one, `5.2`/`5.3` added none at all — which is what `5.4` collects — and `6.1` through `6.4` added none either, because Phase 6 has no test item. **`6.2.1` and `6.5` are the exceptions that prove it, and for the same reason**: both touched projects that DO have a suite — `Catalog.API` in one case, `Orders.API` and the Gateway in the other. The rule that falls out: a frontend item adds no tests, but the moment it reaches back into a service or the Gateway, it owes that suite its cases.
 
 **`tests/README.md` had been stale since `4.8`** — it reported 84 tests while the repo was at 105 — and `5.4` corrected it. It is the operational guide to the six test projects and it has to move with them.
 
@@ -570,7 +676,7 @@ The reference rules read the **`.csproj` files**, not the compiled assemblies: R
 
 **`Shop133.Gateway.Tests` is the only suite that touches Docker not at all** — no SQL Server, no RabbitMQ, 26 tests in 0.8 s. Its shape is deliberately unlike the four service suites (no `[Collection]`, a factory per test, and real Kestrel stubs at the far end because YARP forwards over a real socket); the differences and the reasons are tabulated in `tests/README.md`.
 
-**`Orders.Tests` is the only suite carrying both categories, and `OrderStateMachineTests` is the first `Fast` suite of a service** — 9 tests in ~10 s with no Docker at all, because it exercises a *process* with `InMemoryRepository()` and needs no database. That does not bend rule 1 above: what that rule bars is faking a relational database with EF's InMemory provider, not testing something that has no database. The 4 tests that do touch `OrdersDb.OrderStates` (`OrderStatePersistenceTests`) are `Docker` like everything else. **Notifications still has no test and no roadmap item owns it**: `4.7` was the state machine, so unlike `3.4`/`3.5` — whose by-hand verification `3.7` picked up — `4.6`'s debt has no scheduled collector. When it is written, the pattern is `Inventory.Tests`/`Payments.Tests` (a `ServiceCollection` around the consumer, no `WebApplicationFactory`) and it is `Category=Docker`, because of `NotificationsDb`.
+**`Orders.Tests` is the only suite carrying both categories, and `OrderStateMachineTests` is the first `Fast` suite of a service** — 9 tests in ~10 s with no Docker at all, because it exercises a *process* with `InMemoryRepository()` and needs no database. That does not bend rule 1 above: what that rule bars is faking a relational database with EF's InMemory provider, not testing something that has no database. The 4 tests that do touch `OrdersDb.OrderStates` (`OrderStatePersistenceTests`) are `Docker` like everything else. **`Shop133.Web` has no test suite either, and the reason is structural: Phase 6 has no test item at all** — the test items are `0.6`, `1.7`, `2.4`, `3.7`, `4.7`, `5.4` and `8.2`/`8.6`, and none of them lands in Phase 6. That is why `6.1` deliberately did **not** add `public partial class Program { }` (precedent `1.7`/`2.3`/`5.4`): adding it would declare a test surface that does not exist. If the debt is ever collected, the shape is `Shop133.Gateway.Tests` — `WebApplicationFactory`, no Docker, `Category=Fast` — and *then* that line is needed. **Notifications still has no test and no roadmap item owns it**: `4.7` was the state machine, so unlike `3.4`/`3.5` — whose by-hand verification `3.7` picked up — `4.6`'s debt has no scheduled collector. When it is written, the pattern is `Inventory.Tests`/`Payments.Tests` (a `ServiceCollection` around the consumer, no `WebApplicationFactory`) and it is `Category=Docker`, because of `NotificationsDb`.
 
 **Since `3.7` no test needs RabbitMQ — measured with the broker stopped, `Orders.Tests` passes 12/12.** `OrdersApiFactory` strips the RabbitMQ bus MassTransit registered and puts the in-memory harness in its place; the two consumer suites never used a broker. Docker is still required for SQL Server: the harness replaces the **broker**, not the database, and rule 1 above bars the InMemory provider. This reverses the `3.3`–`3.6` state where `docker compose up -d` was a prerequisite.
 
@@ -698,6 +804,144 @@ dotnet run --project src/Services/Notifications/Notifications.API  # 5043
 #    Origin nunca la lleva y la comparacion es literal, asi que no engancha jamas.
 dotnet run --project src/Gateway/Shop133.Gateway            # 5104
 
+# El Frontend (6.1, 6.2). MVC renderizado en servidor. Sigue sin User Secrets y sin una sola
+# PackageReference/ProjectReference — y asi se queda: la regla 3 la vigila
+# Frontend_DoesNotReference_ServicesOrGateway.
+#
+# DESDE 6.2 SI TIENE UNA GUARDA: Gateway:BaseUrl (appsettings.json, no es un secreto). Es la
+# UNICA direccion que este proyecto conoce — aqui no se nombra ningun servicio. Sin la clave,
+# Program.cs revienta antes de app.Build() nombrandola; la version "defensiva" (?? "") seria
+# peor, porque dejaria BaseAddress en null y TODAS las paginas dirian "el Gateway no responde"
+# senalando a un proceso vivo. Es 127.0.0.1 y no localhost a proposito: 2.3 midio 4,13 s de
+# rechazo en localhost (resuelve a ::1 Y a 127.0.0.1) contra 2,03 s en el literal, y con el
+# Timeout en 5 s eso es el 83 % del presupuesto de fallo delante de un usuario.
+#
+# Desde 6.2 NECESITA EL GATEWAY LEVANTADO (y Catalog detras de el) para /catalog. Sin el, la
+# pagina contesta 503 con un aviso propio — NO la pagina de Error, y NO un 200 con un cartel:
+# el codigo de estado es lo unico que hace la rama comprobable con curl.
+#   GET /catalog                 grid de 12 cards + paginador (50 productos, 5 paginas; la 5a
+#                                tiene 2). El 12 es de MAQUETACION (tres filas exactas) y vive en
+#                                CatalogClient.PageSize; el 20 del roadmap es el defecto de la API.
+#                                Divergen a proposito: son dos decisiones de dos duenos.
+#   GET /catalog?page=2          otra pagina; ?page=0 se recorta a 1 en el cliente (no es un 503)
+#   GET /catalog?categoryId=3    filtrado POR LA API desde 6.2.1 (antes se traia las 50 y tiraba 40)
+#   GET /catalog?page=99         tercer estado vacio: "no hay nada en la pagina 99", con enlace
+#   GET /catalog/details/{id}    ficha; 404 con vista propia si no existe
+#
+# OJO AL CUPO: la paginacion de 6.2.1 recorta el PAYLOAD, no el CUPO. Cada render siguen siendo
+# DOS llamadas (productos + categorias) contra el catalog-read de 60/60 s de 5.2, y como esto
+# renderiza en SERVIDOR todos los visitantes son UNA sola IP para el Gateway. Medido en 6.2: el
+# primer 429 llega en el render #30, y eso NO cambia. Tiene aviso propio, distinto del de caida.
+#
+# Las 51 imagenes de wwwroot/img/products/ las sirve ESTE proyecto, no el Gateway (el seed
+# guarda rutas relativas al frontend), asi que no gastan cupo. MapStaticAssets() sirve desde un
+# manifiesto de BUILD: una imagen nueva sin recompilar da 404 con la ruta perfectamente bien.
+#
+# NO TOQUES SUS PUERTOS. 5025 y 7227 son EXACTAMENTE los dos origenes de Cors:AllowedOrigins
+# del Gateway (5.3); moverlos rompe aquel punto y dos tests de Shop133.Gateway.Tests.
+#
+# Desde 6.1 no llama a nadie todavia: la URL base del Gateway entra con la primera peticion,
+# en 6.2, y su politica de resiliencia (Polly) en 6.6. Se puede arrancar solo, sin Docker,
+# sin broker y sin ningun servicio levantado.
+#
+# El navbar: Catalogo lo activo 6.2, Carrito 6.3 (con un badge de UNIDADES, no de lineas) y
+# Estado del pedido 6.5. YA NO QUEDA NI UN nav-link disabled: la fila de promesas a medias que
+# 6.1 dejo puesta a proposito se acaba ahi. 6.4 NO toca el navbar: al checkout se llega desde
+# el carrito.
+#
+# LA PAGINA DE ESTADO (6.5) ES EL PRIMER JAVASCRIPT PROPIO DEL PROYECTO. site.js sigue siendo
+# la plantilla vacia de 0.1.
+#   GET /orders                    los pedidos tramitados EN ESTA SESION. NO llama al Gateway,
+#                                  asi que funciona con el Gateway caido (medido: 3,5 ms) — la
+#                                  misma propiedad que /cart, y lo que hace que el boton
+#                                  Reintentar de Unavailable.cshtml sirva de algo. Se vacia al
+#                                  reiniciar el proceso, igual que el carrito; los PEDIDOS no.
+#   GET /orders/status/{id}        el seguimiento. Render de servidor + sondeo con fetch.
+#                                  404 con vista propia si el pedido no existe (distinto del
+#                                  aviso de "la tienda no esta disponible": ahi el Gateway SI
+#                                  contesto). 503 si el Gateway no responde.
+#
+# EL SONDEO SALE DEL NAVEGADOR Y VA DIRECTO AL GATEWAY, no por este proyecto. Es a proposito:
+# el MVC renderiza en servidor, asi que un sondeo de servidor haria que TODOS los visitantes
+# fueran una sola IP para el rate limiter (6.2 midio el primer 429 en el render 30). Con el
+# fetch en el navegador, cada visitante gasta su propio cupo. Y con eso el CORS de 5.3 estrena
+# su PRIMER consumidor: hasta 6.5 no lo usaba nadie, porque las llamadas del catalogo y del
+# checkout son servidor-a-servidor. Es un GET simple, asi que no hay preflight.
+#
+# CONTENIDO MIXTO: con el frontend en el perfil https (7227), un fetch a http://127.0.0.1:5104
+# lo BLOQUEA EL NAVEGADOR y el unico rastro esta en su consola — la pagina deja de actualizarse
+# y no hay ni un error en el servidor. Para eso esta Gateway:PublicBaseUrl (opcional, cae en
+# Gateway:BaseUrl si falta): apuntala a https://localhost:7138. Cors:AllowedOrigins NO hay que
+# tocarlo — ahi va el ORIGEN del frontend, no el destino. Verifica por el perfil http.
+#
+# El mapa de los 9 estados de la saga a las dos pistas de la pagina esta DUPLICADO a proposito:
+# Models/OrderProgress.cs (primer render) y wwwroot/js/order-status.js (vueltas siguientes).
+# NADA lo vigila; si divergen, el sintoma es que la pagina cambia de texto sola en la primera
+# vuelta del sondeo. Los nombres de estado son literales en los dos: importar OrderStateMachine
+# romperia la regla 3 en compilacion.
+#
+# NO hay barra de progreso, hay DOS PISTAS EN PARALELO, y es la decision del punto: desde 4.9
+# Catalog valida el precio a la vez que Inventory reserva, asi que una barra lineal pintaria
+# como "confirmado" un pedido en PricingPendingPaymentCompleted un instante antes de cancelarse.
+#
+# EL CHECKOUT (6.4) ES EL PRIMER POST QUE SALE DE ESTE PROYECTO, y con el la saga entera
+# arranca desde un formulario en vez de desde un curl.
+#   GET  /checkout                 el formulario. UN solo campo (el correo) mas el resumen del
+#                                  carrito en SOLO LECTURA — las cantidades se cambian en /cart.
+#                                  Carrito vacio -> 302 a /cart con su aviso.
+#   POST /checkout                 tramita. 302 a la confirmacion, o re-pinta el formulario.
+#   GET  /checkout/placed/{id}     numero de pedido, correo y total. NO llama al Gateway.
+#
+# Cuatro desenlaces del POST, y separarlos es el punto: 302 (201 de Orders), 200 re-pintando el
+# formulario (correo invalido, O un 400 de Orders via OrderRejectedException), 503 (Gateway
+# caido) y 429 (cupo orders-write agotado). EL CARRITO SOBREVIVE A LOS TRES FALLOS — solo se
+# vacia despues del 201; medido en las cuatro ramas.
+#
+# La validacion de cliente son los data-val-* que generan las DataAnnotations de
+# CheckoutViewModel MAS la seccion @section Scripts con _ValidationScriptsPartial. QUITAR ESA
+# SECCION ES UN FALLO SILENCIOSO: los data-val-* SIGUEN en el HTML —la pagina parece validada—
+# y no los lee nadie. Medido. Comprueba las dos mitades, no solo los atributos.
+#
+# El id del pedido sale del CUERPO del 201, nunca de la cabecera Location, que sigue apuntando
+# a localhost:5189 sin el prefijo (deuda de 5.1, sin dueno).
+#
+# (Aqui 6.4 dejo el aviso de que GET /api/orders/{id} caia en el MISMO cupo de ESCRITURA que
+# el POST y que el 429 llegaba en la peticion 11. RESUELTO EN 6.5: orders-route se partio en
+# dos por metodo, y el GET tiene ahora su propio cupo de 60/60 s. Medido: 15 GET seguidos, los
+# quince 200, y el POST sigue devolviendo 201.)
+#
+# EL CARRITO (6.3) VIVE EN LA SESION DEL SERVIDOR, y esa es la propiedad del punto entero: la
+# cookie .Shop133.Session lleva un id opaco (190 caracteres, medido) y el PRECIO no sale de aqui.
+#   GET  /cart                 la pagina; NO llama al Gateway ni una vez (el carrito es una foto)
+#   POST /cart/add             productId + quantity Y NADA MAS. El sku, el nombre y el precio los
+#                              relee CartController.Add de Catalog POR EL GATEWAY y los congela.
+#                              Anadir un <input hidden name="unitPrice"> al formulario de la ficha
+#                              rompe el punto entero y NINGUN test se entera. Sin dueno.
+#   POST /cart/setquantity     cantidad 0 = quitar la linea
+#   POST /cart/remove /clear
+#
+# Las cuatro mutaciones son POST + antiforgery + redirect. Al medir con curl hace falta el frasco
+# de cookies (-c jar.txt -b jar.txt) o cada peticion es una sesion nueva y el carrito sale siempre
+# vacio; el token sale del HTML de cualquier pagina con <form asp-action> y SE REUTILIZA mientras
+# dure la cookie, asi que no hay que pedir una pagina por cada POST. Sin token: 400.
+#
+# OJO AL CUPO: cada "anadir" gasta UNA llamada mas del cupo catalog-read de 60/60 s de 5.2, encima
+# de las dos por render que midio 6.2. Y REINICIAR EL PROCESO VACIA TODOS LOS CARRITOS — es
+# AddDistributedMemoryCache, que pese al nombre no es distribuido: vive en el proceso.
+dotnet run --project src/Frontend/Shop133.Web               # 5025 (https 7227)
+
+# CUIDADO al arrancar un servicio con la salida REDIRIGIDA a un archivo (background, tee, un
+# arnes): si el proceso llena la tuberia y nadie la vacia, se ATASCA — acepta la conexion, lee
+# la peticion y la cierra sin contestar. El sintoma es `Empty reply from server` (curl 000,
+# exit 52) con el proceso vivo y `Responding` en true, y NO hay ni un error en ninguna parte.
+# La prueba es que el archivo de log DEJA DE CRECER con la CPU a cero. Medido en 6.2 con
+# Catalog.API, cuyo telemetry de MassTransit vuelca trazas de pila enormes; el mismo codigo en
+# contenedor contestaba 200. Baja el nivel de log o usa el contenedor.
+
+# Al medir a mano con Edge headless: --window-size por debajo de ~500 px lo clampa el
+# navegador y RECORTA la captura, que sale igual que un desbordamiento horizontal del CSS.
+# Repite a 500 antes de perseguir un overflow-x que no existe.
+
 # Rate limiting (5.2): ventana fija POR IP DEL CLIENTE, declarada por ruta.
 #   /api/catalog/*  -> catalog-read   60 / 60 s
 #   /api/orders/*   -> orders-write   10 / 60 s   (cada POST arranca la saga entera)
@@ -749,10 +993,39 @@ dotnet run --project src/Gateway/Shop133.Gateway            # 5104
 # Notifications no tienen ni carpeta Controllers/, asi que no se les declara ruta:
 # solo podria devolver 404 (el "filtro que nunca engancha" de 3.2).
 #   GET  http://localhost:5104/api/catalog/products
+#          Desde 6.2.1 acepta ?page= (1 por defecto), ?pageSize= (20, maximo 100) y
+#          ?categoryId=, y devuelve un SOBRE {items,page,pageSize,totalItems,totalPages} en vez
+#          del array pelado de 1.3 — cambio rompedor del cuerpo, pagado cuando solo tenia dos
+#          consumidores. page/pageSize fuera de rango son 400 nombrando el campo; un categoryId
+#          inexistente es 200 con la pagina vacia y totalPages=0 (aqui el id SELECCIONA; en el
+#          POST ESCRIBE una relacion, y por eso alli si es 400).
 #   GET  http://localhost:5104/api/catalog/products/{id}
 #   GET  http://localhost:5104/api/catalog/categories
+#          Desde 6.2.1 cada categoria trae productCount, calculado con una subconsulta
+#          correlacionada sobre el catalogo ENTERO — ni la pagina ni el filtro.
 #   POST http://localhost:5104/api/orders
 #   GET  http://localhost:5104/api/orders/{id}
+#   GET  http://localhost:5104/api/orders/{id}/status
+#          El endpoint de 6.5. Seis campos y ligero a proposito, porque se sondea cada 2 s:
+#          id, status (el del PEDIDO, tres valores), stage (el de la SAGA, nueve desde 4.9,
+#          y NULL mientras el OrderCreated siga en el outbox), cancellationReason (puede ser
+#          null en un pedido cancelado — hay caminos que publican el motivo sin guardarlo),
+#          createdAt e isFinal. isFinal mira 'status' y NO 'stage': la saga llega a Confirmed
+#          un mensaje antes que el pedido, asi que pararse con la etapa dejaria la pagina
+#          diciendo "en curso" para siempre. Lee Orders y OrderStates con un LEFT JOIN a
+#          mano: comparten valor de PK pero no tienen FK ni navegacion, y con un JOIN normal
+#          un pedido recien creado daria 404.
+#
+# DESDE 6.5 /api/orders/* SON DOS RUTAS, NO UNA, separadas por Match.Methods:
+#   orders-write-route  POST  cupo orders-write  10/60 s   (cada POST arranca la saga)
+#   orders-read-route   GET   cupo orders-read   60/60 s   (leer un estado es un SELECT)
+# Es la deuda que 6.4 midio y dejo aqui: con una sola ruta, el 429 llegaba en la peticion 11
+# y un sondeo cada 2-3 s se quedaba sin cupo a los ~25 s. Las dos rutas comparten cluster,
+# path y el MISMO PathRemovePrefix "/api" — hay que copiarlo, no deducirlo.
+# OJO: invertir los dos Methods NO rompe el enrutado, solo intercambia los cupos, y los nueve
+# tests de GatewayRoutingTests se quedan en verde (medido). Lo unico que se entera son los
+# tres de rate limiting. Y con las rutas restringidas por metodo, un PUT o un DELETE sobre
+# /api/orders/* ahora da 404 EN EL GATEWAY en vez de llegar al servicio.
 #
 # OJO con el transform, que NO es el mismo en las dos rutas y costo un 404:
 # catalog quita "/api/catalog" (el prefijo es un espacio de nombres que el
@@ -868,9 +1141,13 @@ dotnet test tests/Shop133.ArchitectureTests        # a single test project
 dotnet tests\Shop133.ArchitectureTests\bin\Debug\net10.0\Shop133.ArchitectureTests.dll   # 17, no Docker
 dotnet tests\Shop133.ArchitectureTests\bin\Debug\net10.0\Shop133.ArchitectureTests.dll -trait "Category=Fast"
 # 5.4. The only suite that needs NO Docker at all — no SQL Server and no broker.
-dotnet tests\Gateway\Shop133.Gateway.Tests\bin\Debug\net10.0\Shop133.Gateway.Tests.dll   # 26, no Docker, ~1 s
-dotnet tests\Services\Catalog\Catalog.Tests\bin\Debug\net10.0\Catalog.Tests.dll          # 29, Docker, ~148 s
-dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll             # 35, Docker, ~81 s
+dotnet tests\Gateway\Shop133.Gateway.Tests\bin\Debug\net10.0\Shop133.Gateway.Tests.dll   # 29, no Docker, ~1 s
+# 38, Docker, ~193 s — y desde 6.5 DOS DE ELLOS FALLAN, por algo anterior a ese punto:
+# GetProductsRequest.DefaultPageSize vale 12 y ProductsEndpointsTests afirma los 20 que
+# documentó 6.2.1. La guarda funcionó; lo que lo escondía era el bin/ rancio de la suite
+# (trampa de 4.8). Hay que decidir qué número es el bueno — ver la nota de 6.5 arriba.
+dotnet tests\Services\Catalog\Catalog.Tests\bin\Debug\net10.0\Catalog.Tests.dll          # 38, Docker, ~193 s
+dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll             # 41, Docker, ~111 s
 dotnet tests\Services\Inventory\Inventory.Tests\bin\Debug\net10.0\Inventory.Tests.dll    # 15, Docker, ~98 s
 dotnet tests\Services\Payments\Payments.Tests\bin\Debug\net10.0\Payments.Tests.dll       #  9, Docker, ~63 s
 dotnet tests\Services\Orders\Orders.Tests\bin\Debug\net10.0\Orders.Tests.dll -class "Orders.Tests.CreateOrderTests"
@@ -942,6 +1219,7 @@ Local UIs: Catalog API reference (Scalar) — `http://localhost:5124/scalar` fro
 - **`Invoke-WebRequest` needs `-UseBasicParsing` in PowerShell 5.1.** Without it, it tries to spin up the Internet Explorer engine to parse HTML and dies with *"Windows PowerShell is in NonInteractive mode"*, returning `$null` instead of a readable error. Use `Invoke-RestMethod` for JSON, or `curl.exe` — real curl, installed on Windows 11. Measured in `1.5`.
 - **A new `.cs` file needs no `.csproj` edit — but Visual Studio needs a refresh.** SDK-style projects glob every `**/*.cs` under the project folder implicitly (`Microsoft.NET.Sdk.DefaultItems.props`), so a file created from outside the IDE is already compiled. Verify with `dotnet msbuild <project>.csproj -getItem:Compile`, which lists it. **Never add `<Compile Include="..." />`** to make a file "appear": it is redundant, and alongside the default glob it produces duplicate-item errors (`NETSDK1022`). When Solution Explorer does not show the file, the stale thing is VS's own cache (`.vs/ProjectEvaluation/`), not the project — refresh Solution Explorer, then Unload/Reload the project, then reopen the solution, and as a last resort delete `.vs/` with VS closed (it is gitignored IDE state and regenerates).
 - **Smart App Control is ON in this Windows** (`HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy` → `VerifiedAndReputablePolicyState = 1`). It rejects the **first** load of an unsigned assembly it has never seen while it asks the Intelligent Security Graph, so the run right after restoring a new package can die with `An Application Control policy has blocked this file. (0x800711C7)`. The fix is to run it again. It is not about signing (the repo's own DLLs are unsigned and load fine) and not about a specific package version — chasing it by downgrading just moves the block to whichever assembly is new. **Never turn Smart App Control off to work around it: it cannot be turned back on without reinstalling Windows.** Measured in `1.7`.
+  - **The `dotnet <dll>` remedy changes the CONTENT ROOT, and the next failure blames your config — measured in `6.2`.** `WebApplication.CreateBuilder` takes the content root from the **current directory**, not from the assembly's folder, so launching `dotnet src\Gateway\Shop133.Gateway\bin\Debug\net10.0\Shop133.Gateway.dll` from the repo root means `appsettings.json` is never found and the Gateway dies on its own guard — *"Falta la configuración 'ReverseProxy:Routes'"* — with the file perfectly present two folders down. The guard is right; the diagnosis is not. **Run the `.dll` from the project folder.** Same family as `3.4`'s "User Secrets only load in Development".
   - **When retrying does not clear it, the reason is that a rebuild is not a new file — measured in `4.4`.** .NET builds are **deterministic by default**, so rebuilding the same code with the same references emits byte-identical output, the same hash and therefore the same verdict; thirteen retries and a `--no-incremental` were all re-evaluating one file. **`dotnet build -p:Deterministic=false --no-incremental <project>` changes the MVID and hence the hash**, with no source or `.csproj` edit, and it cleared a block that `3.5`'s Release-build remedy and `3.7`'s `dotnet <dll>` remedy both failed on. Apply it **per project** — the block is per file, so clearing one makes it surface on the next assembly. Escalation order: retry → `-c Release` → `dotnet <dll>` → `-p:Deterministic=false`. **And the corollary, measured: a plain `dotnet build` afterwards puts the block back**, because determinism reproduces the exact bytes Windows already rejected — `Orders.Tests` went 12/12 green, then 12/12 red again after a normal rebuild, then green again. So the flag has to be reapplied to that project after every ordinary build until Windows changes its verdict. Nothing about the repository is affected either way: `bin/` is gitignored.
 - **SQL Server 2022 image**: use `MSSQL_SA_PASSWORD`, not the deprecated `SA_PASSWORD`.
 - **OpenAPI on .NET 10**: the built-in `Microsoft.AspNetCore.OpenApi` package (`AddOpenApi()` / `MapOpenApi()`) with Scalar for the UI — live in `Catalog.API` since `1.5`. Swashbuckle was dropped from the templates in .NET 9 — do not reintroduce it out of habit; it would generate a second document competing with the built-in one.

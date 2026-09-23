@@ -1,0 +1,177 @@
+@model CatalogIndexViewModel
+@{
+    ViewData["Title"] = "Catálogo";
+}
+
+@* Sin .container: el <main> del layout ya lo es. *@
+<div class="d-flex flex-wrap align-items-baseline justify-content-between gap-2 mb-3">
+    <h1 class="h3 mb-0">Catálogo</h1>
+    @* TotalItems y no Products.Count: desde 6.2.1 el grid pinta una PAGINA, asi que
+       Products.Count diria "12 productos" con 50 en el catalogo. *@
+    <span class="text-body-secondary">
+        @Model.TotalItems producto@(Model.TotalItems == 1 ? "" : "s")
+        @if (Model.TotalPages > 1)
+        {
+            <text>· página @Model.Page de @Model.TotalPages</text>
+        }
+    </span>
+</div>
+
+@* Los chips son ENLACES, no botones: el filtro vive en la URL, asi que se puede compartir,
+   el boton atras funciona y todo esto sigue andando con JavaScript desactivado. site.js
+   sigue vacio a proposito hasta 6.7. *@
+<nav class="d-flex flex-wrap gap-2 mb-4" aria-label="Filtrar por categoría">
+    <a asp-action="Index"
+       class="btn btn-sm @(Model.IsFiltered ? "btn-outline-secondary" : "btn-primary")">
+        Todas
+    </a>
+    @foreach (var category in Model.Categories)
+    {
+        var isSelected = Model.SelectedCategoryId == category.Id;
+        @* Sin asp-route-page: elegir una categoria vuelve a la primera pagina. Conservar la
+           pagina actual dejaria al usuario en la 3 de una categoria que tiene 1. *@
+        <a asp-action="Index" asp-route-categoryId="@category.Id"
+           class="btn btn-sm @(isSelected ? "btn-primary" : "btn-outline-secondary")"
+           aria-current="@(isSelected ? "page" : null)">
+            @category.Name
+            <span class="badge text-bg-light ms-1">@category.ProductCount</span>
+        </a>
+    }
+</nav>
+
+@if (Model.Products.Count == 0)
+{
+    @* TRES mensajes y no uno: "esta pagina no existe", "esta categoria esta vacia" y "el
+       catalogo esta vacio" son situaciones distintas. La ultima es alcanzable de verdad —una
+       CatalogDb a la que no se le aplico la migracion SeedSouvenirCatalog contesta 200 con una
+       lista vacia— y la primera la anade 6.2.1: con paginacion, un ?page=99 escrito a mano deja
+       la pagina sin productos TENIENDOLOS, y decir "no hay productos en esta categoria" seria
+       simplemente falso. *@
+    <div class="alert alert-info" role="alert">
+        @if (Model.IsPastLastPage)
+        {
+            <p class="mb-2">
+                No hay nada en la página @Model.Page.
+                @(Model.TotalItems == 1 ? "Hay 1 producto" : $"Hay {Model.TotalItems} productos")
+                en @(Model.TotalPages == 1 ? "una sola página" : $"{Model.TotalPages} páginas").
+            </p>
+            <a class="btn btn-sm btn-outline-primary"
+               asp-action="Index" asp-route-categoryId="@Model.SelectedCategoryId">
+                Ir a la primera página
+            </a>
+        }
+        else if (Model.IsFiltered)
+        {
+            <p class="mb-2">No hay productos en esta categoría.</p>
+            <a class="btn btn-sm btn-outline-primary" asp-action="Index">Ver todo el catálogo</a>
+        }
+        else
+        {
+            <p class="mb-0">
+                El catálogo está vacío. Si es la primera vez que se levanta el sistema, puede que
+                falte aplicar las migraciones de <code>CatalogDb</code>.
+            </p>
+        }
+    </div>
+}
+else
+{
+    @* row-cols-* va en la FILA y no col-md-4 en cada item: asi el marcado de la card no sabe
+       nada de la rejilla, y 6.3 puede cambiar los breakpoints sin tocar cada tarjeta. *@
+    <div class="row row-cols-1 row-cols-sm-2 row-cols-lg-3 row-cols-xl-4 g-4">
+        @foreach (var product in Model.Products)
+        {
+            <div class="col">
+                @* h-100 es el detalle mas visible del punto: sin el, las cards de una misma
+                   fila salen a distinta altura y los precios no se alinean. *@
+                <div class="card h-100">
+                    @* width/height reservan la caja para que la rejilla no de saltos mientras
+                       llegan las 50 imagenes, y coinciden con los placeholders 4:3 generados.
+                       El ?? cubre que ImageUrl es anulable en origen. *@
+                    <img class="card-img-top"
+                         src="@(product.ImageUrl ?? "/img/products/placeholder.jpg")"
+                         alt="@product.Name" width="400" height="300" loading="lazy" />
+                    <div class="card-body">
+                        <span class="badge text-bg-secondary mb-2">@product.CategoryName</span>
+                        @* h2 por el esquema del documento (debajo del unico h1), h6 por tamano:
+                           el ejemplo de Bootstrap usa h5 y se saltaria un nivel. *@
+                        <h2 class="h6 card-title mb-1">@product.Name</h2>
+                        <p class="card-text small text-body-secondary product-description">
+                            @product.Description
+                        </p>
+                    </div>
+                    <div class="card-footer bg-transparent d-flex align-items-center justify-content-between">
+                        <span class="fw-semibold">@Money.Format(product.Price)</span>
+                        @* stretched-link hace clicable la card entera dejando UN solo enlace en
+                           el arbol de accesibilidad. OJO 6.3: un segundo elemento interactivo
+                           dentro de la card (el boton de anadir al carrito) lo rompe, y el
+                           sintoma es que el boton no responde. *@
+                        <a class="btn btn-sm btn-outline-primary stretched-link"
+                           asp-action="Details" asp-route-id="@product.Id">Ver</a>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+
+    @if (Model.TotalPages > 1)
+    {
+        @* El paginador son ENLACES, igual que los chips: el estado vive en la URL, asi que se
+           puede compartir, el boton atras funciona y todo sigue andando con JavaScript
+           desactivado. site.js sigue vacio a proposito hasta 6.7.
+
+           CADA enlace arrastra el categoryId. Perderlo es el fallo clasico de un paginador: la
+           pagina 2 te devolveria al catalogo completo sin decir que ha quitado el filtro. Razor
+           OMITE un atributo cuyo valor es null, asi que con SelectedCategoryId a null el
+           asp-route-categoryId no llega a salir en la URL. *@
+        @* Los extremos agotados son <span> SIN href, no un <a> con .disabled. Bootstrap 5 le
+           pone pointer-events:none al .page-link deshabilitado, asi que el raton no lo alcanza
+           — pero el TECLADO si, y un tabulador + Enter navegaria a ?page=0. Es la misma forma
+           que 6.1 eligio para los enlaces pendientes del navbar: sin destino, sin href. *@
+        <nav class="mt-4" aria-label="Paginación del catálogo">
+            <ul class="pagination justify-content-center">
+                <li class="page-item @(Model.Page <= 1 ? "disabled" : "")">
+                    @if (Model.Page <= 1)
+                    {
+                        <span class="page-link" aria-hidden="true">&laquo;</span>
+                    }
+                    else
+                    {
+                        <a class="page-link" asp-action="Index"
+                           asp-route-categoryId="@Model.SelectedCategoryId"
+                           asp-route-page="@(Model.Page - 1 == 1 ? null : (int?)(Model.Page - 1))"
+                           aria-label="Anterior">&laquo;</a>
+                    }
+                </li>
+
+                @for (var number = 1; number <= Model.TotalPages; number++)
+                {
+                    var isCurrent = number == Model.Page;
+                    <li class="page-item @(isCurrent ? "active" : "")"
+                        aria-current="@(isCurrent ? "page" : null)">
+                        @* La primera pagina va SIN ?page=1: es la misma URL que /catalog, y dos
+                           direcciones para una pagina es lo que 6.2 evito dejando el filtro
+                           fuera de la URL cuando no hay filtro. *@
+                        <a class="page-link" asp-action="Index"
+                           asp-route-categoryId="@Model.SelectedCategoryId"
+                           asp-route-page="@(number == 1 ? null : (int?)number)">@number</a>
+                    </li>
+                }
+
+                <li class="page-item @(Model.Page >= Model.TotalPages ? "disabled" : "")">
+                    @if (Model.Page >= Model.TotalPages)
+                    {
+                        <span class="page-link" aria-hidden="true">&raquo;</span>
+                    }
+                    else
+                    {
+                        <a class="page-link" asp-action="Index"
+                           asp-route-categoryId="@Model.SelectedCategoryId"
+                           asp-route-page="@(Model.Page + 1)"
+                           aria-label="Siguiente">&raquo;</a>
+                    }
+                </li>
+            </ul>
+        </nav>
+    }
+}

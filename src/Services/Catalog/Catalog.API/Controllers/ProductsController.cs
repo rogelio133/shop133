@@ -29,31 +29,76 @@ namespace Catalog.API.Controllers;
 public sealed class ProductsController(CatalogDbContext db) : ControllerBase
 {
     /// <summary>
-    /// Sin paginación: hasta que haya volumen sería complejidad sin caso. El
-    /// seed de 1.4 mete decenas de filas, no miles. Entra si 6.2 la necesita.
+    /// Paginado y filtrable desde 6.2.1, que es el punto que recogió la deuda
+    /// que este mismo comentario dejó aplazada en 1.3 —*"Sin paginación… entra
+    /// si 6.2 la necesita"*— y la que 1.4 dejó para el filtro. 6.2 la necesitó
+    /// y decidió no añadirla aquí, así que la deuda se quedó sin dueño entre dos
+    /// fases hasta este punto.
+    ///
+    /// *Descartado* un sub-recurso <c>GET /categories/{id}/products</c> para el
+    /// filtro, que es más REST-ista: duplicaría el <c>Skip</c>/<c>Take</c>, el
+    /// <c>Include</c> y la proyección en dos acciones de dos controllers,
+    /// mientras que una sola acción compone filtro y paginación sin repetir
+    /// nada.
+    ///
+    /// <c>OrderBy</c> no es cosmético cuando hay paginación: sin un orden
+    /// determinista, SQL Server puede devolver la misma fila en dos páginas y
+    /// saltarse otra, y el fallo solo aparece con volumen.
     ///
     /// <c>AsNoTracking</c> porque nada de lo que se lee aquí se va a modificar:
     /// evita que EF construya el ChangeTracker para una lista de solo lectura.
     /// </summary>
     [HttpGet]
-    [EndpointSummary("Lista todos los productos del catálogo")]
+    [EndpointSummary("Lista los productos del catálogo, paginados")]
     [EndpointDescription(
-        "Devuelve el catálogo completo ordenado por Id, con el nombre de la categoría de cada " +
-        "producto ya resuelto. No está paginado ni admite filtros todavía. La lista vacía es un " +
-        "200 con un array vacío, nunca un 404.")]
-    [ProducesResponseType<IReadOnlyList<ProductResponse>>(StatusCodes.Status200OK)]
-    public async Task<ActionResult<IReadOnlyList<ProductResponse>>> GetAll(CancellationToken cancellationToken)
+        "Devuelve una página del catálogo ordenada por Id, con el nombre de la categoría de cada " +
+        "producto ya resuelto. El cuerpo es un sobre con items, page, pageSize, totalItems y " +
+        "totalPages; totalItems cuenta los que cumplen el filtro, no los de la página.\n\n" +
+        "Parámetros de consulta, todos opcionales:\n" +
+        "- page — empieza en 1. Por defecto 1. Una página más allá del final es un 200 con items " +
+        "vacío, no un 404.\n" +
+        "- pageSize — por defecto 12, máximo 100.\n" +
+        "- categoryId — filtra por categoría (ver GET /categories). Un id que no existe devuelve " +
+        "200 con la página vacía, y no 400: aquí el id selecciona, no escribe una relación.\n\n" +
+        "Errores:\n" +
+        "- 400 — page o pageSize fuera de rango.")]
+    [ProducesResponseType<PagedResponse<ProductResponse>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ValidationProblemDetails>(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<PagedResponse<ProductResponse>>> GetAll(
+        [FromQuery] GetProductsRequest request,
+        CancellationToken cancellationToken)
     {
-        var products = await db.Products
+        // [FromQuery] es OBLIGATORIO y no decorativo: con [ApiController], un
+        // parámetro de tipo complejo se infiere como [FromBody], así que sin el
+        // atributo un GET con cadena de consulta llegaría con los valores por
+        // defecto y nadie avisaría de nada.
+        var query = db.Products
             .AsNoTracking()
-            .Include(product => product.Category)
+            .Include(product => product.Category);
+
+        var filtered = request.CategoryId is int categoryId
+            ? query.Where(product => product.CategoryId == categoryId)
+            : query;
+
+        // Dos viajes a la base y se dicen en voz alta: uno cuenta el total que
+        // cumple el filtro y otro trae la página. No hay forma de tener las dos
+        // cosas en una consulta sin repetir el recuento en cada fila.
+        var totalItems = await filtered.CountAsync(cancellationToken);
+
+        var products = await filtered
             .OrderBy(product => product.Id)
+            .Skip((request.Page - 1) * request.PageSize)
+            .Take(request.PageSize)
             .ToListAsync(cancellationToken);
 
         // El mapeo se hace en memoria, no dentro de la consulta: ProductResponse.From
         // es un método estático y EF no sabe traducirlo a SQL. Da igual porque la
         // respuesta lleva todas las columnas de todas formas.
-        return products.Select(ProductResponse.From).ToList();
+        return PagedResponse<ProductResponse>.From(
+            products.Select(ProductResponse.From).ToList(),
+            request.Page,
+            request.PageSize,
+            totalItems);
     }
 
     /// <summary>

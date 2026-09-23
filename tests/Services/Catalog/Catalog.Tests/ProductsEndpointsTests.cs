@@ -37,6 +37,24 @@ public sealed class ProductsEndpointsTests(SqlServerContainerFixture container) 
     private const int TazasCategoryId = 1;
     private const int LlaverosCategoryId = 2;
 
+    /// <summary>
+    /// La categoría que usan los tests de filtro de 6.2.1, y **la elección no es
+    /// arbitraria**: ningún test de esta clase escribe en Libretas. <c>NewProduct</c>
+    /// crea en Tazas y <c>Update_ExistingProduct…</c> mueve un producto a Llaveros,
+    /// así que filtrar por 1 o por 2 daría un <c>totalItems</c> que depende del orden
+    /// de ejecución. Sobre Libretas se puede afirmar **10 exacto**, que es lo que hace
+    /// verificable el recuento — sin romper la regla 2 de la clase, porque aquí no se
+    /// cuenta el catálogo entero sino un subconjunto que nadie toca.
+    ///
+    /// Sus 10 productos son los ids 41..50 del seed (LIBR-001 .. LIBR-010).
+    /// </summary>
+    private const int LibretasCategoryId = 5;
+
+    private const int LibretasProductCount = 10;
+
+    /// <summary>El <c>GetProductsRequest.DefaultPageSize</c>, repetido aquí a propósito: un test que importara la constante pasaría igual si alguien la cambiara a 5.</summary>
+    private const int DefaultPageSize = 20;
+
     /// <summary>Id del seed que no existe en ninguna de las 50 filas sembradas.</summary>
     private const int UnknownProductId = 999_999;
 
@@ -67,28 +85,206 @@ public sealed class ProductsEndpointsTests(SqlServerContainerFixture container) 
     /// La fixture no siembra nada: las 50 filas las pone la migración
     /// SeedSouvenirCatalog de 1.4, así que este test comprueba de paso que
     /// MigrateAsync deja la base en el estado que el resto de la clase supone.
+    ///
+    /// Pide <c>pageSize=50</c> desde 6.2.1, que es cuando el endpoint se paginó:
+    /// las 50 filas del seed ocupan los ids 1..50 y los productos que crean los
+    /// demás tests salen del IDENTITY con ids de cuatro cifras, así que
+    /// ordenando por Id la primera página de 50 es exactamente el seed.
     /// </summary>
     [Fact]
     public async Task GetAll_AfterMigrations_ReturnsSeededCatalog()
     {
-        var response = await client.GetAsync("/products", CancellationToken);
+        var response = await client.GetAsync("/products?pageSize=50", CancellationToken);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        var products = await response.Content.ReadFromJsonAsync<IReadOnlyList<ProductResponse>>(CancellationToken);
+        var page = await response.Content.ReadFromJsonAsync<PagedResponse<ProductResponse>>(CancellationToken);
 
-        Assert.NotNull(products);
+        Assert.NotNull(page);
 
         // "Contiene", no "son exactamente 50": otros tests de la clase pueden
         // haber creado productos antes que este.
-        var seededIds = products.Select(product => product.Id).ToHashSet();
+        var seededIds = page.Items.Select(product => product.Id).ToHashSet();
         Assert.All(Enumerable.Range(1, 50), id => Assert.Contains(id, seededIds));
 
         // El nombre de la categoría viaja resuelto (1.4), no solo su id: es lo
         // que evita que cada consumidor tenga que cruzar contra GET /categories.
-        var firstMug = Assert.Single(products, product => product.Sku == "TAZA-001");
+        var firstMug = Assert.Single(page.Items, product => product.Sku == "TAZA-001");
         Assert.Equal("Tazas", firstMug.CategoryName);
         Assert.Equal(TazasCategoryId, firstMug.CategoryId);
+    }
+
+    // ── GET /products — paginación y filtro (6.2.1) ──────────────────────────
+
+    /// <summary>
+    /// Sin un solo parámetro, el endpoint pagina igual: 20 elementos, que es el
+    /// <c>DefaultPageSize</c>. Antes de 6.2.1 esta misma petición devolvía el
+    /// catálogo entero en un array pelado.
+    /// </summary>
+    [Fact]
+    public async Task GetAll_WithoutQueryParameters_ReturnsFirstPageOfTwenty()
+    {
+        var page = await GetPageAsync("/products");
+
+        Assert.Equal(DefaultPageSize, page.Items.Count);
+        Assert.Equal(1, page.Page);
+        Assert.Equal(DefaultPageSize, page.PageSize);
+
+        // El total cuenta el catálogo entero, no la página — que es la mitad de
+        // lo que el sobre existe para poder decir. Es ">= 50" y no "== 50" por la
+        // regla 2 de la clase: otros tests crean productos.
+        Assert.True(page.TotalItems >= 50, $"totalItems fue {page.TotalItems}");
+        Assert.True(page.TotalPages >= 3, $"totalPages fue {page.TotalPages}");
+
+        // Ordenado por Id, así que la primera página es el principio del seed.
+        Assert.Equal(Enumerable.Range(1, DefaultPageSize), page.Items.Select(product => product.Id));
+    }
+
+    /// <summary>
+    /// La segunda página trae productos **distintos**. Es lo que de verdad falla
+    /// si alguien quita el <c>OrderBy</c> o se equivoca en la aritmética del
+    /// <c>Skip</c>: con <c>(page - 1) * pageSize</c> mal escrito, la página 2
+    /// repite la 1 y un test que solo contara elementos pasaría.
+    /// </summary>
+    [Fact]
+    public async Task GetAll_SecondPage_ReturnsDifferentProducts()
+    {
+        var first = await GetPageAsync("/products");
+        var second = await GetPageAsync("/products?page=2");
+
+        Assert.Equal(2, second.Page);
+        Assert.Equal(DefaultPageSize, second.Items.Count);
+        Assert.Equal(Enumerable.Range(21, DefaultPageSize), second.Items.Select(product => product.Id));
+
+        var firstIds = first.Items.Select(product => product.Id).ToHashSet();
+        Assert.DoesNotContain(second.Items, product => firstIds.Contains(product.Id));
+
+        // El total no cambia entre páginas: cuenta el conjunto, no lo devuelto.
+        Assert.Equal(first.TotalItems, second.TotalItems);
+    }
+
+    /// <summary>
+    /// Una página más allá del final es un <c>200</c> con <c>items</c> vacío, no
+    /// un <c>404</c>: la página existe como consulta y su resultado está vacío,
+    /// igual que una lista vacía nunca fue un 404 en este servicio.
+    /// </summary>
+    [Fact]
+    public async Task GetAll_PageBeyondTheLast_Returns200WithEmptyItems()
+    {
+        var page = await GetPageAsync("/products?page=10000&pageSize=100");
+
+        Assert.Empty(page.Items);
+        Assert.Equal(10000, page.Page);
+
+        // Y sigue diciendo cuántos hay, que es lo que permite al cliente volver
+        // a una página que sí existe en vez de creer que el catálogo está vacío.
+        Assert.True(page.TotalItems >= 50, $"totalItems fue {page.TotalItems}");
+    }
+
+    /// <summary>
+    /// El filtro que 1.4 dejó aplazado. Sobre Libretas, que ningún otro test
+    /// escribe, el recuento se puede afirmar exacto.
+    /// </summary>
+    [Fact]
+    public async Task GetAll_FilteredByCategory_ReturnsOnlyThatCategory()
+    {
+        var page = await GetPageAsync($"/products?categoryId={LibretasCategoryId}");
+
+        Assert.Equal(LibretasProductCount, page.Items.Count);
+        Assert.Equal(LibretasProductCount, page.TotalItems);
+        Assert.Equal(1, page.TotalPages);
+
+        Assert.All(page.Items, product =>
+        {
+            Assert.Equal(LibretasCategoryId, product.CategoryId);
+            Assert.Equal("Libretas", product.CategoryName);
+        });
+    }
+
+    /// <summary>
+    /// **200 con la página vacía, no 400.** El <c>POST</c> sí devuelve 400 ante
+    /// un <c>categoryId</c> inexistente porque allí ese id **escribe** una
+    /// relación que tiene que existir; aquí solo **selecciona**, y "no hay nada"
+    /// es una respuesta cierta. Es además lo que 6.2 ya había decidido y
+    /// verificado desde el lado del frontend.
+    /// </summary>
+    [Fact]
+    public async Task GetAll_FilteredByUnknownCategory_Returns200WithEmptyPage()
+    {
+        var response = await client.GetAsync($"/products?categoryId={UnknownCategoryId}", CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var page = await response.Content.ReadFromJsonAsync<PagedResponse<ProductResponse>>(CancellationToken);
+
+        Assert.NotNull(page);
+        Assert.Empty(page.Items);
+        Assert.Equal(0, page.TotalItems);
+
+        // Cero elementos son CERO páginas, no una vacía: es la aritmética del
+        // Math.Ceiling de PagedResponse.From, y es lo que deja al paginador del
+        // frontend sin nada que pintar en vez de con un "página 1 de 1" mentiroso.
+        Assert.Equal(0, page.TotalPages);
+    }
+
+    /// <summary>
+    /// Filtro y paginación **compuestos en una sola acción**, que es el motivo
+    /// por el que se descartó un sub-recurso <c>GET /categories/{id}/products</c>.
+    /// La página 3 de 4 en 4 sobre 10 elementos es la última y es **parcial**:
+    /// con un <c>Math.Ceiling</c> mal hecho (división entera) <c>totalPages</c>
+    /// saldría 2 y esta página no existiría.
+    /// </summary>
+    [Fact]
+    public async Task GetAll_FilterAndPagingCombined_ReturnsTheLastPartialPage()
+    {
+        var page = await GetPageAsync($"/products?categoryId={LibretasCategoryId}&pageSize=4&page=3");
+
+        Assert.Equal(2, page.Items.Count);
+        Assert.Equal(LibretasProductCount, page.TotalItems);
+        Assert.Equal(3, page.TotalPages);
+        Assert.All(page.Items, product => Assert.Equal(LibretasCategoryId, product.CategoryId));
+    }
+
+    /// <summary>
+    /// <c>400</c> y no un recorte silencioso: pedir la página 0 es un error del
+    /// cliente y se le dice. Sin el DTO con DataAnnotations esto llegaría al
+    /// <c>Skip</c> con un desplazamiento **negativo**.
+    /// </summary>
+    [Fact]
+    public async Task GetAll_PageZero_Returns400NamingPage()
+    {
+        var response = await client.GetAsync("/products?page=0", CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var problem = await response.Content.ReadFromJsonAsync<HttpValidationProblemDetails>(CancellationToken);
+
+        Assert.NotNull(problem);
+
+        var error = Assert.Single(problem.Errors);
+        Assert.Contains(nameof(GetProductsRequest.Page), error.Key, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// El tope de <c>pageSize</c> existe porque sin él <c>?pageSize=1000000</c>
+    /// es una forma perfectamente válida de pedir el catálogo entero, y entonces
+    /// la paginación sería una sugerencia y no un límite.
+    /// </summary>
+    [Fact]
+    public async Task GetAll_PageSizeAboveMaximum_Returns400NamingPageSize()
+    {
+        var response = await client.GetAsync(
+            $"/products?pageSize={GetProductsRequest.MaxPageSize + 1}",
+            CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var problem = await response.Content.ReadFromJsonAsync<HttpValidationProblemDetails>(CancellationToken);
+
+        Assert.NotNull(problem);
+
+        var error = Assert.Single(problem.Errors);
+        Assert.Contains(nameof(GetProductsRequest.PageSize), error.Key, StringComparison.OrdinalIgnoreCase);
     }
 
     // ── GET /products/{id} ───────────────────────────────────────────────────
@@ -449,6 +645,26 @@ public sealed class ProductsEndpointsTests(SqlServerContainerFixture container) 
         CategoryId = product.CategoryId,
         ImageUrl = product.ImageUrl,
     };
+
+    /// <summary>
+    /// Lee una página y afirma de paso que la respuesta fue <c>200</c>. Existe
+    /// porque los ocho tests de 6.2.1 repetirían las mismas cuatro líneas, y lo
+    /// que cada uno quiere enseñar es la aserción de después, no el plumbing.
+    /// Los tests que esperan un <c>400</c> **no** lo usan: ahí el código de
+    /// estado es el sujeto del test, no un prerrequisito.
+    /// </summary>
+    private async Task<PagedResponse<ProductResponse>> GetPageAsync(string url)
+    {
+        var response = await client.GetAsync(url, CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var page = await response.Content.ReadFromJsonAsync<PagedResponse<ProductResponse>>(CancellationToken);
+
+        Assert.NotNull(page);
+
+        return page;
+    }
 
     private async Task<ProductResponse> CreateAsync(string sku)
     {

@@ -1,0 +1,76 @@
+@model GatewayUnavailableException
+@{
+    ViewData["Title"] = "La tienda no está disponible";
+}
+
+@* 6.3 movio esta vista desde Views/Catalog/ hasta aqui. El motivo: CartController.Add tambien
+   habla con el Gateway —es donde se acuna la foto de precios— asi que tambien puede quedarse sin
+   dependencia, y la busqueda de vistas de Razor cae en Views/Shared/ desde cualquier controller.
+   Lo que NO se movio es el codigo de estado: lo sigue poniendo cada controller antes de devolver
+   esta vista, porque 503 y 429 son lo unico que hace estas ramas comprobables desde la linea de
+   comandos (decision 3 de 6.2, que no se revierte).
+
+   El titulo dejo de nombrar el catalogo por lo mismo. El cuerpo no hizo falta tocarlo: ya
+   hablaba del Gateway y de la regla 3, que es verdad desde las dos paginas. *@
+
+<h1 class="h3">La tienda no está disponible ahora mismo</h1>
+
+@if (Model.IsRateLimited)
+{
+    @* Esta rama es lo primero del proyecto que le ensena a un humano el rate limiting de 5.2.
+       Es alcanzable de verdad y no es una hipotesis: y como esta tienda se renderiza en SERVIDOR,
+       todos los visitantes son una sola IP para el Gateway. Dos llamadas por render salen a unas
+       30 vistas de pagina por minuto — y desde 6.3 cada "anadir al carrito" gasta una mas, porque
+       el precio se relee de Catalog.
+
+       6.4 LE QUITO LA CIFRA A ESTE TEXTO, y merece leerse por que. Estaba escrito "60 por minuto",
+       que es el cupo catalog-read; el checkout va por orders-route, cuyo cupo son DIEZ por minuto
+       porque cada POST arranca la saga entera. O sea que desde que existe un segundo llamante,
+       esta pagina le daba al usuario una cifra falsa y un consejo equivocado. La frase la pone
+       ahora el cliente que se quedo sin cupo, que es el unico que sabe contra que ruta iba. *@
+    <div class="alert alert-warning" role="alert">
+        <p>
+            Demasiadas peticiones. El Gateway limita
+            <strong>@(Model.Quota ?? "las peticiones de la tienda")</strong>,
+            y como esta tienda se renderiza en el servidor, todos los visitantes cuentan como una
+            sola dirección.
+        </p>
+        <p class="mb-0">
+            @if (Model.RetryAfter is TimeSpan wait)
+            {
+                @* 5.2 midio que este valor dice LA VENTANA ENTERA, no lo que queda de ella:
+                   siempre son 60 s, asi que es conservador y nunca se queda corto. *@
+                <text>Vuelve a intentarlo en @((int)wait.TotalSeconds) segundos.</text>
+            }
+            else
+            {
+                <text>Vuelve a intentarlo dentro de un minuto.</text>
+            }
+        </p>
+    </div>
+}
+else
+{
+    <div class="alert alert-warning" role="alert">
+        <p class="mb-0">
+            La tienda habla con un <strong>único Gateway</strong>, y ese Gateway —o alguno de los
+            servicios que tiene detrás— no está respondiendo ahora mismo.
+        </p>
+    </div>
+
+    <p class="text-body-secondary">
+        Que esta página no pueda pintarse es la regla 3 funcionando, no un fallo del diseño:
+        <code>Shop133.Web</code> no conoce la dirección de ningún servicio, solo la del Gateway.
+        Si pudiera seguir enseñando el catálogo con el Gateway caído, sería porque alguien está
+        hablando con <code>Catalog.API</code> a sus espaldas.
+    </p>
+}
+
+@* asp-action="Index" SIN asp-controller: resuelve contra el controller ACTUAL, asi que desde
+   Catalog vuelve al catalogo y desde Cart vuelve al carrito. Y ahi hay una propiedad que merece
+   leerse: /cart no llama al Gateway ni una vez (el carrito es una foto, decision 3 de 6.3), asi
+   que ese reintento funciona incluso con el Gateway caido — lo que no se puede es anadir nada. *@
+<a class="btn btn-outline-primary" asp-action="Index">Reintentar</a>
+
+@* No hay reintento automatico, ni circuit breaker, ni cache. Eso es 6.6, y este boton es el
+   "reintento manual" que deja ver que hoy no lo hay. *@

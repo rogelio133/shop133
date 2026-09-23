@@ -191,8 +191,11 @@ public sealed class OrdersController(
     /// roto y de duplicar la ruta en una cadena que nadie revisa cuando el
     /// <c>[Route]</c> cambia.
     ///
-    /// Es el mínimo: sin listado, sin paginación y sin filtros. 6.5 la amplía con
-    /// lo que necesite la página de estado del pedido.
+    /// Es el mínimo: sin listado, sin paginación y sin filtros. **6.5 no la amplió**
+    /// — le puso al lado <see cref="GetStatus"/>, que es un recurso distinto y no
+    /// más campos en éste. El motivo está allí: la página de estado se sondea cada
+    /// dos segundos, y devolver las líneas y el total en cada vuelta sería pagar el
+    /// cuerpo entero por el único campo que puede haber cambiado.
     /// </summary>
     [HttpGet("{id:guid}")]
     [EndpointSummary("Obtiene un pedido por su Id")]
@@ -201,9 +204,12 @@ public sealed class OrdersController(
         "El Id es un Guid que acuña el propio servicio al crear el pedido, no la base de datos: desde " +
         "la Fase 4 es además la clave de correlación de la saga, así que este mismo valor es el que " +
         "sirve para seguir el pedido por RabbitMQ y por Jaeger.\n\n" +
-        "El estado es siempre Pending hasta la Fase 4: desde 3.3 el pedido publica OrderCreated al " +
-        "crearse, pero todavía no hay nadie que mueva el estado al recibir la respuesta. Quien lo hará " +
-        "es la máquina de estados de 4.2.")]
+        "El estado es uno de tres: Pending, Confirmed o Cancelled. Lo mueve la saga, a través de los " +
+        "dos consumers que Orders.API tiene desde 4.3, así que un pedido recién creado responde " +
+        "Pending y se resuelve solo unos cientos de milisegundos después.\n\n" +
+        "Para SEGUIR ese avance está GET /orders/{id}/status, que además del estado del pedido " +
+        "devuelve por dónde va el proceso y, si se canceló, por qué. Este endpoint devuelve el " +
+        "detalle; aquél, el progreso.")]
     [ProducesResponseType<OrderResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<OrderResponse>> GetById(Guid id, CancellationToken cancellationToken)
@@ -221,6 +227,143 @@ public sealed class OrdersController(
         return order is null
             ? NotFound()
             : OrderResponse.From(order);
+    }
+
+    /// <summary>
+    /// El endpoint que el roadmap nombra en 6.5, y el único del servicio que lee la
+    /// tabla de la saga.
+    ///
+    /// ── Por qué no bastaba con <see cref="GetById"/> ──
+    ///
+    /// <c>Order.Status</c> son tres valores (2.1): un pedido está <c>Pending</c> y
+    /// de pronto está resuelto. Todo lo que pasa en medio —validar el precio con
+    /// Catalog, reservar stock, cobrar, y a veces deshacer la reserva— vive en
+    /// <c>OrderStates.CurrentState</c>, que desde 4.9 son nueve estados y dos ramas
+    /// que corren **en paralelo**. Sin esto, la página de 6.5 solo podría enseñar un
+    /// salto, que es justo lo contrario de lo que el roadmap pide de ella.
+    ///
+    /// Esto **corrige por escrito** el comentario final de
+    /// <c>OrderStateConfiguration</c>, que daba por hecho que 6.5 leería <c>Orders</c>
+    /// y no la tabla de saga. El <c>///</c> de <c>OrderStateMachine.Confirmed</c>
+    /// decía lo contrario, y es el que gana. Ver <see cref="OrderStatusResponse"/>.
+    ///
+    /// ── Un recurso nuevo, no campos nuevos en el de arriba ──
+    ///
+    /// *Descartado* añadirle <c>Stage</c> a <c>OrderResponse</c>, que habría sido
+    /// una línea. Esto se sondea cada dos segundos desde un navegador: con los
+    /// campos metidos allí, cada vuelta arrastraría las líneas del pedido y el total
+    /// para mirar un <c>string</c>. Y habría cambiado el cuerpo del 201 del alta, que
+    /// tiene consumidores (<c>PlacedOrder</c> en el frontend, <c>Orders.Tests</c>)
+    /// para los que ese dato no significa nada.
+    ///
+    /// *Descartado* también traducir los nombres de estado a etiquetas de interfaz
+    /// aquí dentro. Se devuelve el identificador de C# tal cual; las etiquetas las
+    /// pone quien pinta. Un servicio que empieza a decidir qué texto ve el usuario
+    /// acaba con el vocabulario de la interfaz metido en la máquina de estados.
+    ///
+    /// ── Una sola consulta ──
+    ///
+    /// <c>Orders</c> y <c>OrderStates</c> comparten el valor de la clave primaria
+    /// —el <c>OrderId</c> *es* el <c>CorrelationId</c>— pero **no tienen clave
+    /// foránea ni navegación entre ellas**, y eso es deliberado: son dos cosas con
+    /// dos dueños, y el repositorio de saga es de MassTransit. Así que el
+    /// <c>JOIN</c> se escribe a mano.
+    ///
+    /// Es un LEFT JOIN y no uno normal. Un pedido puede existir sin instancia de
+    /// saga: desde 4.5 el <c>OrderCreated</c> se escribe en el outbox y sale hacia
+    /// RabbitMQ un instante después, así que entre el 201 y el arranque de la saga
+    /// hay una ventana real —y con el broker parado, larga—. Con un <c>JOIN</c>
+    /// normal esos pedidos darían **404**, que es la respuesta más confusa posible:
+    /// el pedido acaba de crearse y la página diría que no existe.
+    /// </summary>
+    [HttpGet("{id:guid}/status")]
+    [EndpointSummary("Obtiene el progreso de un pedido")]
+    [EndpointDescription(
+        "Devuelve el estado del pedido, por dónde va su saga y, si se canceló, el motivo. " +
+        "404 si el Id no existe.\n\n" +
+        "Está pensado para sondearse: es mucho más ligero que GET /orders/{id} porque no trae ni " +
+        "las líneas ni el total.\n\n" +
+        "Dos campos con dos relojes distintos. 'status' es el desenlace del PEDIDO y son tres " +
+        "valores: Pending, Confirmed, Cancelled. 'stage' es por dónde va el PROCESO y son los " +
+        "nombres reales de los estados de la saga: PricingPending, StockPending, PaymentPending, " +
+        "PricingPendingStockReserved, PricingPendingPaymentCompleted, CancellingStockPending, " +
+        "CompensatingStock, Confirmed y Cancelled. Desde 4.9 la validación del precio corre EN " +
+        "PARALELO con la reserva de stock, así que los estados con nombre compuesto no son ruido: " +
+        "dicen qué rama ya contestó y cuál falta.\n\n" +
+        "'stage' puede ser null, y no es un error: significa que la saga todavía no ha arrancado. " +
+        "El evento que la arranca sale por el outbox (4.5), así que hay una ventana entre el 201 " +
+        "del alta y la creación de la instancia.\n\n" +
+        "'cancellationReason' puede ser null en un pedido cancelado. De los caminos que cancelan, " +
+        "los que publican en la misma transición en la que reciben el motivo lo leen del mensaje y " +
+        "no lo guardan; solo lo escriben los que tienen que recordarlo para una transición " +
+        "posterior.\n\n" +
+        "'isFinal' mira 'status', no 'stage': la saga llega a Confirmed un mensaje antes de que el " +
+        "pedido lo haga. Es el campo con el que un sondeo decide parar.")]
+    [ProducesResponseType<OrderStatusResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<OrderStatusResponse>> GetStatus(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        // La proyección va DENTRO de la consulta, no sobre entidades materializadas:
+        // así EF emite un SELECT de seis columnas en lugar de traerse el pedido con
+        // sus líneas (tipo owned, vienen siempre) para tirarlas después. Con un
+        // sondeo cada dos segundos, esa diferencia se paga treinta veces por minuto.
+        //
+        // AsNoTracking porque nada de esto se modifica. En una proyección a un tipo
+        // que no es una entidad EF tampoco rastrearía, pero se escribe igual: es lo
+        // que hace GetById y la simetría entre los dos métodos vale más que la línea.
+        var status = await db.Orders
+            .AsNoTracking()
+            .Where(order => order.Id == id)
+            .GroupJoin(
+                db.OrderStates.AsNoTracking(),
+                order => order.Id,
+                saga => saga.CorrelationId,
+                (order, sagas) => new { order, sagas })
+            .SelectMany(
+                pair => pair.sagas.DefaultIfEmpty(),
+                (pair, saga) => new OrderStatusResponse
+                {
+                    Id = pair.order.Id,
+
+                    // OrderResponse.From puede escribir Status.ToString() porque
+                    // corre sobre una entidad ya materializada. Aquí no: esto se
+                    // traduce a SQL y ToString() sobre un enum no tiene traducción.
+                    //
+                    // Dejar que viajara el enum a secas publicaría el ORDINAL, que
+                    // es justo lo que el /// de OrderResponse.Status prohíbe: el
+                    // cliente se acoplaría al orden de declaración, y 2.1 puso los
+                    // números explícitos precisamente para poder añadir estados sin
+                    // renumerar nada. De ahí el case explícito, que SQL Server sabe
+                    // evaluar y que mantiene las dos respuestas diciendo lo mismo.
+                    Status = pair.order.Status == OrderStatus.Confirmed
+                        ? nameof(OrderStatus.Confirmed)
+                        : pair.order.Status == OrderStatus.Cancelled
+                            ? nameof(OrderStatus.Cancelled)
+                            : nameof(OrderStatus.Pending),
+
+                    // saga es null cuando el LEFT JOIN no encontró fila. El operador
+                    // condicional nulo se traduce a SQL sin problema.
+                    Stage = saga == null ? null : saga.CurrentState,
+
+                    // La columna es NOT NULL con cadena vacía por defecto (4.5), así
+                    // que "vacío" y "no hay" son lo mismo para quien lee. Se
+                    // normaliza a null aquí para que el cliente tenga una sola
+                    // comprobación que hacer en vez de dos.
+                    CancellationReason = saga == null || saga.CancellationReason == string.Empty
+                        ? null
+                        : saga.CancellationReason,
+
+                    CreatedAt = pair.order.CreatedAt,
+
+                    IsFinal = pair.order.Status != OrderStatus.Pending,
+                })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return status is null
+            ? NotFound()
+            : status;
     }
 
     /// <summary>

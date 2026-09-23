@@ -1,0 +1,61 @@
+@model PlacedOrderViewModel
+@{
+    ViewData["Title"] = "Pedido recibido";
+}
+
+<div class="alert alert-success" role="alert">
+    <h1 class="h4 alert-heading">Pedido recibido</h1>
+    <p class="mb-0">
+        Ya está en marcha. Puedes seguirlo aquí mismo, y además te avisaremos por correo cuando se
+        confirme o si hay que cancelarlo.
+    </p>
+</div>
+
+<dl class="row">
+    <dt class="col-sm-3">Número de pedido</dt>
+    @* En monospace y entero: es lo unico que sobrevive a una recarga, y es lo que hace falta para
+       reclamar. Ademas es la clave de correlacion de la saga, asi que este mismo valor es el que
+       sirve para seguir el pedido por RabbitMQ y por Jaeger. *@
+    <dd class="col-sm-9 font-monospace">@Model.OrderId</dd>
+
+    @if (Model.HasDetails)
+    {
+        <dt class="col-sm-3">Aviso a</dt>
+        <dd class="col-sm-9">@Model.CustomerEmail</dd>
+
+        <dt class="col-sm-3">Total</dt>
+        <dd class="col-sm-9 fw-semibold">@Model.FormattedTotal</dd>
+    }
+</dl>
+
+@if (!Model.HasDetails)
+{
+    @* Al recargar esta pagina se pierde el TempData, que dura exactamente una peticion. Se dice en
+       vez de pintar una ficha con dos huecos en blanco: el numero de pedido sigue estando, y es la
+       parte que importa. Es el precio de no releer el pedido por el Gateway — ver la nota de
+       PlacedOrderViewModel. *@
+    <p class="text-body-secondary">
+        El detalle del pedido solo se muestra una vez, justo después de tramitarlo. El número de
+        arriba sigue siendo válido.
+    </p>
+}
+
+@* Esta pagina SIGUE sin preguntar por el estado, y eso no cambia con 6.5: en este instante el
+   pedido siempre esta "Pending" —la saga acaba de arrancar, y desde 4.5 el evento que la arranca
+   ni siquiera ha salido del outbox—, asi que una llamada aqui gastaria un permiso del cupo para no
+   contar nada todavia. Lo que 6.5 anade es el ENLACE: el seguimiento vive en su propia pagina, que
+   es la que sondea. *@
+<p class="small text-body-secondary border-start border-3 ps-3">
+    El pedido no se confirma en el momento: por detrás se reserva el stock, se valida el precio y se
+    cobra, y cualquiera de esos pasos puede cancelarlo y deshacer lo anterior sin que nadie
+    intervenga. En la página de seguimiento se ve avanzar paso a paso.
+</p>
+
+<div class="d-flex flex-wrap gap-2">
+    @* El destino de 6.5. El id sale de la ruta, asi que este enlace sobrevive a la recarga que
+       vacia el TempData — es lo unico de esta pagina que sigue funcionando despues de un F5. *@
+    <a class="btn btn-primary" asp-controller="Orders" asp-action="Status" asp-route-id="@Model.OrderId">
+        Seguir el pedido
+    </a>
+    <a class="btn btn-outline-primary" asp-controller="Catalog" asp-action="Index">Seguir comprando</a>
+</div>

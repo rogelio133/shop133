@@ -189,6 +189,37 @@ public sealed class OrdersApiFactory : WebApplicationFactory<Program>, IAsyncLif
     }
 
     /// <summary>
+    /// Un ámbito con el <see cref="OrdersDbContext"/> del host, para lo que la API
+    /// no permite montar.
+    ///
+    /// Lo estrena 6.5, y el motivo es el mismo que justifica
+    /// <see cref="CountOrdersAsync"/> —llegar a una tabla que ningún endpoint
+    /// expone— pero para **escribir**. <c>GET /orders/{id}/status</c> devuelve el
+    /// estado de la saga, y esta fábrica desmonta MassTransit y no registra la
+    /// máquina de estados (ver la nota de 4.7 sobre por qué no se le devuelve), así
+    /// que <c>OrderStates</c> nunca se llena sola: sin esto, los únicos escenarios
+    /// comprobables serían los de saga ausente.
+    ///
+    /// *Descartado* levantar la saga entera en esta fábrica solo para sembrar una
+    /// fila, que es lo que 4.7 ya rechazó por escrito: obligaría a reconstruir aquí
+    /// el AddMassTransit completo de Orders.API —outbox, repositorio EF, callback de
+    /// endpoints y los dos consumers— para ejercitar un SELECT que no depende de
+    /// nada de eso. Quien prueba las transiciones es OrderStateMachineTests.
+    ///
+    /// El precio, dicho en voz alta: la fila que estos tests leen **no la escribió
+    /// la saga**, así que si el nombre de una propiedad de <c>OrderState</c> y su
+    /// columna se separaran, esto seguiría en verde. Es la misma renuncia que 4.4
+    /// aceptó con <c>SeedReservationAsync</c>.
+    /// </summary>
+    public async Task WithDbAsync(Func<OrdersDbContext, Task> work)
+    {
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrdersDbContext>();
+
+        await work(db);
+    }
+
+    /// <summary>
     /// El host se va primero y la base después: al cerrarse el proveedor de
     /// servicios se devuelven al pool las conexiones que abrió EF, y el DROP
     /// encuentra la base libre.

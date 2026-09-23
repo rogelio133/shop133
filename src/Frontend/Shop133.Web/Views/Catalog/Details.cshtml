@@ -1,0 +1,94 @@
+@model CatalogProduct
+@{
+    ViewData["Title"] = Model.Name;
+}
+
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a asp-controller="Home" asp-action="Index">Inicio</a></li>
+        @* Vuelve al grid FILTRADO por la categoria de este producto. No es "volver a donde
+           estabas" —quien llego sin filtro aterriza filtrado—; la alternativa honesta seria
+           arrastrar el categoryId hasta aqui y de vuelta, o sea hilar estado por la URL para
+           un boton atras que el navegador ya tiene. *@
+        <li class="breadcrumb-item">
+            <a asp-action="Index" asp-route-categoryId="@Model.CategoryId">Catálogo</a>
+        </li>
+        <li class="breadcrumb-item active" aria-current="page">@Model.Name</li>
+    </ol>
+</nav>
+
+<div class="row g-4">
+    <div class="col-md-5">
+        <img class="img-fluid rounded"
+             src="@(Model.ImageUrl ?? "/img/products/placeholder.jpg")"
+             alt="@Model.Name" width="400" height="300" />
+    </div>
+    <div class="col-md-7">
+        <span class="badge text-bg-secondary mb-2">@Model.CategoryName</span>
+        <h1 class="h3">@Model.Name</h1>
+        <p class="fs-3 fw-semibold mb-3">@Money.Format(Model.Price)</p>
+
+        @* La descripcion entera, SIN recortar: aqui no hay rejilla que alinear. *@
+        <p class="text-body-secondary">@Model.Description</p>
+
+        <dl class="row small mb-3">
+            <dt class="col-4 col-sm-3 text-body-secondary fw-normal">Código</dt>
+            <dd class="col-8 col-sm-9 font-monospace">@Model.Sku</dd>
+
+            <dt class="col-4 col-sm-3 text-body-secondary fw-normal">Disponibles</dt>
+            <dd class="col-8 col-sm-9">
+                @if (Model.Stock == 0)
+                {
+                    <span class="badge text-bg-danger">Agotado</span>
+                }
+                else
+                {
+                    @Model.Stock
+                }
+            </dd>
+        </dl>
+
+        @* Esta frase es el punto entero del proyecto dicho en la interfaz. Product.Stock es el
+           stock que el catalogo MUESTRA; el reservable vive en InventoryDb desde 3.4 y nadie
+           sincroniza las dos columnas. Presentar este numero como una garantia contradiria la
+           arquitectura que el proyecto existe para ensenar — y 6.5 existe justamente para
+           ensenar un pedido que se cancela despues de que esta cifra dijera 42. *@
+        <p class="small text-body-secondary border-start border-3 ps-3">
+            Es el stock que muestra el catálogo. La reserva de verdad la decide Inventory cuando
+            el pedido se crea, contra su propia base de datos — así que este número puede quedarse
+            corto entre que lo lees y confirmas la compra.
+        </p>
+
+        @* 6.3 lo activo. **El formulario manda SOLO productId y quantity**, y ese es el punto
+           entero del punto: el sku, el nombre y el PRECIO no salen de aqui — los relee
+           CartController.Add de Catalog por el Gateway y los congela en la sesion del servidor.
+           Mandar el precio en un <input type="hidden"> seria comodo, ahorraria una llamada al
+           Gateway por cada "anadir"... y devolveria al navegador la autoridad sobre el importe
+           del pedido, que es justo lo que 6.3 existe para quitarle. Ver la decision 2b de
+           docs/fase_3_3.md.
+
+           El <form asp-action> le pone el token antiforgery solo; el controller lo exige con
+           [AutoValidateAntiforgeryToken] en la clase.
+
+           Y esto esta AQUI y no en las cards del grid a proposito: la card usa stretched-link, y
+           un segundo elemento interactivo dentro de ella lo rompe — con el sintoma de que el
+           boton deja de responder. 6.2 ya dejo escrito que la ficha es su sitio. *@
+        <form asp-controller="Cart" asp-action="Add" method="post" class="d-flex gap-2 mb-2">
+            <input type="hidden" name="productId" value="@Model.Id" />
+            <label class="visually-hidden" for="quantity">Cantidad</label>
+            @* min="1": aqui un 0 no quiere decir nada (quitar es cosa de la pagina del carrito), y
+               el max sale de la constante que copia el [Range] de CreateOrderItemRequest, nunca de
+               un literal. El navegador lo comprueba, y ShoppingCart lo vuelve a comprobar: un
+               atributo HTML no es una validacion. *@
+            <input type="number" id="quantity" name="quantity" value="1"
+                   min="1" max="@ShoppingCart.MaxQuantityPerLine"
+                   class="form-control" style="width: 6rem;" />
+            <button class="btn btn-primary" type="submit">Añadir al carrito</button>
+        </form>
+
+        @* Se anade aunque Stock sea 0, y no es un descuido: ese numero es el que MUESTRA el
+           catalogo, y el reservable vive en InventoryDb desde 3.4. Bloquear aqui por un numero que
+           nadie sincroniza daria una garantia falsa en la direccion contraria a la del parrafo de
+           arriba — y quien decide de verdad es Inventory al consumir OrderCreated. *@
+    </div>
+</div>

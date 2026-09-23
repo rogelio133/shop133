@@ -1,0 +1,20 @@
+@model Guid
+@{
+    ViewData["Title"] = "Pedido no encontrado";
+}
+
+<h1 class="h3">No existe ese pedido</h1>
+
+<p class="font-monospace text-break text-body-secondary">@Model</p>
+
+<p class="text-body-secondary">
+    <code>Orders</code> no tiene ningún pedido con ese número. Esto no es un fallo de la tienda: el
+    Gateway contestó y el servicio respondió que no lo conoce — por eso sale <code>404</code> y no
+    el aviso de que la tienda no está disponible.
+</p>
+
+@* La distincion importa y es la misma que 6.2 hizo con un producto inexistente: "no existe" es una
+   respuesta cierta de un sistema que funciona, y pintarla como una caida seria acusar al Gateway de
+   algo que no ha hecho. Por eso GetStatusAsync devuelve null en el 404 en vez de lanzar. *@
+
+<a class="btn btn-outline-primary" asp-action="Index">Ver tus pedidos</a>

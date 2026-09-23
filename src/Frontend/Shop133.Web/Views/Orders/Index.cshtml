@@ -1,0 +1,56 @@
+@model IReadOnlyList<RecentOrder>
+@{
+    ViewData["Title"] = "Estado del pedido";
+}
+
+<h1 class="h3 mb-3">Tus pedidos</h1>
+
+@if (Model.Count == 0)
+{
+    @* Estado vacio con su propio texto, como los tres del catalogo (6.2 y 6.2.1). Lo importante es
+       que NO dice "no tienes pedidos": dice que esta sesion no recuerda ninguno, que es lo unico
+       cierto sin autenticacion. Un pedido tramitado antes de reiniciar el proceso existe
+       perfectamente en Orders; lo que se perdio es la lista. *@
+    <div class="alert alert-secondary" role="alert">
+        <p class="mb-0">
+            En esta sesión todavía no se ha tramitado ningún pedido.
+        </p>
+    </div>
+
+    <p class="text-body-secondary">
+        Esta lista vive en la sesión del servidor, igual que el carrito, así que se vacía al
+        reiniciar la tienda. Los pedidos que ya existan no se pierden con ella: siguen en
+        <code>Orders</code> y su página de seguimiento responde si conservas el número.
+    </p>
+
+    <a class="btn btn-outline-primary" asp-controller="Catalog" asp-action="Index">Ir al catálogo</a>
+}
+else
+{
+    <div class="list-group mb-3">
+        @foreach (var order in Model)
+        {
+            <a class="list-group-item list-group-item-action d-flex flex-wrap justify-content-between align-items-center gap-2"
+               asp-action="Status" asp-route-id="@order.Id">
+                <span>
+                    <span class="font-monospace d-block text-break">@order.Id</span>
+                    @* PlacedAt se guarda en UTC y se pinta en local: es la hora del reloj de quien
+                       compro, que es lo unico que le sirve para reconocer su pedido. *@
+                    <small class="text-body-secondary">
+                        Tramitado el @order.PlacedAt.ToLocalTime().ToString("g", Money.Culture)
+                    </small>
+                </span>
+                <span class="fw-semibold">@order.FormattedTotal</span>
+            </a>
+        }
+    </div>
+
+    @* Esta pagina NO pregunta por el estado de cada pedido, y se dice en vez de disimularlo:
+       costaria una llamada al Gateway por fila, contra el cupo de lectura, en una pagina cuyo
+       trabajo es solo llevar a la que sí lo sigue. *@
+    <p class="small text-body-secondary border-start border-3 ps-3">
+        Aquí no se muestra en qué estado está cada pedido: eso se consulta al entrar en uno, porque
+        cada consulta es una llamada al Gateway. La lista se guarda en la sesión del servidor, así
+        que se vacía al reiniciar la tienda — los pedidos en sí no.
+    </p>
+}

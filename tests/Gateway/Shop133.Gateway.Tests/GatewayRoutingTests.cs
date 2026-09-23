@@ -118,6 +118,30 @@ public sealed class GatewayRoutingTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task Get_OrderStatus_ReachesOrdersThroughTheReadRoute()
+    {
+        // 6.5. Este GET y el POST de arriba entran por el MISMO path público y salen
+        // por DOS rutas distintas: lo único que las separa es Match.Methods, y lo que
+        // gana con ello es que cada una lleve su cupo (60/min leer, 10/min crear).
+        //
+        // El test se queda en lo que 5.4 dijo que podía afirmar: qué path recibe el
+        // backend. Que Orders.API sepa servir "/orders/{id}/status" —el endpoint que
+        // 6.5 estrena— lo prueban Orders.Tests, no esto; aquí el destino es un stub.
+        //
+        // Lo que sí cubre, y no es poco: que el transform se copió en la ruta nueva.
+        // Quitar "/api/orders" en vez de "/api" dejaría el path en "/status" y el
+        // 404 volvería a no decir por qué, igual que en 5.1.
+        var orderId = Guid.NewGuid();
+
+        var response = await client.GetAsync(
+            $"/api/orders/{orderId}/status", TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal($"/orders/{orderId}/status", orders.SingleRequest().Path);
+        Assert.Empty(catalog.Requests);
+    }
+
+    [Fact]
     public async Task Post_Orders_ForwardsTheBodyAndReturnsTheBackendResponse()
     {
         orders.StatusCode = StatusCodes.Status201Created;
